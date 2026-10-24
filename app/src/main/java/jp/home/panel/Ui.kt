@@ -79,6 +79,8 @@ fun App(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () -> Unit) {
             is Screen.Blocked -> BlockedScreen(s.reason, vm)
             Screen.Home -> HomeScreen(vm, onMic, onEnableWake)
         }
+        // スクリーンセーバーとアラームは、設定画面などどの画面の上にも出す
+        ScreensaverOverlay(vm)
         AlarmOverlay(vm)
     }
 }
@@ -297,7 +299,6 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
 
     if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })
     VoicePopup(vm)
-    ScreensaverOverlay(vm)
 
     val detail = detailId?.let { id -> entities.firstOrNull { it.entityId == id } }
     if (detail != null) {

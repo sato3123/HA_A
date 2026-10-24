@@ -1136,7 +1136,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun showScreensaverNow() {
-        screensaver.value = true
+        viewModelScope.launch {
+            delay(400)
+            addLog("スクリーンセーバーを表示（写真 ${photos.value.size} 枚）")
+            screensaver.value = true
+        }
     }
 
     fun setAlbum(url: String) {
