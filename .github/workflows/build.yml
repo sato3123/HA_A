@@ -28,20 +28,35 @@ jobs:
 
       - name: Prepare signing key
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_KS: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_PW: ${{ secrets.KEYSTORE_PASSWORD }}
+          VAR_KS: ${{ vars.KEYSTORE_BASE64 }}
+          VAR_PW: ${{ vars.KEYSTORE_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # 登録状況の確認（中身は表示せず、有無と長さだけ）
+          echo "::notice::署名鍵の登録状況 Secrets: KEYSTORE_BASE64=${#SECRET_KS}文字 KEYSTORE_PASSWORD=${#SECRET_PW}文字 / Variables: KEYSTORE_BASE64=${#VAR_KS}文字 KEYSTORE_PASSWORD=${#VAR_PW}文字"
+          KS="${SECRET_KS:-$VAR_KS}"
+          PW="${SECRET_PW:-$VAR_PW}"
+          if [ -n "$VAR_KS$VAR_PW" ]; then
+            echo "::warning::署名鍵が Variables（変数）に登録されています。Secrets（秘密）に登録し直し、Variables からは削除してください。"
+          fi
+          if [ -n "$KS" ] && [ -n "$PW" ]; then
+            echo "$KS" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks" || { echo "::error::KEYSTORE_BASE64 の値が正しくありません（途中で切れているか、余分な文字が入っています）"; exit 1; }
+            if ! keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$PW" -alias homepanel >/dev/null 2>&1; then
+              echo "::error::署名鍵を開けませんでした。KEYSTORE_PASSWORD が違うか、KEYSTORE_BASE64 が壊れています"
+              exit 1
+            fi
             echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=$PW" >> "$GITHUB_ENV"
+            echo "::add-mask::$PW"
             echo "SIGNED=true" >> "$GITHUB_ENV"
+            echo "::notice::署名鍵を確認できました。Android 版をリリースに含めます。"
           else
-            echo "::warning::署名鍵（KEYSTORE_BASE64）が未登録のため、デバッグ署名でビルドします。リリースには Android 版を含めません。"
+            echo "::warning::署名鍵（KEYSTORE_BASE64 / KEYSTORE_PASSWORD）が見つからないため、デバッグ署名でビルドします。リリースには Android 版を含めません。"
             echo "SIGNED=false" >> "$GITHUB_ENV"
           fi
 
       - name: Build APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           chmod +x gradlew
           echo "sdk.dir=$ANDROID_HOME" > local.properties
