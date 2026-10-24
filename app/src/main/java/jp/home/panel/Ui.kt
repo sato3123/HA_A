@@ -176,6 +176,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     val message by vm.message.collectAsState()
     val voice by vm.voice.collectAsState()
     val lastDone by vm.lastDone.collectAsState()
+    val micLive by vm.micLive.collectAsState()
     val wake by vm.wakeEnabled.collectAsState()
     val weather by vm.weather.collectAsState()
     val forecast by vm.forecast.collectAsState()
@@ -238,6 +239,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             VoicePanel(
                 voice = voice,
                 lastDone = lastDone,
+                micLevel = micLive,
                 wakeOn = wake && route?.remote == false,
                 wakePausedRemote = wake && route?.remote == true,
                 enabled = conn == Conn.CONNECTED,
@@ -470,6 +472,7 @@ private fun conditionLabel(c: String) = when (c) {
 private fun VoicePanel(
     voice: VoiceState,
     lastDone: VoiceState.Done?,
+    micLevel: Int?,
     wakeOn: Boolean,
     wakePausedRemote: Boolean,
     enabled: Boolean,
@@ -517,6 +520,22 @@ private fun VoicePanel(
                             maxLines = 6,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    }
+                    if (micLevel != null) {
+                        // マイクの音量メーター（音が入っているかを確認できる）
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("マイク", style = MaterialTheme.typography.labelSmall)
+                            Box(
+                                Modifier.widthIn(max = 220.dp).fillMaxWidth().size(height = 6.dp, width = 220.dp)
+                                    .background(MaterialTheme.colorScheme.surface, CircleShape),
+                            ) {
+                                Box(
+                                    Modifier.fillMaxWidth(((micLevel.coerceIn(0, 100)) / 100f).coerceAtLeast(0.02f)).size(height = 6.dp, width = 220.dp)
+                                        .background(if (micLevel == 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, CircleShape),
+                                )
+                            }
+                            if (micLevel == 0) Text("音が入っていません", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                        }
                     }
                     if (wakePausedRemote) {
                         Text(

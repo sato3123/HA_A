@@ -53,6 +53,9 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
     private var conversationId: String? = null
     private var conversationAt = 0L
 
+    /** 音の大きさ（0〜100、録音終了で -1）。画面のメーター用 */
+    @Volatile var onLevel: ((Int) -> Unit)? = null
+
     /** マイク感度の補正（Home Assistant が対応していなければ自動で外す） */
     @Volatile var enhanceAudio = true
 
@@ -253,31 +256,71 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
         }
         val buf = ByteArray(2048) // 16kHz/16bit/モノラルで約64ms
         var frames = 0L
+        var noData = false
+        var lastData = SystemClock.elapsedRealtime()
+        var lastLevelAt = 0L
+        var silentSince = SystemClock.elapsedRealtime()
+        var warnedSilent = false
         try {
             rec.startRecording()
+            if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                log("録音を開始できませんでした（他のアプリがマイクを使用中の可能性）")
+            }
             while (!stopFlag.get() && SystemClock.elapsedRealtime() < deadline.get()) {
-                val n = rec.read(buf, 0, buf.size)
+                // データが来なくても止まらないよう、待たない読み方をする
+                val n = rec.read(buf, 0, buf.size, AudioRecord.READ_NON_BLOCKING)
+                val now = SystemClock.elapsedRealtime()
                 if (n < 0) {
                     log("マイクの読み取りエラー ($n)")
                     break
                 }
-                if (n > 0) {
-                    // 先頭1バイトに handler id を付けた PCM（リトルエンディアン）を送る
-                    val frame = ByteArray(n + 1)
-                    frame[0] = handler.toByte()
-                    System.arraycopy(buf, 0, frame, 1, n)
-                    if (!client.sendBinary(frame)) {
-                        log("音声を送れませんでした（接続が切れた可能性）")
+                if (n == 0) {
+                    if (now - lastData > 3_000) {
+                        noData = true
+                        log("マイクから音声データが3秒間届きません")
                         break
                     }
-                    frames++
+                    Thread.sleep(15)
+                    continue
                 }
+                lastData = now
+                // 音の大きさ（画面のメーター用）
+                var sum = 0.0
+                var i = 0
+                while (i + 1 < n) {
+                    val v = ((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF)).toShort().toDouble()
+                    sum += v * v
+                    i += 2
+                }
+                val level = (sqrt(sum / (n / 2).coerceAtLeast(1)) / 3000.0 * 100).toInt().coerceIn(0, 100)
+                if (now - lastLevelAt > 250) {
+                    lastLevelAt = now
+                    onLevel?.invoke(level)
+                }
+                if (level > 0) silentSince = now
+                if (!warnedSilent && now - silentSince > 8_000) {
+                    warnedSilent = true
+                    log("マイクの音が0のままです（Alexaのハンズフリーがマイクを使っている可能性）")
+                }
+                // 先頭1バイトに handler id を付けた PCM（リトルエンディアン）を送る
+                val frame = ByteArray(n + 1)
+                frame[0] = handler.toByte()
+                System.arraycopy(buf, 0, frame, 1, n)
+                if (!client.sendBinary(frame)) {
+                    log("音声を送れませんでした（接続が切れた可能性）")
+                    break
+                }
+                frames++
             }
         } finally {
             runCatching { rec.stop() }
             rec.release()
+            onLevel?.invoke(-1)
             client.sendBinary(byteArrayOf(handler.toByte())) // 音声の終わり
             log("音声送信を終了（約${frames * 64 / 1000}秒分）")
+        }
+        if (noData) {
+            throw HaException("マイクから音が届いていません。Fire の「設定 → Alexa → ハンズフリーモード」をオフにして、アプリを開き直してください")
         }
     }
 
@@ -301,8 +344,8 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
             rec.startRecording()
             val end = SystemClock.elapsedRealtime() + seconds * 1000L
             while (SystemClock.elapsedRealtime() < end) {
-                val n = rec.read(buf, 0, buf.size)
-                if (n <= 0) continue
+                val n = rec.read(buf, 0, buf.size, AudioRecord.READ_NON_BLOCKING)
+                if (n <= 0) { Thread.sleep(15); continue }
                 var sum = 0.0
                 for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
                 val rms = sqrt(sum / n)

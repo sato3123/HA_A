@@ -16,7 +16,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -265,7 +265,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     c.connect(validAccessToken(r.base, local))
                     client = c
-                    assistant = VoiceAssistant(r.base, ::addLog)
+                    assistant = VoiceAssistant(r.base, ::addLog).also { va ->
+                        va.onLevel = { lv -> micLive.value = if (lv < 0) null else lv }
+                    }
                     conn.value = Conn.CONNECTED
                     message.value = null
                     backoff = 2_000L
@@ -878,14 +880,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingListen = false
 
+    /** 呼びかけの待ち受けを止める。終わるのを最大2秒だけ待ち、止まらなくても先へ進む */
+    private suspend fun stopWake() {
+        val j = wakeJob
+        wakeJob = null
+        if (j == null) return
+        assistant?.stopListening()
+        j.cancel()
+        if (withTimeoutOrNull(2_000) { j.join() } == null) addLog("待ち受けの終了を待たずに先へ進みます")
+    }
+
+    /** マイクの音の大きさ（画面のメーター用。録音していなければ null） */
+    val micLive = MutableStateFlow<Int?>(null)
+
     private fun startManualListen() {
         val c = client ?: return
         val a = assistant ?: return
         manualBusy = true
         voiceJob = viewModelScope.launch {
             try {
-                wakeJob?.cancelAndJoin()
-                wakeJob = null
+                stopWake()
                 a.stopSpeaking()
                 val heard = a.listen(c, wakeWord = false, pipeline = effectivePipeline, onState = ::onVoice)
                 if (heard != null) handleHeard(c, a, heard)
@@ -921,8 +935,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         manualBusy = true
         voiceJob = viewModelScope.launch {
             try {
-                wakeJob?.cancelAndJoin()
-                wakeJob = null
+                stopWake()
                 handleHeard(c, a, text.trim())
             } catch (e: TimeoutCancellationException) {
                 voice.value = VoiceState.Failed("時間切れになりました")
@@ -957,8 +970,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         manualBusy = true
         viewModelScope.launch {
             try {
-                wakeJob?.cancelAndJoin()
-                wakeJob = null
+                stopWake()
                 micTestResult.value = "5秒間、話しかけてください…"
                 val peak = a.micTest(5) { micLevel.value = it }
                 micTestResult.value = when {
