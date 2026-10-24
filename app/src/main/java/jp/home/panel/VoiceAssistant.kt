@@ -189,7 +189,8 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
         text: String,
         pipeline: String?,
         onState: (VoiceState) -> Unit,
-    ) = runToTts(client, "intent", JSONObject().put("text", text), pipeline, text, onState)
+        display: String = text,
+    ) = runToTts(client, "intent", JSONObject().put("text", text), pipeline, display, onState)
 
     /** アプリ自身の返事を読み上げる（タイマーなど） */
     suspend fun speak(client: HaClient, heard: String, reply: String, pipeline: String?, onState: (VoiceState) -> Unit) =

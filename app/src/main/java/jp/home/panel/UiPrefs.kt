@@ -64,6 +64,11 @@ class UiPrefs(context: Context) {
         p.edit().putString(key, j.toString()).apply()
     }
 
+    /** 自宅の場所（住所・地域）。場所に関わる質問のときに AI に添える */
+    var homeLocation: String
+        get() = p.getString("home_location", "") ?: ""
+        set(v) = p.edit().putString("home_location", v).apply()
+
     /** タイマー（JSON） */
     var timersJson: String?
         get() = p.getString("timers", null)

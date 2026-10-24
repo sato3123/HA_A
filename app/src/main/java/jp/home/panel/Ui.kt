@@ -234,20 +234,16 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             }
         }
         item(span = { full(this) }) { UpdateCard(vm, showWhenIdle = false) }
-        item(span = { full(this) }) { ClockWeather(weather, forecast) }
         item(span = { full(this) }) {
-            VoicePanel(
-                voice = voice,
-                lastDone = lastDone,
-                micLevel = micLive,
-                wakeOn = wake && route?.remote == false,
-                wakePausedRemote = wake && route?.remote == true,
-                enabled = conn == Conn.CONNECTED,
-                onMic = onMic,
-                text = text,
-                onTextChange = { text = it },
-                onSend = { vm.sendText(text); text = "" },
-            )
+            ClockWeather(weather, forecast) {
+                MicControl(
+                    voice = voice,
+                    micLevel = micLive,
+                    waiting = wake && route?.remote == false,
+                    enabled = conn == Conn.CONNECTED,
+                    onMic = onMic,
+                )
+            }
         }
         item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
         message?.let { m ->
@@ -300,6 +296,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     }
 
     if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })
+    VoicePopup(vm)
     ScreensaverOverlay(vm)
 
     val detail = detailId?.let { id -> entities.firstOrNull { it.entityId == id } }
@@ -352,17 +349,22 @@ fun rememberNow(): LocalDateTime {
 
 /** 時計と天気（コンパクト：1行にまとめて、機器を多く表示できるようにする） */
 @Composable
-private fun ClockWeather(weather: Entity?, forecast: List<JSONObject>) {
+private fun ClockWeather(weather: Entity?, forecast: List<JSONObject>, trailing: @Composable () -> Unit) {
     val now = rememberNow()
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         if (maxWidth > 560.dp) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 ClockBlock(now)
                 WeatherBlock(weather, forecast, Modifier.weight(1f))
+                trailing()
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                ClockBlock(now)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ClockBlock(now)
+                    Spacer(Modifier.weight(1f))
+                    trailing()
+                }
                 WeatherBlock(weather, forecast, Modifier.fillMaxWidth())
             }
         }

@@ -830,7 +830,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun handleHeard(c: HaClient, a: VoiceAssistant, heard: String) {
         val cmd = parseTimerCommand(heard)
         if (cmd == null) {
-            a.respond(c, heard, effectivePipeline, ::onVoice)
+            val sent = withHomeLocation(heard)
+            if (sent != heard) addLog("自宅の位置を添えて送信")
+            a.respond(c, sent, effectivePipeline, ::onVoice, display = heard)
             return
         }
         addLog("アプリの命令として処理：$cmd")
@@ -949,6 +951,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 refreshWakeLoop()
             }
         }
+    }
+
+    // ================= 自宅の位置 =================
+
+    val homeLocation = MutableStateFlow(prefs.homeLocation)
+
+    fun setHomeLocation(v: String) {
+        prefs.homeLocation = v.trim()
+        homeLocation.value = v.trim()
+    }
+
+    /** Home Assistant に登録されている自宅の位置（緯度・経度・名前）を取得して入れる */
+    fun useHaLocation(onResult: (String?) -> Unit) {
+        val c = client ?: return onResult("接続していません")
+        viewModelScope.launch {
+            try {
+                val r = c.request(JSONObject().put("type", "get_config")).optJSONObject("result") ?: JSONObject()
+                val lat = r.optDouble("latitude")
+                val lon = r.optDouble("longitude")
+                if (lat.isNaN() || lon.isNaN()) throw HaException("Home Assistant に自宅の位置が登録されていません")
+                val name = r.optString("location_name").takeIf { it.isNotBlank() && it != "Home" }
+                setHomeLocation(listOfNotNull(name, String.format("緯度%.5f・経度%.5f", lat, lon)).joinToString("、"))
+                onResult(null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onResult(e.message ?: "取得できませんでした")
+            }
+        }
+    }
+
+    /**
+     * 場所に関わる質問（「近くの」「営業時間」など）のときだけ、自宅の位置を添えて AI に送る。
+     * 機器の命令には何も足さないので、家の中での素早い処理（ローカル優先）はそのまま。
+     */
+    private fun withHomeLocation(text: String): String {
+        val loc = homeLocation.value
+        if (loc.isBlank()) return text
+        if (!LOCATION_WORDS.containsMatchIn(text)) return text
+        return "$text（参考：自宅の場所は「$loc」です。「近く」「この辺」などはここを基準に答えてください）"
     }
 
     // ================= 音声の動作ログ・マイクテスト =================
@@ -1131,6 +1173,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        private val LOCATION_WORDS = Regex(
+            "近く|近所|周辺|周り|この辺|このあたり|付近|最寄|徒歩|車で|ここから|家から|うちから|距離|何分|行き方|道順|" +
+                "営業時間|何時まで|何時から|休み|定休|店|スーパー|コンビニ|ドラッグ|薬局|病院|クリニック|歯医者|" +
+                "レストラン|ランチ|カフェ|ラーメン|居酒屋|駅|バス|電車|ガソリン|銀行|郵便局|役所|公園|イベント|祭り|映画館"
+        )
+
         /** "192.168.1.10" → "http://192.168.1.10:8123" のように補完 */
         fun normalizeUrl(input: String): String {
             var s = input.trim().trimEnd('/')

@@ -124,6 +124,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        // ---- 自宅の位置 ----
+        item { SectionTitle("自宅の位置") }
+        item { HomeLocationSettings(vm) }
+
         // ---- 外出先 ----
         item { SectionTitle("外出先からの接続（Home Assistant Cloud）") }
         item {
@@ -455,5 +459,36 @@ private fun ScreensaverSettings(vm: MainViewModel) {
             OutlinedButton(onClick = vm::showScreensaverNow) { Text("今すぐ表示して試す") }
         }
         status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+    }
+}
+
+@Composable
+private fun HomeLocationSettings(vm: MainViewModel) {
+    val loc by vm.homeLocation.collectAsState()
+    var input by rememberSaveable(loc) { mutableStateOf(loc) }
+    var note by remember { mutableStateOf<String?>(null) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "「近くのスーパーの営業時間は？」のような場所に関わる質問のとき、ここに登録した場所を基準に AI が答えます。" +
+                "機器の操作などには使いません。住所は番地まで入れなくても、町名や最寄り駅までで十分です。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            input, { input = it; note = null },
+            modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(),
+            singleLine = true,
+            label = { Text("自宅の場所（例：滋賀県大津市○○町、JR○○駅の近く）") },
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { vm.setHomeLocation(input); note = if (input.isBlank()) "自宅の位置を削除しました" else "保存しました" }) { Text("保存") }
+            OutlinedButton(onClick = { vm.useHaLocation { err -> note = err ?: "Home Assistant に登録されている位置を入れました" } }) {
+                Text("Home Assistant の位置を使う")
+            }
+        }
+        note?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        Text(
+            "※ OpenAI 連携の「Include home location」をオンにしている場合は、Home Assistant の「設定 → システム → 一般」の位置も使われます。",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
