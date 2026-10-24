@@ -1,6 +1,6 @@
-# ホームパネル（Fire HD 8 用 Home Assistant 操作アプリ）
+# ホームパネル（Fire HD 8 / iPad 用 Home Assistant 操作アプリ）
 
-Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの専用アプリです。
+Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの Android アプリと、iPad 向けの Web アプリです。
 
 ## できること
 
@@ -11,6 +11,9 @@ Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの�
 | 表示する機器の選択 | ⚙ 設定 → 表示する機器 で、名前検索しながらチェック |
 | 音声操作 | マイクボタン、または呼びかけ（ウェイクワード）で話しかける |
 | AI への質問 | 「〇〇の営業時間を教えて」などを AI が答えて読み上げ。5分以内なら会話の続きも可 |
+| 使い方 | トップの「？ 使い方」でいつでも確認。初回は自動で表示 |
+| 自動アップデート | 新しいバージョンが出ると「更新する」ボタンが表示される |
+| iPad 版 | Safari の「ホーム画面に追加」で使える Web アプリ（5章） |
 | 文字入力 | 音声と同じく命令・質問ができ、回答は読み上げ |
 | 外出先から利用 | Home Assistant Cloud（Nabu Casa）経由で自動接続。家に戻ると自動でローカルに戻る |
 | ログインは1回 | 初回だけ家の中でログイン。パスワードは保存しない |
@@ -71,31 +74,78 @@ Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの�
 - アプリが接続するのは「家の中のアドレス」と「登録したリモートURL」だけです。
 - 同じ Cloud で Google アシスタント連携もできます（「音声アシスタント → 公開」で Google に出す機器を選び、Google Home アプリで「Home Assistant Cloud by NABU CASA」をリンク）。
 
-## 2. APK の入手
+## 2. 自動アップデートの準備（最初に1回だけ）
 
-`main` ブランチに変更が入ると、GitHub Actions が自動でビルドします。
+`main` ブランチに変更が入ると、GitHub Actions が自動でビルドして「リリース」を作ります。
+アプリ（Android 版・iPad 版とも）は、この最新リリースを見て自分で更新します。
 
-1. リポジトリの「Actions」タブで、最新の「Build APK」を開きます。
-2. 下部の Artifacts から **HomePanel-apk** をダウンロードし、展開して `app-debug.apk` を取り出します。
-
-PC でビルドする場合は、Android Studio でこのフォルダを開き「Build → Build APK(s)」を実行します。
+1. **リポジトリを公開にする**：GitHub のリポジトリ画面 →「Settings」→ 一番下の「Danger Zone」→「Change visibility」→「Public」。
+   - 非公開のままだと、タブレットから更新ファイルをダウンロードできません。
+   - コードにパスワードなどの秘密情報は含まれていません。
+2. **署名鍵を登録する（Android 版用）**：「Settings → Secrets and variables → Actions → New repository secret」で、次の2つを登録します。
+   - `KEYSTORE_BASE64`：署名鍵ファイルを base64 にした文字列
+   - `KEYSTORE_PASSWORD`：署名鍵のパスワード
+   - Android は、毎回同じ鍵で署名したアプリでないと上書き更新できません。鍵ファイルは大切に保管してください（なくすと、アプリを入れ直す必要があります）。
+3. 登録後に `main` へ変更が入ると、Android 版の APK もリリースに載るようになります。
 
 ## 3. Fire HD 8 へのインストール
 
-**ADB（おすすめ）**
-1. Fire の「設定 → デバイスオプション → シリアル番号」を7回タップして、開発者オプションを出します。
-2. 「開発者オプション → ADBを有効にする」をオンにし、USBでPCとつなぎます。
-3. `adb install -r app-debug.apk` を実行します（更新時も同じコマンドで、ログイン情報は残ります）。
+**APK の入手**：リポジトリの「Releases」から最新の `HomePanel-1.0.xx.apk` をダウンロードします。
 
-**ファイルを直接コピー**
-1. APK を Fire にコピーします。
-2. 「設定 → セキュリティとプライバシー → 提供元不明のアプリ」で、ファイルアプリを許可します。
-3. コピーした APK を開きます。
+**初回のインストール**
+1. Fire の「設定 → セキュリティとプライバシー → 提供元不明のアプリ」で、Silk ブラウザ（またはファイルアプリ）を許可します。
+2. Silk で Releases ページを開いて APK をダウンロードし、開いてインストールします。
+   - これまでの `app-debug.apk`（署名鍵が違うもの）が入っている場合は、先にアンインストールしてください（最初の1回だけ）。
 
-## 4. 初回起動
+**2回目以降の更新**
+- 新しいバージョンが出ると、ホーム画面の上に「更新する」ボタンが出ます。押すとダウンロードしてインストール画面が開きます。
+- 初回だけ「このアプリからのインストールを許可」の画面が出るので、オンにして戻り、もう一度「更新する」を押します。
+- ⚙ 設定 または ？ 使い方 の「更新を確認」でも確認できます。
+
+**ADB で入れる場合**：開発者オプションで ADB を有効にし、`adb install -r HomePanel-1.0.xx.apk` を実行します。
+
+## 4. Fire HD 8 の初回起動
 1. 家の中で URL（例：`192.168.1.10` → `http://192.168.1.10:8123` に補完）、ユーザー名、パスワードを入力します。
 2. マイクの権限を許可します。
-3. ⚙ 設定で、外出先用 URL、呼びかけ、使うアシスタント、表示する機器を設定します。
+3. 使い方の画面が自動で開きます（あとからトップの「？ 使い方」でいつでも見られます）。
+4. ⚙ 設定で、外出先用 URL、呼びかけ、使うアシスタント、表示する機器を設定します。
+
+## 5. iPad 版（Web アプリ）
+
+Apple の開発者登録や Mac は不要です。Home Assistant 自身にファイルを置き、Safari で開いて「ホーム画面に追加」します。
+
+### 5-1. Home Assistant に入れる
+1. アドオン「File editor」（または Studio Code Server）で `configuration.yaml` を開き、次を追記します。
+
+```yaml
+shell_command:
+  update_homepanel: >-
+    python3 -c "import io,json,urllib.request as u,zipfile;r=json.load(u.urlopen('https://api.github.com/repos/sato3123/HA_A/releases/latest'));a=[x['browser_download_url'] for x in r['assets'] if x['name']=='homepanel-web.zip'][0];zipfile.ZipFile(io.BytesIO(u.urlopen(a).read())).extractall('/config/www/homepanel')"
+```
+
+2. 「開発者ツール → YAML → 設定を確認」で問題がないことを確認し、Home Assistant を再起動します。
+3. 「開発者ツール → アクション」で `shell_command.update_homepanel` を実行します。最新版が `/config/www/homepanel/` にダウンロードされます。
+4. `/config/www` フォルダがこれまで無かった場合は、もう一度 Home Assistant を再起動します（`/local/` が使えるようになります）。
+
+※ リポジトリが公開になっている必要があります（2章）。
+
+### 5-2. iPad で開く
+1. Safari で次のアドレスを開きます。
+   - **おすすめ**：`https://xxxx.ui.nabu.casa/local/homepanel/index.html`（Home Assistant Cloud のリモートURL）
+   - 家の中だけなら `http://192.168.1.10:8123/local/homepanel/index.html` でも開けますが、**http では音声入力が使えません**（iPad の制限で、マイクは https のページでしか使えないため）。
+2. 「Home Assistant でログイン」を押し、いつもの Home Assistant のログイン画面でログインします（最初の1回だけ）。
+3. 共有ボタン（□↑）→「ホーム画面に追加」を選ぶと、ホーム画面にアイコンができます。
+   - ログインはホーム画面のアイコンから開いた後にもう一度必要です（Safari とホーム画面のアプリはログイン情報が別のため）。
+4. マイクボタンを初めて押したときに、マイクの許可を「許可」にします。
+
+### 5-3. iPad 版でできること・違い
+- Android 版と同じく、時計と天気、機器ごとの操作、表示する機器の選択、音声操作・AI への質問、文字入力、使い方画面があります。
+- 呼びかけ（ウェイクワード）も使えますが、画面を表示している間だけです。iPad の「設定 → 画面表示と明るさ → 自動ロック」を「しない」にすると、常時表示のパネルとして使えます。
+- 外出先でも、同じ https のアドレスでそのまま使えます。
+
+### 5-4. iPad 版の更新
+- 新しいバージョンが出ると、画面上部に「更新する」ボタンが出ます。押すと Home Assistant が `shell_command.update_homepanel` で新しいファイルに入れ替え、画面が自動で読み込み直されます。
+- Home Assistant の「開発者ツール → アクション」から同じアクションを実行しても更新できます。
 
 ## ファイル構成
 - `NetworkGuard.kt`：ローカル/Cloud の自動切り替え、接続先を限定する DNS
@@ -106,8 +156,11 @@ PC でビルドする場合は、Android Studio でこのフォルダを開き�
 - `Ui.kt`：ログイン・ホーム（時計/天気/音声）画面
 - `Controls.kt`：機器の種類ごとのタイルと詳細パネル
 - `Settings.kt`：設定画面
+- `Help.kt`：使い方画面と更新の案内
+- `Updater.kt`：GitHub のリリースを確認してダウンロード・インストール
+- `web/`：iPad 版（Web アプリ）。`app.js` が本体、`index.html` はバージョン付きで本体を読み込むだけ
 
 ## 注意
 - ログインを何度も失敗すると、HA の設定によってはタブレットの IP がブロックされます（`ip_bans.yaml`）。
 - 呼びかけ待ち受け中は、音声を家のサーバーへ送り続けます（1時間あたり約115MB、家の中のみ）。
-- アプリのアイコンは未設定です（Android 標準アイコン）。
+- 更新の確認では GitHub（api.github.com とダウンロード用サーバー）にだけ接続します。
