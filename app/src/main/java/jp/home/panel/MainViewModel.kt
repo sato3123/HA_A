@@ -32,6 +32,7 @@ import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import android.media.AudioManager
 
 sealed interface Screen {
     data object Loading : Screen
@@ -146,6 +147,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         start()
+        // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）
+        viewModelScope.launch {
+            delay(1_000)
+            while (isActive) {
+                checkTimers()
+                val idle = System.currentTimeMillis() - lastInteraction
+                if (ssEnabled.value && !screensaver.value && foreground && screen.value == Screen.Home &&
+                    ringing.value.isEmpty() && !manualBusy && idle > ssMinutes.value * 60_000L &&
+                    voice.value !is VoiceState.Listening
+                ) {
+                    screensaver.value = true
+                }
+                delay(500)
+            }
+        }
+        viewModelScope.launch {
+            delay(3_000)
+            while (isActive) {
+                loadPhotos()
+                delay(6 * 60 * 60 * 1000L)
+            }
+        }
         // 起動して少し後と、その後6時間ごとに新しいバージョンを確認
         viewModelScope.launch {
             delay(15_000)
@@ -242,7 +265,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     c.connect(validAccessToken(r.base, local))
                     client = c
-                    assistant = VoiceAssistant(r.base)
+                    assistant = VoiceAssistant(r.base, ::addLog)
                     conn.value = Conn.CONNECTED
                     message.value = null
                     backoff = 2_000L
@@ -786,26 +809,76 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 continue
             }
             try {
-                a.run(c, wakeWord = true, pipeline = effectivePipeline, onState = ::onVoice)
+                val heard = a.listen(c, wakeWord = true, pipeline = effectivePipeline, onState = ::onVoice)
+                if (heard != null) handleHeard(c, a, heard)
                 delay(300)
             } catch (e: TimeoutCancellationException) {
                 delay(300)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                addLog("失敗：${e.message}")
                 voice.value = VoiceState.Failed(e.message ?: "呼びかけの待ち受けに失敗しました")
                 delay(5_000)
             }
         }
     }
 
-    /** マイクボタン：聞き取り中なら終了、それ以外なら聞き取り開始 */
+    /** 聞き取った文字を処理：タイマーなどアプリの命令はここで行い、それ以外は AI に渡す */
+    private suspend fun handleHeard(c: HaClient, a: VoiceAssistant, heard: String) {
+        val cmd = parseTimerCommand(heard)
+        if (cmd == null) {
+            a.respond(c, heard, effectivePipeline, ::onVoice)
+            return
+        }
+        addLog("アプリの命令として処理：$cmd")
+        val reply = when (cmd) {
+            is TimerCommand.Start -> {
+                addTimer(cmd.seconds, cmd.label)
+                (if (cmd.label.isBlank()) "" else "${cmd.label}の") + "${speakRemaining(cmd.seconds * 1000)}のタイマーをセットしました"
+            }
+            TimerCommand.Cancel -> {
+                val n = timers.value.size + ringing.value.size
+                stopAlarm()
+                cancelAllTimers()
+                if (n == 0) "動いているタイマーはありません" else "タイマーを止めました"
+            }
+            TimerCommand.Remaining -> {
+                val now = System.currentTimeMillis()
+                val list = timers.value
+                if (list.isEmpty()) "動いているタイマーはありません"
+                else list.joinToString("、") { t -> (t.label.ifBlank { "タイマー" }) + "は残り" + speakRemaining(t.remaining(now)) } + "です"
+            }
+        }
+        a.speak(c, heard, reply, effectivePipeline, ::onVoice)
+    }
+
+    /**
+     * マイクボタン：
+     *  - 聞き取り中 → 聞き取りを終える
+     *  - 読み上げ中 → 読み上げを止めて、すぐに次の聞き取りを始める
+     *  - それ以外   → 聞き取りを始める
+     */
     fun onMicPressed() {
-        if (voice.value == VoiceState.Listening) {
+        onUserInteraction()
+        val v = voice.value
+        if (v == VoiceState.Listening) {
             assistant?.stopListening()
             return
         }
-        if (manualBusy) return
+        if (manualBusy) {
+            if (assistant?.isSpeaking == true || v is VoiceState.Speaking) {
+                assistant?.stopSpeaking()
+                pendingListen = true
+            }
+            return
+        }
+        startManualListen()
+    }
+
+    private var pendingListen = false
+
+    private fun startManualListen() {
         val c = client ?: return
         val a = assistant ?: return
         manualBusy = true
@@ -813,14 +886,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 wakeJob?.cancelAndJoin()
                 wakeJob = null
-                a.run(c, wakeWord = false, pipeline = effectivePipeline, onState = ::onVoice)
+                a.stopSpeaking()
+                val heard = a.listen(c, wakeWord = false, pipeline = effectivePipeline, onState = ::onVoice)
+                if (heard != null) handleHeard(c, a, heard)
             } catch (e: TimeoutCancellationException) {
                 voice.value = VoiceState.Failed("時間切れになりました")
             } catch (e: CancellationException) {
                 voice.value = VoiceState.Idle
                 throw e
             } catch (e: Exception) {
+                addLog("失敗：${e.message}")
                 voice.value = VoiceState.Failed(e.message ?: "音声操作に失敗しました")
+            } finally {
+                manualBusy = false
+                if (pendingListen) {
+                    pendingListen = false
+                    startManualListen()
+                } else {
+                    refreshWakeLoop()
+                }
+            }
+        }
+    }
+
+    /** 文字で命令・質問（回答は読み上げ） */
+    fun sendText(text: String) {
+        onUserInteraction()
+        if (text.isBlank()) return
+        if (manualBusy) {
+            if (assistant?.isSpeaking == true) assistant?.stopSpeaking() else return
+        }
+        val c = client ?: return
+        val a = assistant ?: return
+        manualBusy = true
+        voiceJob = viewModelScope.launch {
+            try {
+                wakeJob?.cancelAndJoin()
+                wakeJob = null
+                handleHeard(c, a, text.trim())
+            } catch (e: TimeoutCancellationException) {
+                voice.value = VoiceState.Failed("時間切れになりました")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                addLog("失敗：${e.message}")
+                voice.value = VoiceState.Failed(e.message ?: "失敗しました")
             } finally {
                 manualBusy = false
                 refreshWakeLoop()
@@ -828,26 +938,178 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 文字で命令・質問（回答は読み上げ） */
-    fun sendText(text: String) {
-        if (text.isBlank() || manualBusy) return
-        val c = client ?: return
-        val a = assistant ?: return
+    // ================= 音声の動作ログ・マイクテスト =================
+
+    val voiceLog = MutableStateFlow<List<String>>(emptyList())
+    private val logFmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.JAPAN)
+
+    fun addLog(line: String) {
+        val entry = logFmt.format(java.util.Date()) + " " + line
+        viewModelScope.launch { voiceLog.value = (listOf(entry) + voiceLog.value).take(60) }
+    }
+
+    val micLevel = MutableStateFlow<Int?>(null)
+    val micTestResult = MutableStateFlow<String?>(null)
+
+    fun runMicTest() {
+        val a = assistant ?: VoiceAssistant(route.value?.base ?: "", ::addLog)
+        if (manualBusy) return
         manualBusy = true
-        voiceJob = viewModelScope.launch {
+        viewModelScope.launch {
             try {
                 wakeJob?.cancelAndJoin()
                 wakeJob = null
-                a.runText(c, text.trim(), effectivePipeline, ::onVoice)
-            } catch (e: TimeoutCancellationException) {
-                voice.value = VoiceState.Failed("時間切れになりました")
+                micTestResult.value = "5秒間、話しかけてください…"
+                val peak = a.micTest(5) { micLevel.value = it }
+                micTestResult.value = when {
+                    peak < 3 -> "音がほとんど入っていません（最大 $peak）。他のアプリがマイクを使っていないか、Fire の Alexa ハンズフリーがオフか確認してください"
+                    peak < 15 -> "音が小さめです（最大 $peak）。もう少し近くで話すと認識しやすくなります"
+                    else -> "マイクは正常です（最大 $peak）"
+                }
+            } catch (e: Exception) {
+                micTestResult.value = e.message
+            } finally {
+                micLevel.value = null
+                manualBusy = false
+                refreshWakeLoop()
+            }
+        }
+    }
+
+    // ================= タイマー =================
+
+    val timers = MutableStateFlow(timersFromJson(prefs.timersJson).filter { !it.running || it.endAt!! > System.currentTimeMillis() - 60_000 })
+    /** 時間になって鳴っているタイマー */
+    val ringing = MutableStateFlow<List<PanelTimer>>(emptyList())
+    private var ringtone: android.media.Ringtone? = null
+
+    private fun saveTimers() { prefs.timersJson = timersToJson(timers.value) }
+
+    fun addTimer(seconds: Long, label: String) {
+        onUserInteraction()
+        val now = System.currentTimeMillis()
+        val t = PanelTimer(now, label.trim(), seconds * 1000, now + seconds * 1000, seconds * 1000)
+        timers.value = (timers.value + t).sortedBy { it.remaining(now) }
+        saveTimers()
+    }
+
+    fun cancelTimer(id: Long) {
+        timers.value = timers.value.filter { it.id != id }
+        saveTimers()
+    }
+
+    fun cancelAllTimers() {
+        timers.value = emptyList()
+        saveTimers()
+    }
+
+    fun pauseResumeTimer(id: Long) {
+        val now = System.currentTimeMillis()
+        timers.value = timers.value.map {
+            if (it.id != id) it
+            else if (it.running) it.copy(endAt = null, remainingMs = it.remaining(now))
+            else it.copy(endAt = now + it.remainingMs)
+        }
+        saveTimers()
+    }
+
+    private fun checkTimers() {
+        val now = System.currentTimeMillis()
+        val done = timers.value.filter { it.running && it.endAt!! <= now }
+        if (done.isEmpty()) return
+        timers.value = timers.value - done.toSet()
+        saveTimers()
+        ringing.value = ringing.value + done
+        addLog("タイマー終了：" + done.joinToString { it.label.ifBlank { formatRemaining(it.totalMs) } })
+        startAlarm()
+        onUserInteraction() // スクリーンセーバーを消して知らせる
+    }
+
+    private fun startAlarm() {
+        if (ringtone?.isPlaying == true) return
+        runCatching {
+            val ctx = getApplication<Application>()
+            val uri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM)
+                ?: android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            ringtone = android.media.RingtoneManager.getRingtone(ctx, uri)?.apply {
+                if (android.os.Build.VERSION.SDK_INT >= 28) isLooping = true
+                play()
+            }
+        }
+        // 着信音が無い端末でも鳴るように（最大2分）
+        viewModelScope.launch {
+            val until = System.currentTimeMillis() + 120_000
+            while (ringing.value.isNotEmpty() && System.currentTimeMillis() < until) {
+                if (ringtone?.isPlaying != true) runCatching {
+                    val tg = android.media.ToneGenerator(AudioManager.STREAM_ALARM, 90)
+                    tg.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 800)
+                    delay(1_000)
+                    tg.release()
+                } else delay(1_000)
+            }
+            if (ringing.value.isNotEmpty()) stopAlarm()
+        }
+    }
+
+    fun stopAlarm() {
+        runCatching { ringtone?.stop() }
+        ringtone = null
+        ringing.value = emptyList()
+    }
+
+    // ================= スクリーンセーバー =================
+
+    val ssEnabled = MutableStateFlow(prefs.ssEnabled)
+    val ssMinutes = MutableStateFlow(prefs.ssMinutes)
+    val ssInterval = MutableStateFlow(prefs.ssInterval)
+    val ssAlbum = MutableStateFlow(prefs.ssAlbum)
+    val photos = MutableStateFlow<List<String>>(emptyList())
+    val photoStatus = MutableStateFlow<String?>(null)
+    val screensaver = MutableStateFlow(false)
+    @Volatile private var lastInteraction = System.currentTimeMillis()
+    private val photoHttp = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+
+    fun onUserInteraction() {
+        lastInteraction = System.currentTimeMillis()
+        if (screensaver.value) screensaver.value = false
+    }
+
+    fun setScreensaver(enabled: Boolean? = null, minutes: Int? = null, interval: Int? = null) {
+        enabled?.let { prefs.ssEnabled = it; ssEnabled.value = it }
+        minutes?.let { prefs.ssMinutes = it; ssMinutes.value = it }
+        interval?.let { prefs.ssInterval = it; ssInterval.value = it }
+    }
+
+    fun showScreensaverNow() {
+        screensaver.value = true
+    }
+
+    fun setAlbum(url: String) {
+        prefs.ssAlbum = url.trim()
+        ssAlbum.value = url.trim()
+        loadPhotos()
+    }
+
+    /** Google フォトの共有アルバムのページから、写真の URL を取り出す */
+    fun loadPhotos() {
+        val url = ssAlbum.value
+        if (url.isBlank()) {
+            photos.value = emptyList()
+            photoStatus.value = null
+            return
+        }
+        viewModelScope.launch {
+            photoStatus.value = "アルバムを読み込んでいます…"
+            try {
+                val list = withContext(Dispatchers.IO) { fetchAlbum(photoHttp, url) }
+                photos.value = list.shuffled()
+                photoStatus.value = if (list.isEmpty()) "写真が見つかりませんでした。共有リンク（photos.app.goo.gl/…）か確認してください"
+                else "${list.size}枚の写真を読み込みました"
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                voice.value = VoiceState.Failed(e.message ?: "失敗しました")
-            } finally {
-                manualBusy = false
-                refreshWakeLoop()
+                photoStatus.value = "アルバムを読み込めませんでした：${e.message}"
             }
         }
     }

@@ -83,13 +83,13 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
     Card(
         onClick = { if (simple) vm.primaryAction(e) else onDetail() },
         enabled = !e.unavailable,
-        modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 92.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (active) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             EntityHeader(e, vm, large = false)
             if (!e.unavailable) {
                 when (e.domain) {

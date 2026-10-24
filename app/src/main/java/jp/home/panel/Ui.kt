@@ -79,6 +79,7 @@ fun App(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () -> Unit) {
             is Screen.Blocked -> BlockedScreen(s.reason, vm)
             Screen.Home -> HomeScreen(vm, onMic, onEnableWake)
         }
+        AlarmOverlay(vm)
     }
 }
 
@@ -186,6 +187,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
 
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showAuto by rememberSaveable { mutableStateOf(false) }
+    var showTimers by rememberSaveable { mutableStateOf(false) }
     // 初めてホーム画面を開いたときは使い方を自動で表示
     var showHelp by rememberSaveable { mutableStateOf(!vm.helpShown) }
     var detailId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -214,10 +216,10 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         { GridItemSpan(it.maxLineSpan) }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(170.dp),
-        contentPadding = PaddingValues(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        columns = GridCells.Adaptive(140.dp),
+        contentPadding = PaddingValues(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
         item(span = { full(this) }) {
@@ -225,6 +227,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 ConnectionBadge(conn, route)
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = { showHelp = true }) { Text("？ 使い方") }
+                TextButton(onClick = { showTimers = true }) { Text("⏱ タイマー") }
                 TextButton(onClick = { showAuto = true }) { Text("⏰ 自動化") }
                 TextButton(onClick = { showSettings = true }) { Text("⚙ 設定") }
             }
@@ -244,6 +247,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 onSend = { vm.sendText(text); text = "" },
             )
         }
+        item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
         message?.let { m ->
             item(span = { full(this) }) {
                 Text(m, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -293,6 +297,9 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         }
     }
 
+    if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })
+    ScreensaverOverlay(vm)
+
     val detail = detailId?.let { id -> entities.firstOrNull { it.entityId == id } }
     if (detail != null) {
         ModalBottomSheet(
@@ -331,85 +338,86 @@ private fun ConnectionBadge(conn: Conn, route: Route?) {
 // ================= 時計と天気 =================
 
 @Composable
-private fun ClockWeather(weather: Entity?, forecast: List<JSONObject>) {
+fun rememberNow(): LocalDateTime {
     val now by produceState(LocalDateTime.now()) {
         while (true) {
             value = LocalDateTime.now()
             delay(1_000 - System.currentTimeMillis() % 1_000)
         }
     }
+    return now
+}
+
+/** 時計と天気（コンパクト：1行にまとめて、機器を多く表示できるようにする） */
+@Composable
+private fun ClockWeather(weather: Entity?, forecast: List<JSONObject>) {
+    val now = rememberNow()
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        if (maxWidth > 640.dp) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ClockBlock(now, Modifier.weight(1f))
+        if (maxWidth > 560.dp) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                ClockBlock(now)
                 WeatherBlock(weather, forecast, Modifier.weight(1f))
             }
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ClockBlock(now, Modifier.fillMaxWidth())
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                ClockBlock(now)
                 WeatherBlock(weather, forecast, Modifier.fillMaxWidth())
             }
         }
     }
 }
 
-private val TIME_FMT = DateTimeFormatter.ofPattern("H:mm", Locale.JAPAN)
-private val DATE_FMT = DateTimeFormatter.ofPattern("M月d日（E）", Locale.JAPAN)
+val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("H:mm", Locale.JAPAN)
+val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("M月d日（E）", Locale.JAPAN)
 private val DOW_FMT = DateTimeFormatter.ofPattern("E", Locale.JAPAN)
 
 @Composable
-private fun ClockBlock(now: LocalDateTime, modifier: Modifier) {
-    Column(modifier) {
-        Text(now.format(TIME_FMT), fontSize = 104.sp, fontWeight = FontWeight.Light, lineHeight = 108.sp)
-        Text(now.format(DATE_FMT), fontSize = 28.sp)
+private fun ClockBlock(now: LocalDateTime) {
+    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(now.format(TIME_FMT), fontSize = 52.sp, fontWeight = FontWeight.Light, lineHeight = 56.sp)
+        Text(now.format(DATE_FMT), fontSize = 17.sp, modifier = Modifier.padding(bottom = 8.dp))
     }
 }
 
 @Composable
-private fun WeatherBlock(weather: Entity?, forecast: List<JSONObject>, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+fun WeatherBlock(weather: Entity?, forecast: List<JSONObject>, modifier: Modifier, showDays: Boolean = true) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (weather == null || weather.unavailable) {
-            Text(
-                "天気の情報がありません\n（Home Assistant に天気の連携を追加してください）",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            return@Column
+            Text("天気の情報がありません", style = MaterialTheme.typography.bodySmall)
+            return@Row
         }
         val unit = weather.attributes.optString("temperature_unit", "°C")
         val today = LocalDate.now()
         val days = forecast.mapNotNull { f -> forecastDate(f)?.let { it to f } }
         val todayF = days.firstOrNull { it.first == today }?.second ?: days.firstOrNull()?.second
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(conditionEmoji(weather.state), fontSize = 72.sp)
-            Spacer(Modifier.size(12.dp))
-            Column {
+        Text(conditionEmoji(weather.state), fontSize = 36.sp)
+        Column {
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 weather.attributes.num("temperature")?.let {
-                    Text("${fmt(it)}$unit", fontSize = 52.sp, fontWeight = FontWeight.Light)
+                    Text("${fmt(it)}$unit", fontSize = 26.sp, fontWeight = FontWeight.Light)
                 }
-                Text(conditionLabel(weather.state), fontSize = 22.sp)
-                val sub = listOfNotNull(
-                    todayF?.num("temperature")?.let { "最高 ${fmt(it)}°" },
-                    todayF?.num("templow")?.let { "最低 ${fmt(it)}°" },
-                    todayF?.num("precipitation_probability")?.let { "降水 ${fmt(it)}%" },
-                    weather.attributes.num("humidity")?.let { "湿度 ${fmt(it)}%" },
-                )
-                if (sub.isNotEmpty()) Text(sub.joinToString("　"), style = MaterialTheme.typography.bodyMedium)
+                Text(conditionLabel(weather.state), fontSize = 15.sp, modifier = Modifier.padding(bottom = 3.dp))
             }
+            val sub = listOfNotNull(
+                todayF?.num("temperature")?.let { "最高${fmt(it)}°" },
+                todayF?.num("templow")?.let { "最低${fmt(it)}°" },
+                todayF?.num("precipitation_probability")?.let { "☂${fmt(it)}%" },
+            )
+            if (sub.isNotEmpty()) Text(sub.joinToString(" "), style = MaterialTheme.typography.labelMedium)
         }
-        val upcoming = days.filter { it.first.isAfter(today) }.take(4)
-        if (upcoming.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                upcoming.forEach { (date, f) ->
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(date.format(DOW_FMT), style = MaterialTheme.typography.labelLarge)
-                        Text(conditionEmoji(f.optString("condition")), fontSize = 26.sp)
-                        Text(
-                            listOfNotNull(f.num("temperature")?.let { fmt(it) }, f.num("templow")?.let { fmt(it) })
-                                .joinToString("/") + "°",
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
+        if (showDays) {
+            val upcoming = days.filter { it.first.isAfter(today) }.take(4)
+            Spacer(Modifier.size(4.dp))
+            upcoming.forEach { (date, f) ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(date.format(DOW_FMT), style = MaterialTheme.typography.labelSmall)
+                    Text(conditionEmoji(f.optString("condition")), fontSize = 18.sp)
+                    Text(
+                        listOfNotNull(f.num("temperature")?.let { fmt(it) }, f.num("templow")?.let { fmt(it) })
+                            .joinToString("/") + "°",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
         }
@@ -478,11 +486,11 @@ private fun VoicePanel(
                     onClick = onMic,
                     enabled = enabled,
                     shape = CircleShape,
-                    modifier = Modifier.size(72.dp),
+                    modifier = Modifier.size(56.dp),
                     contentPadding = PaddingValues(0.dp),
                     colors = if (listening) ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
                     else ButtonDefaults.buttonColors(),
-                ) { Text(if (listening) "■" else "🎤", fontSize = 28.sp) }
+                ) { Text(if (listening) "■" else if (voice is VoiceState.Speaking) "🔇" else "🎤", fontSize = 22.sp) }
                 Spacer(Modifier.size(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -492,12 +500,13 @@ private fun VoicePanel(
                             VoiceState.WaitingWake -> "呼びかけを待っています（マイクボタンでもすぐに話せます）"
                             VoiceState.Listening -> "聞いています…（話し終わったら■で終了）"
                             is VoiceState.Processing -> "「${voice.heard}」を処理しています…"
+                            is VoiceState.Speaking -> "「${voice.heard}」🔊（マイクを押すと止めて次を聞けます）"
                             is VoiceState.Done -> "「${voice.heard}」"
                             is VoiceState.Failed -> voice.message
                         },
                         style = MaterialTheme.typography.bodyLarge,
                     )
-                    val reply = (voice as? VoiceState.Done)?.reply
+                    val reply = (voice as? VoiceState.Done)?.reply ?: (voice as? VoiceState.Speaking)?.reply
                         ?: lastDone?.takeIf { voice == VoiceState.WaitingWake || voice == VoiceState.Idle }?.let {
                             "前回：「${it.heard}」→ ${it.reply}"
                         }

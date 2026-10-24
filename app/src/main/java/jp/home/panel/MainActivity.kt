@@ -59,6 +59,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 画面に触れたらスクリーンセーバーを消し、操作していない時間を数え直す */
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        vm.onUserInteraction()
+        return super.dispatchTouchEvent(ev)
+    }
+
     override fun onResume() {
         super.onResume()
         vm.setForeground(true)

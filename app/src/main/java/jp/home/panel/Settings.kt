@@ -182,6 +182,13 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        item { Text("呼びかけに反応しないときは、下のマイクのテストと動作ログで原因を確認できます。", style = MaterialTheme.typography.bodySmall) }
+        item { VoiceDiagnostics(vm) }
+
+        // ---- スクリーンセーバー ----
+        item { SectionTitle("スクリーンセーバー") }
+        item { ScreensaverSettings(vm) }
+
         // ---- 天気 ----
         if (weathers.size > 1) {
             item { SectionTitle("天気") }
@@ -401,5 +408,52 @@ private fun AccountSection(vm: MainViewModel, onLogout: () -> Unit) {
         }
         Spacer(Modifier.size(8.dp))
         OutlinedButton(onClick = onLogout) { Text("ログアウト（すべて）") }
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ScreensaverSettings(vm: MainViewModel) {
+    val enabled by vm.ssEnabled.collectAsState()
+    val minutes by vm.ssMinutes.collectAsState()
+    val interval by vm.ssInterval.collectAsState()
+    val album by vm.ssAlbum.collectAsState()
+    val status by vm.photoStatus.collectAsState()
+    var input by rememberSaveable(album) { mutableStateOf(album) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SwitchRow(
+            "操作していないときに写真を表示する",
+            enabled,
+            sub = "時計・天気・タイマーも一緒に表示します。画面に触れると元に戻ります。写真を設定しない場合は時計だけを表示します。",
+        ) { vm.setScreensaver(enabled = it) }
+        Text("表示するまでの時間", style = MaterialTheme.typography.labelLarge)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(1, 3, 5, 10, 15, 30).forEach { m ->
+                androidx.compose.material3.FilterChip(minutes == m, { vm.setScreensaver(minutes = m) }, { Text("${m}分") })
+            }
+        }
+        Text("写真を切り替える間隔", style = MaterialTheme.typography.labelLarge)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(10, 20, 30, 60, 300).forEach { sec ->
+                androidx.compose.material3.FilterChip(interval == sec, { vm.setScreensaver(interval = sec) }, { Text(if (sec >= 60) "${sec / 60}分" else "${sec}秒") })
+            }
+        }
+        Text(
+            "Google フォトのアルバムを「共有」して「リンクを作成」し、そのリンク（https://photos.app.goo.gl/…）を貼り付けてください。" +
+                "Google の仕様変更で、共有リンクにしたアルバムだけ表示できます（非公式の方法のため、Google 側の変更で使えなくなることがあります）。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            input, { input = it },
+            modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Google フォトの共有アルバムのリンク") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { vm.setAlbum(input) }) { Text("保存して読み込む") }
+            OutlinedButton(onClick = vm::showScreensaverNow) { Text("今すぐ表示して試す") }
+        }
+        status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
     }
 }

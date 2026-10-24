@@ -64,6 +64,25 @@ class UiPrefs(context: Context) {
         p.edit().putString(key, j.toString()).apply()
     }
 
+    /** タイマー（JSON） */
+    var timersJson: String?
+        get() = p.getString("timers", null)
+        set(v) = p.edit().putString("timers", v).apply()
+
+    // ---- スクリーンセーバー ----
+    var ssEnabled: Boolean
+        get() = p.getBoolean("ss_enabled", false)
+        set(v) = p.edit().putBoolean("ss_enabled", v).apply()
+    var ssMinutes: Int
+        get() = p.getInt("ss_minutes", 5)
+        set(v) = p.edit().putInt("ss_minutes", v).apply()
+    var ssInterval: Int
+        get() = p.getInt("ss_interval", 20)
+        set(v) = p.edit().putInt("ss_interval", v).apply()
+    var ssAlbum: String
+        get() = p.getString("ss_album", "") ?: ""
+        set(v) = p.edit().putString("ss_album", v).apply()
+
     /** 使い方を一度表示したか */
     var helpShown: Boolean
         get() = p.getBoolean("help_shown", false)
