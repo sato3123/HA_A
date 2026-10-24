@@ -483,9 +483,76 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         roomFilter.value = key
     }
 
+    /** 配色は、いま選んでいる表示のユーザーごとに覚える */
     fun setTheme(id: String) {
         prefs.themeId = id
         themeId.value = id
+        updateProfile { it.copy(themeId = id) }
+    }
+
+    // ================= 表示のユーザー（家族それぞれの表示） =================
+
+    val profiles = MutableStateFlow(
+        profilesFromJson(prefs.profilesJson).ifEmpty { listOf(defaultProfile(prefs.themeId)) }
+    )
+    val activeProfileId = MutableStateFlow(
+        prefs.activeProfile?.takeIf { id -> profiles.value.any { it.id == id } } ?: profiles.value.first().id
+    )
+    val activeProfile: StateFlow<Profile> = combine(profiles, activeProfileId) { list, id ->
+        list.firstOrNull { it.id == id } ?: list.first()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, profiles.value.first())
+
+    private fun saveProfiles(list: List<Profile>) {
+        profiles.value = list
+        prefs.profilesJson = profilesToJson(list)
+    }
+
+    private fun updateProfile(change: (Profile) -> Profile) {
+        val id = activeProfileId.value
+        saveProfiles(profiles.value.map { if (it.id == id) change(it) else it })
+    }
+
+    fun switchProfile(id: String) {
+        val p = profiles.value.firstOrNull { it.id == id } ?: return
+        activeProfileId.value = id
+        prefs.activeProfile = id
+        prefs.themeId = p.themeId
+        themeId.value = p.themeId
+        onUserInteraction()
+    }
+
+    fun addProfile(name: String) {
+        val n = name.trim().ifBlank { return }
+        val p = Profile("p_" + System.currentTimeMillis(), n, defaultSections(), themeId.value)
+        saveProfiles(profiles.value + p)
+        switchProfile(p.id)
+    }
+
+    fun renameProfile(id: String, name: String) {
+        val n = name.trim().ifBlank { return }
+        saveProfiles(profiles.value.map { if (it.id == id) it.copy(name = n) else it })
+    }
+
+    fun deleteProfile(id: String) {
+        if (profiles.value.size <= 1) return
+        val rest = profiles.value.filter { it.id != id }
+        saveProfiles(rest)
+        if (activeProfileId.value == id) switchProfile(rest.first().id)
+    }
+
+    fun moveSection(section: HomeSection, delta: Int) = updateProfile { p ->
+        val list = p.sections.toMutableList()
+        val i = list.indexOfFirst { it.section == section }
+        val j = (i + delta).coerceIn(0, list.size - 1)
+        if (i >= 0 && i != j) {
+            val x = list.removeAt(i)
+            list.add(j, x)
+        }
+        p.copy(sections = list)
+    }
+
+    fun toggleSection(section: HomeSection) = updateProfile { p ->
+        p.copy(sections = p.sections.map { if (it.section == section) it.copy(visible = !it.visible) else it })
     }
 
     // ================= アカウント（普段使い／管理者） =================
@@ -972,6 +1039,94 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 manualBusy = false
                 refreshWakeLoop()
             }
+        }
+    }
+
+    // ================= 設定の書き出し・読み込み =================
+
+    /** Activity にファイルの保存・選択の画面を開いてもらう（"export" / "import"） */
+    val fileRequest = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val backupMessage = MutableStateFlow<String?>(null)
+
+    fun requestFile(kind: String) {
+        backupMessage.value = null
+        fileRequest.tryEmit(kind)
+    }
+
+    fun exportSettings(): String = prefs.exportJson()
+
+    /** 読み込めたら true（その後アプリを再起動して反映する） */
+    fun importSettings(text: String): Boolean = try {
+        prefs.importJson(text)
+        backupMessage.value = "設定を読み込みました。アプリを再起動します…"
+        true
+    } catch (e: Exception) {
+        backupMessage.value = "読み込めませんでした：${e.message}"
+        false
+    }
+
+    fun onExported(ok: Boolean, err: String? = null) {
+        backupMessage.value = if (ok) "設定を書き出しました" else "書き出せませんでした：$err"
+    }
+
+    // ================= 機器の動作の詳細 =================
+
+    data class HistoryItem(val time: java.time.LocalDateTime, val state: String)
+
+    val infoFor = MutableStateFlow<String?>(null)
+    val history = MutableStateFlow<List<HistoryItem>?>(null)
+    val historyStatus = MutableStateFlow<String?>(null)
+
+    fun showInfo(entityId: String) {
+        onUserInteraction()
+        infoFor.value = entityId
+        history.value = null
+        historyStatus.value = "履歴を読み込んでいます…"
+        viewModelScope.launch { loadHistory(entityId) }
+    }
+
+    fun hideInfo() {
+        infoFor.value = null
+    }
+
+    /** 直近24時間の状態の変化（Home Assistant の履歴。通常のログインで読める） */
+    private suspend fun loadHistory(entityId: String) {
+        val r = route.value ?: return
+        val local = store.baseUrl ?: return
+        try {
+            val zone = ZoneId.systemDefault()
+            val now = java.time.ZonedDateTime.now(zone)
+            val start = java.net.URLEncoder.encode(now.minusHours(24).toOffsetDateTime().toString(), "UTF-8")
+            val end = java.net.URLEncoder.encode(now.toOffsetDateTime().toString(), "UTF-8")
+            val token = validAccessToken(r.base, local)
+            val url = "${r.base}/api/history/period/$start?filter_entity_id=$entityId&end_time=$end&minimal_response&no_attributes"
+            val body = withContext(Dispatchers.IO) {
+                http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $token").build()).execute().use { resp ->
+                    if (!resp.isSuccessful) throw HaException("履歴を読めませんでした (HTTP ${resp.code})")
+                    resp.body?.string().orEmpty()
+                }
+            }
+            val outer = JSONArray(body)
+            val arr = if (outer.length() > 0) outer.optJSONArray(0) ?: JSONArray() else JSONArray()
+            val items = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.mapNotNull { j ->
+                val t = j.optString("last_changed").ifBlank { j.optString("last_updated") }
+                val time = runCatching { java.time.OffsetDateTime.parse(t).atZoneSameInstant(zone).toLocalDateTime() }.getOrNull()
+                    ?: return@mapNotNull null
+                HistoryItem(time, j.optString("state"))
+            }
+            // 同じ状態が続いている記録はまとめる
+            val merged = items.fold(mutableListOf<HistoryItem>()) { acc, it ->
+                if (acc.isEmpty() || acc.last().state != it.state) acc.add(it)
+                acc
+            }
+            if (infoFor.value == entityId) {
+                history.value = merged.reversed()
+                historyStatus.value = if (merged.isEmpty()) "直近24時間の記録はありません" else null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (infoFor.value == entityId) historyStatus.value = e.message ?: "履歴を読めませんでした"
         }
     }
 

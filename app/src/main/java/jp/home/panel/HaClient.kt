@@ -14,7 +14,13 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-data class Entity(val entityId: String, val state: String, val attributes: JSONObject) {
+data class Entity(
+    val entityId: String,
+    val state: String,
+    val attributes: JSONObject,
+    val lastChanged: String = "",
+    val lastUpdated: String = "",
+) {
     val domain: String get() = entityId.substringBefore('.')
     val name: String get() = attributes.optString("friendly_name", entityId)
     val isOn: Boolean
@@ -171,4 +177,7 @@ class HaClient(private val baseUrl: String, private val http: OkHttpClient) {
 }
 
 private fun JSONObject.toEntity() =
-    Entity(getString("entity_id"), optString("state"), optJSONObject("attributes") ?: JSONObject())
+    Entity(
+        getString("entity_id"), optString("state"), optJSONObject("attributes") ?: JSONObject(),
+        optString("last_changed"), optString("last_updated"),
+    )

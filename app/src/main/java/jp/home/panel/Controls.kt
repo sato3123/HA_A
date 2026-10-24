@@ -124,6 +124,12 @@ private fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
             )
             Text(stateLabel(e), style = MaterialTheme.typography.bodyMedium)
         }
+        // 動作の詳細（状態・最後に変わった時刻・履歴）
+        androidx.compose.material3.TextButton(
+            onClick = { vm.showInfo(e.entityId) },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+            modifier = Modifier.size(36.dp),
+        ) { Text("ⓘ", fontSize = 18.sp) }
         if (!e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean")) {
             Switch(
                 checked = e.state == "on",

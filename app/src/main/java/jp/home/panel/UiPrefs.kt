@@ -74,6 +74,14 @@ class UiPrefs(context: Context) {
         get() = if (p.getBoolean("cal_configured", false)) p.getStringSet("calendars", emptySet())!!.toSet() else null
         set(v) = p.edit().putBoolean("cal_configured", v != null).putStringSet("calendars", v ?: emptySet()).apply()
 
+    /** 表示のユーザー（JSON）と、いま選んでいるユーザー */
+    var profilesJson: String?
+        get() = p.getString("profiles", null)
+        set(v) = p.edit().putString("profiles", v).apply()
+    var activeProfile: String?
+        get() = p.getString("active_profile", null)
+        set(v) = p.edit().putString("active_profile", v).apply()
+
     /** タイマー（JSON） */
     var timersJson: String?
         get() = p.getString("timers", null)
@@ -92,6 +100,56 @@ class UiPrefs(context: Context) {
     var ssAlbum: String
         get() = p.getString("ss_album", "") ?: ""
         set(v) = p.edit().putString("ss_album", v).apply()
+
+    /**
+     * 設定の書き出し（JSON）。この SharedPreferences には接続情報（ログイン・外出先用URL）は入っていない
+     * （それらは暗号化した別の保存場所にある）。
+     */
+    fun exportJson(): String {
+        val values = org.json.JSONObject()
+        p.all.forEach { (k, v) ->
+            val o = org.json.JSONObject()
+            when (v) {
+                is Boolean -> o.put("t", "b").put("v", v)
+                is Int -> o.put("t", "i").put("v", v)
+                is Long -> o.put("t", "l").put("v", v)
+                is Float -> o.put("t", "f").put("v", v.toDouble())
+                is String -> o.put("t", "s").put("v", v)
+                is Set<*> -> o.put("t", "set").put("v", org.json.JSONArray(v.map { it.toString() }))
+                else -> return@forEach
+            }
+            values.put(k, o)
+        }
+        return org.json.JSONObject()
+            .put("app", "homepanel")
+            .put("format", 1)
+            .put("exportedAt", java.time.OffsetDateTime.now().toString())
+            .put("settings", values)
+            .toString(2)
+    }
+
+    /** 設定の読み込み。今の設定はすべて置き換える */
+    fun importJson(text: String) {
+        val root = org.json.JSONObject(text)
+        require(root.optString("app") == "homepanel") { "ホームパネルの設定ファイルではありません" }
+        val values = root.getJSONObject("settings")
+        val e = p.edit().clear()
+        values.keys().forEach { k ->
+            val o = values.getJSONObject(k)
+            when (o.optString("t")) {
+                "b" -> e.putBoolean(k, o.getBoolean("v"))
+                "i" -> e.putInt(k, o.getInt("v"))
+                "l" -> e.putLong(k, o.getLong("v"))
+                "f" -> e.putFloat(k, o.getDouble("v").toFloat())
+                "s" -> e.putString(k, o.getString("v"))
+                "set" -> {
+                    val a = o.getJSONArray("v")
+                    e.putStringSet(k, (0 until a.length()).map { a.getString(it) }.toSet())
+                }
+            }
+        }
+        e.commit()
+    }
 
     /** 使い方を一度表示したか */
     var helpShown: Boolean

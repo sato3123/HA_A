@@ -87,6 +87,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        // ---- 表示のユーザー ----
+        item { SectionTitle("表示のユーザー（家族ごとの表示）") }
+        item { ProfileSettings(vm) }
+
         // ---- 配色 ----
         item { SectionTitle("配色") }
         item { ThemePicker(themeId) { vm.setTheme(it) } }
@@ -242,6 +246,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
                 }
             }
         }
+
+        // ---- 設定の書き出し ----
+        item { SectionTitle("設定の書き出し・読み込み") }
+        item { BackupSettings(vm) }
 
         // ---- 更新 ----
         item { SectionTitle("アプリの更新") }

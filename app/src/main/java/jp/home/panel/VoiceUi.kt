@@ -122,8 +122,13 @@ fun VoicePopup(vm: MainViewModel) {
                     vm.onUserInteraction()
                 },
             ) {
+                Box {
+                androidx.compose.material3.TextButton(
+                    onClick = { hiddenFor = voice; vm.onUserInteraction() },
+                    modifier = Modifier.align(Alignment.TopEnd),
+                ) { Text("✕ 閉じる") }
                 Column(
-                    Modifier.padding(18.dp).heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                    Modifier.padding(start = 18.dp, end = 18.dp, top = 40.dp, bottom = 18.dp).heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     when (val v = voice) {
@@ -146,6 +151,7 @@ fun VoicePopup(vm: MainViewModel) {
                         is VoiceState.Failed -> Text(v.message, style = MaterialTheme.typography.bodyLarge)
                         else -> {}
                     }
+                }
                 }
             }
         }

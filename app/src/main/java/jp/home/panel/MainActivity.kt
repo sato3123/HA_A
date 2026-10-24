@@ -22,6 +22,36 @@ class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
     private var afterMicGrant: (() -> Unit)? = null
 
+    // 設定の書き出し（保存先を選ぶ画面）と読み込み（ファイルを選ぶ画面）
+    private val exportLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(vm.exportSettings().toByteArray()) }
+                vm.onExported(true)
+            } catch (e: Exception) {
+                vm.onExported(false, e.message)
+            }
+        }
+    private val importLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@registerForActivityResult
+            val text = try {
+                contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
+            } catch (e: Exception) {
+                ""
+            }
+            if (vm.importSettings(text)) {
+                // 新しい設定で起動し直す
+                window.decorView.postDelayed({
+                    val intent = packageManager.getLaunchIntentForPackage(packageName)
+                        ?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                    startActivity(intent)
+                    Runtime.getRuntime().exit(0)
+                }, 1200)
+            }
+        }
+
     private val micPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) afterMicGrant?.invoke()
@@ -46,6 +76,18 @@ class MainActivity : ComponentActivity() {
 
     init {
         // インストール画面・許可設定画面を開く
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.fileRequest.collect { kind ->
+                    if (kind == "export") {
+                        val date = java.time.LocalDate.now().toString()
+                        exportLauncher.launch("homepanel-settings-$date.json")
+                    } else {
+                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                    }
+                }
+            }
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 vm.launchRequest.collect { intent ->

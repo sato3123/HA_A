@@ -25,10 +25,11 @@ data class CalEvent(
 
 private fun parseWhen(j: JSONObject?): Pair<LocalDateTime, Boolean>? {
     if (j == null) return null
-    j.optString("dateTime").takeIf { it.isNotBlank() }?.let {
+    val dt = j.optString("dateTime")
+    if (dt.isNotBlank()) {
         return runCatching {
-            OffsetDateTime.parse(it).atZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime() to false
-        }.getOrElse { LocalDateTime.parse(it.take(19)) to false }
+            OffsetDateTime.parse(dt).atZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime() to false
+        }.getOrElse { LocalDateTime.parse(dt.take(19)) to false }
     }
     j.optString("date").takeIf { it.isNotBlank() }?.let { return LocalDate.parse(it).atStartOfDay() to true }
     return null

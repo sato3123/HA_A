@@ -80,6 +80,7 @@ fun App(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () -> Unit) {
             Screen.Home -> HomeScreen(vm, onMic, onEnableWake)
         }
         // スクリーンセーバーとアラームは、設定画面などどの画面の上にも出す
+        EntityInfoDialog(vm)
         ScreensaverOverlay(vm)
         AlarmOverlay(vm)
     }
@@ -216,6 +217,19 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         return
     }
 
+    val profiles by vm.profiles.collectAsState()
+    val profile by vm.activeProfile.collectAsState()
+    val clockShown = profile.sections.any { it.section == HomeSection.CLOCK && it.visible }
+    val mic: @Composable () -> Unit = {
+        MicControl(
+            voice = voice,
+            micLevel = micLive,
+            waiting = wake && route?.remote == false,
+            enabled = conn == Conn.CONNECTED,
+            onMic = onMic,
+        )
+    }
+
     val full: (androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope) -> GridItemSpan =
         { GridItemSpan(it.maxLineSpan) }
 
@@ -226,10 +240,13 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
+        // ---- 上部：接続状態・表示のユーザー・ボタン（いつも表示） ----
         item(span = { full(this) }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 ConnectionBadge(conn, route)
+                if (profiles.size > 1) ProfileSwitcher(profiles, profile) { vm.switchProfile(it) }
                 Spacer(Modifier.weight(1f))
+                if (!clockShown) mic()
                 TextButton(onClick = { showHelp = true }) { Text("？ 使い方") }
                 TextButton(onClick = { showTimers = true }) { Text("⏱ タイマー") }
                 TextButton(onClick = { showAuto = true }) { Text("⏰ 自動化") }
@@ -237,64 +254,63 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             }
         }
         item(span = { full(this) }) { UpdateCard(vm, showWhenIdle = false) }
-        item(span = { full(this) }) {
-            ClockWeather(weather, forecast) {
-                MicControl(
-                    voice = voice,
-                    micLevel = micLive,
-                    waiting = wake && route?.remote == false,
-                    enabled = conn == Conn.CONNECTED,
-                    onMic = onMic,
-                )
-            }
-        }
-        item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
-        item(span = { full(this) }) { CalendarStrip(vm, onOpen = { showCalendar = true }) }
         message?.let { m ->
             item(span = { full(this) }) {
                 Text(m, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         }
-        if (entities.isEmpty()) {
-            item(span = { full(this) }) {
-                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                    if (conn == Conn.CONNECTED) {
-                        Text("表示する機器がありません（⚙ 設定 から選べます）")
-                    } else {
-                        CircularProgressIndicator()
+
+        // ---- 選んでいるユーザーの並び順で表示 ----
+        profile.sections.filter { it.visible }.forEach { sp ->
+            when (sp.section) {
+                HomeSection.CLOCK -> item(span = { full(this) }) { ClockWeather(weather, forecast) { mic() } }
+                HomeSection.CALENDAR -> item(span = { full(this) }) { CalendarStrip(vm, onOpen = { showCalendar = true }) }
+                HomeSection.TIMERS -> item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
+                HomeSection.AUTOMATIONS -> item(span = { full(this) }) { AutomationQuick(vm) }
+                HomeSection.DEVICES -> {
+                    if (entities.isEmpty()) {
+                        item(span = { full(this) }) {
+                            Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                if (conn == Conn.CONNECTED) {
+                                    Text("表示する機器がありません（⚙ 設定 から選べます）")
+                                } else {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                        }
+                    }
+                    // 部屋ごとの見出しと絞り込み
+                    val keyOf = { e: Entity -> roomKeyOf(e.entityId, overrides, areas, rooms) }
+                    val present = groupByRoom(entities, rooms, keyOf).map { it.first }
+                    val activeFilter = roomFilter?.takeIf { f -> present.any { it.key == f } }
+                    if (present.size > 1) {
+                        item(span = { full(this) }) {
+                            RoomFilterRow(present, activeFilter) { vm.setRoomFilter(it) }
+                        }
+                    }
+                    val shown = if (activeFilter == null) entities else entities.filter { keyOf(it) == activeFilter }
+                    val sections: List<Pair<Room?, List<Entity>>> =
+                        if (groupRooms && present.size > 1) groupByRoom(shown, rooms, keyOf) else listOf(null to shown)
+                    sections.forEach { (room, list) ->
+                        if (room != null) {
+                            item(span = { full(this) }, key = "room_" + room.key) {
+                                Text(
+                                    room.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp),
+                                )
+                            }
+                        }
+                        items(
+                            list,
+                            key = { it.entityId },
+                            span = { GridItemSpan(if (isWide(it)) minOf(2, maxLineSpan) else 1) },
+                        ) { e ->
+                            EntityTile(e, vm, onDetail = { detailId = e.entityId })
+                        }
                     }
                 }
-            }
-        }
-        // ---- 部屋ごとの見出しと絞り込み ----
-        val keyOf = { e: Entity -> roomKeyOf(e.entityId, overrides, areas, rooms) }
-        val present = groupByRoom(entities, rooms, keyOf).map { it.first }
-        val activeFilter = roomFilter?.takeIf { f -> present.any { it.key == f } }
-        if (present.size > 1) {
-            item(span = { full(this) }) {
-                RoomFilterRow(present, activeFilter) { vm.setRoomFilter(it) }
-            }
-        }
-        val shown = if (activeFilter == null) entities else entities.filter { keyOf(it) == activeFilter }
-        val sections: List<Pair<Room?, List<Entity>>> =
-            if (groupRooms && present.size > 1) groupByRoom(shown, rooms, keyOf) else listOf(null to shown)
-        sections.forEach { (room, list) ->
-            if (room != null) {
-                item(span = { full(this) }, key = "room_" + room.key) {
-                    Text(
-                        room.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                }
-            }
-            items(
-                list,
-                key = { it.entityId },
-                span = { GridItemSpan(if (isWide(it)) minOf(2, maxLineSpan) else 1) },
-            ) { e ->
-                EntityTile(e, vm, onDetail = { detailId = e.entityId })
             }
         }
     }
