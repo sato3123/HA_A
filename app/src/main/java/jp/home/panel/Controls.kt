@@ -113,7 +113,9 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
 
 @Composable
 private fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        // 機器の種類が分かるアイコン（大きさはすべて同じ）
+        DeviceIcon(e, 40.dp)
         Column(Modifier.weight(1f)) {
             Text(domainLabel(e.domain), style = MaterialTheme.typography.labelSmall)
             Text(
