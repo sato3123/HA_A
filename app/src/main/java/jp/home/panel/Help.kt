@@ -71,6 +71,14 @@ private val HELP = listOf(
         ),
     ),
     HelpSection(
+        "📅 予定（TimeTree）",
+        listOf(
+            "Home Assistant に取り込んだ TimeTree の予定を、ホーム画面に「今日・明日」で表示します。タップすると1週間分を表示します。",
+            "音声で「今日の予定は？」「明日の予定」と聞くと読み上げます。",
+            "設定は ⚙ 設定 →「カレンダー（TimeTree）」。TimeTree のログイン情報は Home Assistant にだけ登録し、このアプリには保存しません。",
+        ),
+    ),
+    HelpSection(
         "⏱ タイマー",
         listOf(
             "トップの「⏱ タイマー」から、いくつでも同時に設定できます。残り時間はホーム画面の上に表示されます。",

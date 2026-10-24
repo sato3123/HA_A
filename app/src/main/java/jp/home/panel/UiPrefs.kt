@@ -69,6 +69,11 @@ class UiPrefs(context: Context) {
         get() = p.getString("home_location", "") ?: ""
         set(v) = p.edit().putString("home_location", v).apply()
 
+    /** ホーム画面に予定を出すカレンダー（entity_id。null = まだ選んでいない） */
+    var calendars: Set<String>?
+        get() = if (p.getBoolean("cal_configured", false)) p.getStringSet("calendars", emptySet())!!.toSet() else null
+        set(v) = p.edit().putBoolean("cal_configured", v != null).putStringSet("calendars", v ?: emptySet()).apply()
+
     /** タイマー（JSON） */
     var timersJson: String?
         get() = p.getString("timers", null)

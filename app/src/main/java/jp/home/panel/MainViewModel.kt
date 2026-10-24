@@ -32,6 +32,8 @@ import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.time.LocalDate
+import java.time.ZoneId
 import android.media.AudioManager
 
 sealed interface Screen {
@@ -160,6 +162,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     screensaver.value = true
                 }
                 delay(500)
+            }
+        }
+        viewModelScope.launch {
+            delay(5_000)
+            while (isActive) {
+                loadEvents()
+                delay(5 * 60 * 1000L)
             }
         }
         viewModelScope.launch {
@@ -330,6 +339,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun onStates(c: HaClient, m: Map<String, Entity>) {
         allStates.value = m
+        val cals = m.values.filter { it.domain == "calendar" }.sortedBy { it.name }
+        if (cals.map { it.entityId } != calendarEntities.value.map { it.entityId }) {
+            calendarEntities.value = cals
+            loadEvents()
+        }
         automations.value = m.values.filter { it.domain == "automation" }.sortedBy { it.name }
         allEntities.value = m.values
             .filter { it.domain in SUPPORTED_DOMAINS }
@@ -828,6 +842,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 聞き取った文字を処理：タイマーなどアプリの命令はここで行い、それ以外は AI に渡す */
     private suspend fun handleHeard(c: HaClient, a: VoiceAssistant, heard: String) {
+        parseCalendarQuestion(heard)?.let { offset ->
+            if (selectedCalendars().isNotEmpty()) {
+                addLog("アプリの命令として処理：予定")
+                loadEventsNow()
+                a.speak(c, heard, speakDay(events.value, offset), effectivePipeline, ::onVoice)
+                return
+            }
+        }
         val cmd = parseTimerCommand(heard)
         if (cmd == null) {
             val sent = withHomeLocation(heard)
@@ -950,6 +972,69 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 manualBusy = false
                 refreshWakeLoop()
             }
+        }
+    }
+
+    // ================= カレンダー（TimeTree など） =================
+
+    val calendarEntities = MutableStateFlow<List<Entity>>(emptyList())
+    val calendarSel = MutableStateFlow(prefs.calendars)
+    val events = MutableStateFlow<List<CalEvent>>(emptyList())
+    val eventsStatus = MutableStateFlow<String?>(null)
+    private var eventsJob: Job? = null
+
+    /** 予定を出すカレンダー。まだ選んでいなければ、名前に TimeTree を含むものすべて */
+    fun selectedCalendars(): List<Entity> {
+        val sel = calendarSel.value
+        val all = calendarEntities.value
+        return if (sel == null) all.filter { it.entityId.contains("timetree", true) || it.name.contains("timetree", true) }
+        else all.filter { it.entityId in sel }
+    }
+
+    fun toggleCalendar(entityId: String) {
+        val cur = calendarSel.value ?: selectedCalendars().map { it.entityId }.toSet()
+        val next = if (entityId in cur) cur - entityId else cur + entityId
+        prefs.calendars = next
+        calendarSel.value = next
+        loadEvents()
+    }
+
+    /** 今日から1週間分の予定を読み込む（通常のログインで読める。管理者は不要） */
+    fun loadEvents() {
+        eventsJob?.cancel()
+        eventsJob = viewModelScope.launch { loadEventsNow() }
+    }
+
+    private suspend fun loadEventsNow() {
+        val cals = selectedCalendars()
+        if (cals.isEmpty()) {
+            events.value = emptyList()
+            eventsStatus.value = null
+            return
+        }
+        val r = route.value ?: return
+        val local = store.baseUrl ?: return
+        try {
+            val zone = ZoneId.systemDefault()
+            val start = LocalDate.now().atStartOfDay(zone).toOffsetDateTime().toString()
+            val end = LocalDate.now().plusDays(8).atStartOfDay(zone).toOffsetDateTime().toString()
+            val token = validAccessToken(r.base, local)
+            val list = withContext(Dispatchers.IO) {
+                cals.flatMap { cal ->
+                    val url = r.base + "/api/calendars/" + cal.entityId + "?start=" +
+                        java.net.URLEncoder.encode(start, "UTF-8") + "&end=" + java.net.URLEncoder.encode(end, "UTF-8")
+                    http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $token").build()).execute().use { resp ->
+                        if (!resp.isSuccessful) throw HaException("「${cal.name}」の予定を読めませんでした (HTTP ${resp.code})")
+                        parseCalendarEvents(cal.entityId, cal.name, resp.body?.string().orEmpty())
+                    }
+                }
+            }
+            events.value = list.sortedWith(compareBy({ it.start.toLocalDate() }, { !it.allDay }, { it.start }))
+            eventsStatus.value = "${cals.size}個のカレンダーから${list.size}件の予定を読み込みました"
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            eventsStatus.value = e.message ?: "予定を読み込めませんでした"
         }
     }
 

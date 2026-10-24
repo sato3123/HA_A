@@ -191,6 +191,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showAuto by rememberSaveable { mutableStateOf(false) }
     var showTimers by rememberSaveable { mutableStateOf(false) }
+    var showCalendar by rememberSaveable { mutableStateOf(false) }
     // 初めてホーム画面を開いたときは使い方を自動で表示
     var showHelp by rememberSaveable { mutableStateOf(!vm.helpShown) }
     var detailId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -248,6 +249,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             }
         }
         item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
+        item(span = { full(this) }) { CalendarStrip(vm, onOpen = { showCalendar = true }) }
         message?.let { m ->
             item(span = { full(this) }) {
                 Text(m, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -298,6 +300,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     }
 
     if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })
+    if (showCalendar) CalendarDialog(vm, onDismiss = { showCalendar = false })
     VoicePopup(vm)
 
     val detail = detailId?.let { id -> entities.firstOrNull { it.entityId == id } }

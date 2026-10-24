@@ -124,6 +124,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        // ---- カレンダー（TimeTree） ----
+        item { SectionTitle("カレンダー（TimeTree）") }
+        item { CalendarSettings(vm) }
+
         // ---- 自宅の位置 ----
         item { SectionTitle("自宅の位置") }
         item { HomeLocationSettings(vm) }
