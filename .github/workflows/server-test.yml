@@ -1,0 +1,72 @@
+name: Test iPad server setup
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-test.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      # Home Assistant の代わり：受け取ったヘッダーをそのまま返す
+      - name: Start fake Home Assistant
+        run: |
+          cat > fake_ha.py <<'EOF'
+          import json
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          class H(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  body = json.dumps({"path": self.path, "headers": dict(self.headers)}).encode()
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.end_headers()
+                  self.wfile.write(body)
+              do_POST = do_GET
+          HTTPServer(("127.0.0.1", 8123), H).serve_forever()
+          EOF
+          nohup python3 fake_ha.py > fake_ha.log 2>&1 &
+          sleep 1
+          curl -fsS http://127.0.0.1:8123/manifest.json
+
+      - name: Run setup.sh
+        run: sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 bash server/setup.sh
+
+      - name: Check the server
+        run: |
+          set -e
+          fail() { echo "::error::$1"; exit 1; }
+          echo "::notice::Caddy $(caddy version | head -1)"
+          # iPad 版が https で配信されている
+          curl -fsSk https://127.0.0.1/homepanel/version.json | tee v.json
+          grep -q '"code"' v.json || fail "version.json が配信されていません"
+          curl -fsSk https://127.0.0.1/homepanel/ | grep -q "ホームパネル" || fail "index.html が配信されていません"
+          # トップは /homepanel/ へ
+          curl -sk -o /dev/null -w "%{http_code} %{redirect_url}\n" https://127.0.0.1/ | grep -q "302 https://127.0.0.1/homepanel/" || fail "トップのリダイレクトが違います"
+          # Home Assistant への中継（転送元ヘッダーが消えていること）
+          curl -fsSk -H "X-Forwarded-For: 1.2.3.4" https://127.0.0.1/api/echo | tee echo.json
+          python3 - <<'EOF'
+          import json, sys
+          j = json.load(open("echo.json"))
+          h = {k.lower(): v for k, v in j["headers"].items()}
+          assert j["path"] == "/api/echo", j["path"]
+          for k in ("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"):
+              if k in h:
+                  print(f"::error::{k} が Home Assistant に送られています: {h[k]}")
+                  sys.exit(1)
+          print("::notice::中継OK（転送元ヘッダーなし）")
+          EOF
+          # 証明書の配布（http）
+          curl -fsS http://127.0.0.1/ca.crt -o ca.crt
+          openssl x509 -in ca.crt -noout -subject | tee subj.txt
+          grep -qi "Caddy Local Authority" subj.txt || fail "ca.crt が Caddy の証明書ではありません"
+          # その証明書で https を検証できる
+          curl -fsS --cacert ca.crt https://127.0.0.1/homepanel/version.json > /dev/null || fail "ca.crt で https を検証できません"
+          # 自動更新タイマー
+          systemctl is-active homepanel-update.timer || fail "更新タイマーが動いていません"
+          sudo /usr/local/bin/homepanel-update
+          echo "::notice::サーバーのセットアップは正常です"
