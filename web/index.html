@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ホームパネル">
+  <meta name="theme-color" content="#141218">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <title>ホームパネル</title>
+  <style>
+    html, body { margin: 0; background: #141218; color: #e6e1e5; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+    .boot { display: flex; height: 100vh; align-items: center; justify-content: center; opacity: .7; }
+  </style>
+</head>
+<body>
+  <div id="app"><div class="boot">読み込み中…</div></div>
+  <script>
+    // 本体（app.js / style.css）はバージョン付きで読み込み、更新後に古いキャッシュが使われないようにする
+    (async () => {
+      let v = { version: "dev", code: 0 };
+      try {
+        const r = await fetch("version.json", { cache: "no-store" });
+        if (r.ok) v = await r.json();
+      } catch (e) { /* オフライン時などはそのまま */ }
+      window.HP_VERSION = v;
+      const q = "?v=" + encodeURIComponent(v.version);
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "style.css" + q;
+      document.head.appendChild(css);
+      const js = document.createElement("script");
+      js.src = "app.js" + q;
+      document.body.appendChild(js);
+    })();
+  </script>
+</body>
+</html>
