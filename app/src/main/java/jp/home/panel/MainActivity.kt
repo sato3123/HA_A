@@ -14,8 +14,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
@@ -33,13 +33,8 @@ class MainActivity : ComponentActivity() {
         // 壁掛けパネルとして使うので画面を消さない
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFFFFB74D),
-                    primaryContainer = Color(0xFF5D4020),
-                    onPrimaryContainer = Color(0xFFFFE0B2),
-                )
-            ) {
+            val themeId by vm.themeId.collectAsState()
+            MaterialTheme(colorScheme = paletteOf(themeId).colorScheme()) {
                 App(
                     vm,
                     onMic = { withMic { vm.onMicPressed() } },

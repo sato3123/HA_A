@@ -26,6 +26,44 @@ class UiPrefs(context: Context) {
         get() = p.getString("pipeline_id", null)
         set(v) = p.edit().putString("pipeline_id", v).apply()
 
+    /** 配色パターン */
+    var themeId: String
+        get() = p.getString("theme", "orange") ?: "orange"
+        set(v) = p.edit().putString("theme", v).apply()
+
+    /** 部屋ごとに分けて表示する */
+    var groupByRoom: Boolean
+        get() = p.getBoolean("group_by_room", true)
+        set(v) = p.edit().putBoolean("group_by_room", v).apply()
+
+    /** ホーム画面で絞り込んでいる部屋（null = すべて） */
+    var roomFilter: String?
+        get() = p.getString("room_filter", null)
+        set(v) = p.edit().putString("room_filter", v).apply()
+
+    /** アプリで追加した部屋（key -> 名前） */
+    var customRooms: Map<String, String>
+        get() = readMap("custom_rooms")
+        set(v) = writeMap("custom_rooms", v)
+
+    /** 機器ごとの部屋の割り当て（entity_id -> 部屋の key）。Home Assistant のエリアより優先 */
+    var roomOverrides: Map<String, String>
+        get() = readMap("room_overrides")
+        set(v) = writeMap("room_overrides", v)
+
+    private fun readMap(key: String): Map<String, String> = try {
+        val j = org.json.JSONObject(p.getString(key, "{}") ?: "{}")
+        j.keys().asSequence().associateWith { j.optString(it) }
+    } catch (e: Exception) {
+        emptyMap()
+    }
+
+    private fun writeMap(key: String, v: Map<String, String>) {
+        val j = org.json.JSONObject()
+        v.forEach { (k, x) -> j.put(k, x) }
+        p.edit().putString(key, j.toString()).apply()
+    }
+
     /** 使い方を一度表示したか */
     var helpShown: Boolean
         get() = p.getBoolean("help_shown", false)

@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,6 +32,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -175,17 +178,28 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     val wake by vm.wakeEnabled.collectAsState()
     val weather by vm.weather.collectAsState()
     val forecast by vm.forecast.collectAsState()
+    val rooms by vm.rooms.collectAsState()
+    val overrides by vm.roomOverrides.collectAsState()
+    val areas by vm.entityAreas.collectAsState()
+    val groupRooms by vm.groupRooms.collectAsState()
+    val roomFilter by vm.roomFilter.collectAsState()
 
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showAuto by rememberSaveable { mutableStateOf(false) }
     // 初めてホーム画面を開いたときは使い方を自動で表示
     var showHelp by rememberSaveable { mutableStateOf(!vm.helpShown) }
     var detailId by rememberSaveable { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
 
-    BackHandler(enabled = showSettings || showHelp) {
+    BackHandler(enabled = showSettings || showHelp || showAuto) {
+        if (showHelp) vm.helpShown = true
         showSettings = false
         showHelp = false
-        vm.helpShown = true
+        showAuto = false
+    }
+    if (showAuto) {
+        AutomationScreen(vm, onClose = { showAuto = false })
+        return
     }
     if (showHelp) {
         HelpScreen(vm, onClose = { showHelp = false; vm.helpShown = true })
@@ -211,6 +225,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 ConnectionBadge(conn, route)
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = { showHelp = true }) { Text("？ 使い方") }
+                TextButton(onClick = { showAuto = true }) { Text("⏰ 自動化") }
                 TextButton(onClick = { showSettings = true }) { Text("⚙ 設定") }
             }
         }
@@ -245,12 +260,36 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 }
             }
         }
-        items(
-            entities,
-            key = { it.entityId },
-            span = { GridItemSpan(if (isWide(it)) minOf(2, maxLineSpan) else 1) },
-        ) { e ->
-            EntityTile(e, vm, onDetail = { detailId = e.entityId })
+        // ---- 部屋ごとの見出しと絞り込み ----
+        val keyOf = { e: Entity -> roomKeyOf(e.entityId, overrides, areas, rooms) }
+        val present = groupByRoom(entities, rooms, keyOf).map { it.first }
+        val activeFilter = roomFilter?.takeIf { f -> present.any { it.key == f } }
+        if (present.size > 1) {
+            item(span = { full(this) }) {
+                RoomFilterRow(present, activeFilter) { vm.setRoomFilter(it) }
+            }
+        }
+        val shown = if (activeFilter == null) entities else entities.filter { keyOf(it) == activeFilter }
+        val sections: List<Pair<Room?, List<Entity>>> =
+            if (groupRooms && present.size > 1) groupByRoom(shown, rooms, keyOf) else listOf(null to shown)
+        sections.forEach { (room, list) ->
+            if (room != null) {
+                item(span = { full(this) }, key = "room_" + room.key) {
+                    Text(
+                        room.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+            items(
+                list,
+                key = { it.entityId },
+                span = { GridItemSpan(if (isWide(it)) minOf(2, maxLineSpan) else 1) },
+            ) { e ->
+                EntityTile(e, vm, onDetail = { detailId = e.entityId })
+            }
         }
     }
 
@@ -261,6 +300,17 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             EntityDetail(detail, vm)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun RoomFilterRow(rooms: List<Room>, selected: String?, onSelect: (String?) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        FilterChip(selected = selected == null, onClick = { onSelect(null) }, label = { Text("すべて") })
+        rooms.forEach { r ->
+            FilterChip(selected = selected == r.key, onClick = { onSelect(r.key) }, label = { Text(r.name) })
         }
     }
 }

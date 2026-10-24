@@ -396,6 +396,11 @@ fun domainLabel(domain: String) = when (domain) {
     "input_boolean" -> "切り替え"
     "scene" -> "シーン"
     "script" -> "スクリプト"
+    "binary_sensor" -> "センサー"
+    "person" -> "人"
+    "device_tracker" -> "位置"
+    "lock" -> "鍵"
+    "automation" -> "自動化"
     else -> domain
 }
 

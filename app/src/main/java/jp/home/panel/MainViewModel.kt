@@ -9,6 +9,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
@@ -79,6 +84,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val lastDone = MutableStateFlow<VoiceState.Done?>(null)
     val wakeEnabled = MutableStateFlow(prefs.wakeEnabled)
     val remoteUrl = MutableStateFlow(store.remoteUrl.orEmpty())
+
+    // ---- 配色 ----
+    val themeId = MutableStateFlow(prefs.themeId)
+
+    // ---- 部屋 ----
+    val haAreas = MutableStateFlow<List<Room>>(emptyList())
+    val entityAreas = MutableStateFlow<Map<String, String>>(emptyMap())
+    val customRooms = MutableStateFlow(prefs.customRooms)
+    val roomOverrides = MutableStateFlow(prefs.roomOverrides)
+    val groupRooms = MutableStateFlow(prefs.groupByRoom)
+    val roomFilter = MutableStateFlow(prefs.roomFilter)
+    val rooms: StateFlow<List<Room>> = combine(haAreas, customRooms) { a, c ->
+        a + c.entries.sortedBy { it.key }.map { Room(it.key, it.value, false) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // ---- アカウント ----
+    val userName = MutableStateFlow<String?>(null)
+    val isAdmin = MutableStateFlow<Boolean?>(null)
+    val adminUser = MutableStateFlow(store.adminUser)
+    val adminBusy = MutableStateFlow(false)
+    val adminError = MutableStateFlow<String?>(null)
+
+    // ---- 自動化 ----
+    val allStates = MutableStateFlow<Map<String, Entity>>(emptyMap())
+    val automations = MutableStateFlow<List<Entity>>(emptyList())
+    /** 設定を読み込んだルール（値が null = アプリでは編集できない形） */
+    val rules = MutableStateFlow<Map<String, Rule?>>(emptyMap())
+    val rulesLoading = MutableStateFlow(false)
+    val ruleMessage = MutableStateFlow<String?>(null)
 
     // ---- アップデート ----
     private val updater = Updater(app)
@@ -215,6 +249,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
                     val collector = launch { c.states.collect { onStates(c, it) } }
                     launch { loadPipelines(c) }
+                    launch { loadRegistries(c) }
+                    launch { loadUser(c) }
                     // 外出先接続中は、家に戻ったらローカル接続に切り替える
                     val upgrader = if (r.remote) launch {
                         while (isActive) {
@@ -268,6 +304,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun onStates(c: HaClient, m: Map<String, Entity>) {
+        allStates.value = m
+        automations.value = m.values.filter { it.domain == "automation" }.sortedBy { it.name }
         allEntities.value = m.values
             .filter { it.domain in SUPPORTED_DOMAINS }
             .sortedWith(compareBy({ SUPPORTED_DOMAINS.indexOf(it.domain) }, { it.name }))
@@ -330,6 +368,256 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= 部屋 =================
+
+    /** Home Assistant のエリアと、機器がどのエリアにあるかを読み込む（取れなければ「その他」にまとめる） */
+    private suspend fun loadRegistries(c: HaClient) {
+        try {
+            val areaArr = c.request(JSONObject().put("type", "config/area_registry/list")).optJSONArray("result") ?: JSONArray()
+            haAreas.value = (0 until areaArr.length()).mapNotNull { areaArr.optJSONObject(it) }
+                .map { Room("area:" + it.optString("area_id"), it.optString("name"), true) }
+                .sortedBy { it.name }
+            val devArr = c.request(JSONObject().put("type", "config/device_registry/list")).optJSONArray("result") ?: JSONArray()
+            val devArea = HashMap<String, String>()
+            for (i in 0 until devArr.length()) {
+                val d = devArr.optJSONObject(i) ?: continue
+                if (!d.isNull("area_id")) devArea[d.optString("id")] = d.optString("area_id")
+            }
+            val entArr = c.request(JSONObject().put("type", "config/entity_registry/list")).optJSONArray("result") ?: JSONArray()
+            val map = HashMap<String, String>()
+            for (i in 0 until entArr.length()) {
+                val e = entArr.optJSONObject(i) ?: continue
+                val area = if (!e.isNull("area_id")) e.optString("area_id")
+                else if (!e.isNull("device_id")) devArea[e.optString("device_id")] else null
+                if (!area.isNullOrBlank()) map[e.optString("entity_id")] = area
+            }
+            entityAreas.value = map
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // エリアを読めなくても、アプリで追加した部屋は使える
+        }
+    }
+
+    fun roomKey(entityId: String): String =
+        roomKeyOf(entityId, roomOverrides.value, entityAreas.value, rooms.value)
+
+    fun addRoom(name: String) {
+        val n = name.trim()
+        if (n.isEmpty()) return
+        val next = customRooms.value + ("local:" + System.currentTimeMillis() to n)
+        prefs.customRooms = next
+        customRooms.value = next
+    }
+
+    fun renameRoom(key: String, name: String) {
+        if (!key.startsWith("local:") || name.isBlank()) return
+        val next = customRooms.value + (key to name.trim())
+        prefs.customRooms = next
+        customRooms.value = next
+    }
+
+    fun deleteRoom(key: String) {
+        val nextRooms = customRooms.value - key
+        prefs.customRooms = nextRooms
+        customRooms.value = nextRooms
+        val nextOv = roomOverrides.value.filterValues { it != key }
+        prefs.roomOverrides = nextOv
+        roomOverrides.value = nextOv
+        if (roomFilter.value == key) setRoomFilter(null)
+    }
+
+    /** 機器を部屋に割り当てる。key = null なら Home Assistant のエリアに戻す */
+    fun assignRoom(entityId: String, key: String?) {
+        val next = if (key == null) roomOverrides.value - entityId else roomOverrides.value + (entityId to key)
+        prefs.roomOverrides = next
+        roomOverrides.value = next
+    }
+
+    fun setGroupRooms(v: Boolean) {
+        prefs.groupByRoom = v
+        groupRooms.value = v
+    }
+
+    fun setRoomFilter(key: String?) {
+        prefs.roomFilter = key
+        roomFilter.value = key
+    }
+
+    fun setTheme(id: String) {
+        prefs.themeId = id
+        themeId.value = id
+    }
+
+    // ================= アカウント（普段使い／管理者） =================
+
+    private suspend fun loadUser(c: HaClient) {
+        try {
+            val r = c.request(JSONObject().put("type", "auth/current_user")).optJSONObject("result") ?: return
+            userName.value = r.optString("name")
+            isAdmin.value = r.optBoolean("is_admin")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 不明のまま
+        }
+    }
+
+    /** 自動化を編集できるか（普段使いのユーザーが管理者、または管理者ログインを追加済み） */
+    val canEditRules: Boolean get() = isAdmin.value == true || adminUser.value != null
+
+    /** 自動化の編集用に、管理者ユーザーでも別にログインしておく */
+    fun adminLogin(user: String, pass: String, otp: String) {
+        val r = route.value ?: return
+        val local = store.baseUrl ?: return
+        viewModelScope.launch {
+            adminBusy.value = true
+            adminError.value = null
+            try {
+                val t = auth.login(r.base, user.trim(), pass, otp.trim().ifBlank { null }, clientBase = local)
+                // 管理者かどうか確かめる（管理者でなければ 401 になる）
+                val code = restStatus(r.base, t.access, "GET", "/api/config/automation/config/__homepanel_check__")
+                if (code == 401) throw HaException("「${user.trim()}」は管理者ではありません。Home Assistant の管理者ユーザーでログインしてください")
+                store.adminUser = user.trim()
+                store.adminRefresh = t.refresh
+                store.adminAccess = t.access
+                store.adminExpiresAt = t.accessExpiresAt
+                adminUser.value = user.trim()
+                loadRules()
+            } catch (e: MfaRequiredException) {
+                adminError.value = "2段階認証のコードも入力してください"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                adminError.value = e.message ?: "ログインに失敗しました"
+            } finally {
+                adminBusy.value = false
+            }
+        }
+    }
+
+    fun adminLogout() {
+        store.clearAdmin()
+        adminUser.value = null
+        rules.value = emptyMap()
+    }
+
+    private suspend fun editorToken(base: String): String {
+        val local = store.baseUrl ?: throw RefreshRevokedException()
+        if (store.adminRefresh == null) return validAccessToken(base, local)
+        return tokenMutex.withLock {
+            val cur = store.adminAccess
+            if (cur != null && store.adminExpiresAt - 60_000 > System.currentTimeMillis()) return@withLock cur
+            try {
+                val (tok, exp) = auth.refresh(base, local, store.adminRefresh!!)
+                store.adminAccess = tok
+                store.adminExpiresAt = exp
+                tok
+            } catch (e: RefreshRevokedException) {
+                store.clearAdmin()
+                adminUser.value = null
+                throw HaException("管理者ログインの期限が切れました。設定 → アカウント でもう一度ログインしてください")
+            }
+        }
+    }
+
+    private suspend fun restStatus(base: String, token: String, method: String, path: String): Int =
+        withContext(Dispatchers.IO) {
+            http.newCall(
+                Request.Builder().url(base + path).header("Authorization", "Bearer $token").method(method, null).build()
+            ).execute().use { it.code }
+        }
+
+    /** Home Assistant の設定API（管理者が必要）を呼ぶ */
+    private suspend fun rest(method: String, path: String, body: JSONObject? = null): String {
+        val r = route.value ?: throw HaException("接続していません")
+        val token = editorToken(r.base)
+        return withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url(r.base + path)
+                .header("Authorization", "Bearer $token")
+                .method(method, body?.toString()?.toRequestBody("application/json".toMediaType()))
+                .build()
+            http.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                when {
+                    resp.code == 401 -> throw HaException("自動化の編集には管理者の権限が必要です（設定 → アカウント で管理者ログインを追加してください）")
+                    !resp.isSuccessful -> throw HaException("Home Assistant でエラーになりました (HTTP ${resp.code}) $text".trim())
+                }
+                text
+            }
+        }
+    }
+
+    // ================= オートメーション・スケジュール =================
+
+    /** アプリで作った自動化の設定を読み込む */
+    fun loadRules() {
+        if (!canEditRules) return
+        viewModelScope.launch {
+            rulesLoading.value = true
+            try {
+                val map = HashMap<String, Rule?>()
+                for (a in automations.value) {
+                    val id = a.attributes.optString("id")
+                    if (!isAppRuleId(id)) continue
+                    map[id] = try {
+                        parseRule(id, JSONObject(rest("GET", "/api/config/automation/config/$id")))
+                    } catch (e: HaException) {
+                        if (e.message?.contains("権限") == true) throw e
+                        null
+                    }
+                }
+                rules.value = map
+                ruleMessage.value = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ruleMessage.value = e.message
+            } finally {
+                rulesLoading.value = false
+            }
+        }
+    }
+
+    fun saveRule(rule: Rule, onDone: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val name = rule.name.ifBlank {
+                    ruleSummary(rule) { id -> allStates.value[id]?.name ?: id }.take(40)
+                }
+                val r = rule.copy(name = name)
+                rest("POST", "/api/config/automation/config/${r.id}", r.toConfig())
+                rules.value = rules.value + (r.id to r)
+                ruleMessage.value = "「$name」を保存しました"
+                onDone(null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone(e.message ?: "保存できませんでした")
+            }
+        }
+    }
+
+    fun deleteRule(id: String, onDone: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                rest("DELETE", "/api/config/automation/config/$id")
+                rules.value = rules.value - id
+                ruleMessage.value = "削除しました"
+                onDone(null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone(e.message ?: "削除できませんでした")
+            }
+        }
+    }
+
+    /** オン/オフと今すぐ実行は、管理者でなくても使える */
+    fun setAutomationEnabled(e: Entity, on: Boolean) = call(e, if (on) "turn_on" else "turn_off")
+    fun runAutomation(e: Entity) = call(e, "trigger")
+
     // ================= ログイン =================
 
     fun login(urlInput: String, user: String, pass: String, otp: String) {
@@ -368,6 +656,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         client?.close()
         client = null
         store.clearTokens()
+        store.clearAdmin()
+        adminUser.value = null
         allEntities.value = emptyList()
         voice.value = VoiceState.Idle
         loginError.value = reason

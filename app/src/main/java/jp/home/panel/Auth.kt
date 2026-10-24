@@ -44,6 +44,24 @@ class TokenStore(context: Context) {
     var accessExpiresAt: Long
         get() = prefs.getLong("access_expires_at", 0L)
         set(v) = prefs.edit().putLong("access_expires_at", v).apply()
+    // ---- 管理者ログイン（自動化の編集用。普段使いのログインとは別に持てる） ----
+    var adminUser: String?
+        get() = prefs.getString("admin_user", null)
+        set(v) = prefs.edit().putString("admin_user", v).apply()
+    var adminRefresh: String?
+        get() = prefs.getString("admin_refresh", null)
+        set(v) = prefs.edit().putString("admin_refresh", v).apply()
+    var adminAccess: String?
+        get() = prefs.getString("admin_access", null)
+        set(v) = prefs.edit().putString("admin_access", v).apply()
+    var adminExpiresAt: Long
+        get() = prefs.getLong("admin_expires_at", 0L)
+        set(v) = prefs.edit().putLong("admin_expires_at", v).apply()
+
+    fun clearAdmin() {
+        prefs.edit().remove("admin_user").remove("admin_refresh").remove("admin_access").remove("admin_expires_at").apply()
+    }
+
     /** 外出先用URL（Home Assistant Cloud のリモートURL） */
     var remoteUrl: String?
         get() = prefs.getString("remote_url", null)
@@ -70,26 +88,27 @@ class AuthApi(private val http: OkHttpClient) {
     private fun clientId(base: String) = "$base/"
     private fun redirectUri(base: String) = "$base/?auth_callback=1"
 
-    suspend fun login(base: String, user: String, pass: String, otp: String?): Tokens =
+    /** base = 送信先（ローカル or Cloud）、clientBase = client_id に使う URL（ログイン時のローカルURL） */
+    suspend fun login(base: String, user: String, pass: String, otp: String?, clientBase: String = base): Tokens =
         withContext(Dispatchers.IO) {
             val start = postJson(
                 "$base/auth/login_flow",
                 JSONObject()
-                    .put("client_id", clientId(base))
+                    .put("client_id", clientId(clientBase))
                     .put("handler", JSONArray().put("homeassistant").put(JSONObject.NULL))
-                    .put("redirect_uri", redirectUri(base)),
+                    .put("redirect_uri", redirectUri(clientBase)),
             )
             val flowId = start.getString("flow_id")
 
             var step = postJson(
                 "$base/auth/login_flow/$flowId",
-                JSONObject().put("client_id", clientId(base)).put("username", user).put("password", pass),
+                JSONObject().put("client_id", clientId(clientBase)).put("username", user).put("password", pass),
             )
             if (step.optString("type") == "form" && step.optString("step_id") == "mfa") {
                 if (otp.isNullOrBlank()) throw MfaRequiredException()
                 step = postJson(
                     "$base/auth/login_flow/$flowId",
-                    JSONObject().put("client_id", clientId(base)).put("code", otp),
+                    JSONObject().put("client_id", clientId(clientBase)).put("code", otp),
                 )
             }
             if (step.optString("type") != "create_entry") {
@@ -108,7 +127,7 @@ class AuthApi(private val http: OkHttpClient) {
                 mapOf(
                     "grant_type" to "authorization_code",
                     "code" to step.getString("result"),
-                    "client_id" to clientId(base),
+                    "client_id" to clientId(clientBase),
                 ),
             )
             Tokens(
