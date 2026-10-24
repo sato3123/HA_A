@@ -8,6 +8,8 @@
   const APP_VERSION = window.HP_VERSION || { version: "dev", code: 0 };
   const REPO = "sato3123/HA_A";
   const UPDATE_SERVICE = { domain: "shell_command", service: "update_homepanel" };
+  // Home Assistant の /local/ に置いた場合と、専用サーバー（Proxmox の LXC）から配信する場合がある
+  const SERVER_MODE = !location.pathname.startsWith("/local/");
   const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script"];
   const SIMPLE = ["switch", "input_boolean", "scene", "script"];
   const TOGGLEABLE = ["light", "fan", "switch", "input_boolean"];
@@ -979,7 +981,25 @@
     renderUpdate();
   }
 
+  /** 専用サーバー方式：サーバーが5分おきに自動更新するので、新しい版に入れ替わるのを待って読み込み直す */
+  async function waitServerUpdate() {
+    S.update = { type: "updating", server: true };
+    renderUpdate();
+    const until = Date.now() + 12 * 60 * 1000;
+    while (Date.now() < until) {
+      try {
+        const r = await fetch("version.json", { cache: "no-store" });
+        const v = await r.json();
+        if ((v.code || 0) > (APP_VERSION.code || 0)) { location.reload(); return; }
+      } catch (e) { /* 次の確認で */ }
+      await sleep(20000);
+    }
+    S.update = { type: "failed", msg: "まだ新しい版に入れ替わっていません。しばらくしてから画面を読み込み直してください（サーバーで「homepanel-update」を実行するとすぐに更新されます）。" };
+    renderUpdate();
+  }
+
   async function doUpdate() {
+    if (SERVER_MODE) { waitServerUpdate(); return; }
     if (!S.ha) return;
     const prev = S.update;
     S.update = { type: "updating" };
@@ -1008,7 +1028,7 @@
         return `<div class="update"><b>⬆️ 新しいバージョン ${esc(u.version)} があります（今は ${esc(cur)}）</b>
           ${u.notes ? `<div class="note" style="color:inherit">${esc(u.notes.split("\n").slice(0, 4).join("\n"))}</div>` : ""}
           <div><button class="btn" data-set="doUpdate">更新する</button></div></div>`;
-      case "updating": return `<div class="update">更新しています…（終わると自動で再読み込みします）</div>`;
+      case "updating": return `<div class="update">${u.server ? "サーバーが新しい版に入れ替えるのを待っています（最大5分ほど）。入れ替わると自動で読み込み直します…" : "更新しています…（終わると自動で再読み込みします）"}</div>`;
       case "checking": return showIdle ? `<div class="update">更新を確認しています…</div>` : "";
       case "uptodate": return showIdle ? `<div class="update">最新のバージョンです（${esc(cur)}）<div><button class="btn outline" data-set="checkUpdate">もう一度確認</button></div></div>` : "";
       case "failed":
@@ -1042,7 +1062,9 @@
 
       <div class="sec">接続</div>
       <div class="note">このアプリのアドレス：${esc(location.origin + location.pathname)}<br>
-      ${location.protocol === "https:" ? "家の外からもこのアドレスで使えます。" : "http のアドレスです。音声入力と外出先での利用には https のアドレス（Home Assistant Cloud のリモートURL）で開いてください。"}</div>
+      ${SERVER_MODE
+        ? "家の中の専用サーバー（Proxmox のコンテナ）から https で配信し、Home Assistant に中継しています。家の中だけで使え、音声入力も使えます。"
+        : location.protocol === "https:" ? "家の外からもこのアドレスで使えます。" : "http のアドレスです。音声入力と外出先での利用には https のアドレス（Home Assistant Cloud のリモートURL）で開いてください。"}</div>
 
       <div class="sec">音声</div>
       <label class="row"><span class="rt">呼びかけで反応する<div class="sub">Home Assistant の音声アシスタントに設定したウェイクワードで反応します。この画面を表示している間だけ待ち受けます。</div></span>
@@ -1105,7 +1127,7 @@
       "例：「リビングの電気をつけて」「エアコンを26度にして」「近くのスーパーの営業時間は？」",
       "質問には AI が答えて読み上げます。5分以内なら続けて質問できます。",
       "下の入力欄に文字で書いて送信しても同じように使えます。",
-      "音声入力は https のアドレス（Home Assistant Cloud のリモートURL）で開いたときに使えます。",
+      SERVER_MODE ? "音声入力を使うには、iPad に専用サーバーの証明書を入れておく必要があります（README 参照）。" : "音声入力は https のアドレス（Home Assistant Cloud のリモートURL）で開いたときに使えます。",
     ]],
     ["🗣️ 呼びかけで反応", [
       "⚙ 設定 →「呼びかけで反応する」をオンにすると、呼びかけるだけで聞き取りを始めます（ピッと鳴ります）。",
@@ -1134,7 +1156,10 @@
     ["📱 ホーム画面に追加", [
       "Safari でこのページを開き、共有ボタン（□↑）→「ホーム画面に追加」を選ぶと、アプリのように使えます。",
     ]],
-    ["⬆️ アップデート", [
+    ["⬆️ アップデート", SERVER_MODE ? [
+      "専用サーバーが5分おきに新しいバージョンを確認して、自動で入れ替えます。",
+      "画面上部に「更新する」が出たら押してください。入れ替わり次第、自動で読み込み直します。",
+    ] : [
       "新しいバージョンが出ると、画面上部に「更新する」ボタンが表示されます。押すと Home Assistant が自動で新しいファイルに入れ替えて、画面を読み込み直します。",
       "この機能には Home Assistant 側に shell_command.update_homepanel の設定が必要です（README 参照）。",
     ]],
@@ -1142,6 +1167,7 @@
       "接続できない：Home Assistant が動いているか、ネットワークにつながっているか確認してください。",
       "「呼びかけ検知が設定されていません」：Home Assistant の音声アシスタントでウェイクワードを設定してください。",
       "マイクが使えない：iPad の「設定 → アプリ → Safari → マイク」が許可になっているか確認してください。",
+      "「この接続ではプライバシーが保護されません」と出る：iPad に専用サーバーの証明書（http://192.168.1.46/ca.crt）を入れ、「証明書信頼設定」でオンにしてください。",
       "ログインし直したいとき：⚙ 設定 → ログアウト。",
     ]],
   ];

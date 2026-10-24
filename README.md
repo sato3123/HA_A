@@ -13,7 +13,7 @@ Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの 
 | AI への質問 | 「〇〇の営業時間を教えて」などを AI が答えて読み上げ。5分以内なら会話の続きも可 |
 | 使い方 | トップの「？ 使い方」でいつでも確認。初回は自動で表示 |
 | 自動アップデート | 新しいバージョンが出ると「更新する」ボタンが表示される |
-| iPad 版 | Safari の「ホーム画面に追加」で使える Web アプリ（5章） |
+| iPad 版 | Proxmox のコンテナ（192.168.1.46）から配信する Web アプリ。Safari の「ホーム画面に追加」で使う（5章） |
 | 配色 | ⚙ 設定 → 配色 で11種類から選択（暗め・明るい配色もあり） |
 | 部屋ごとの表示 | Home Assistant のエリアごとに見出しを付けて表示。部屋で絞り込み。アプリだけの部屋の追加・機器の割り当ても可 |
 | スケジュール | 「平日の7:00にエアコンを暖房にする」のような時刻・曜日での自動実行 |
@@ -117,40 +117,79 @@ Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの 
 
 ## 5. iPad 版（Web アプリ）
 
-Apple の開発者登録や Mac は不要です。Home Assistant 自身にファイルを置き、Safari で開いて「ホーム画面に追加」します。
+Apple の開発者登録や Mac は不要です。Proxmox に小さなコンテナ（LXC）を1つ作り、そこから iPad 版を配信します。
 
-### 5-1. Home Assistant に入れる
-1. アドオン「File editor」（または Studio Code Server）で `configuration.yaml` を開き、次を追記します。
+```
+iPad ──https──▶ 192.168.1.46（LXC：Caddy）──▶ 192.168.1.45:8123（Home Assistant）
+                  ├ /homepanel/ … iPad 版の画面
+                  └ それ以外   … Home Assistant へ中継（ログイン・API・音声）
+```
+
+- iPad からは 192.168.1.46 の https のサイト1つに見えるので、**Home Assistant Cloud なしで、家の中から音声入力が使えます**。
+- Home Assistant の設定ファイルを変更する必要はありません。
+- コンテナが GitHub の最新版を5分おきに確認して、自動で更新します。
+- 家の外からは使えません（家の中専用）。
+
+### 5-1. コンテナを作る（Proxmox で1回だけ）
+Proxmox の管理画面で、ノード（例：pve）→「シェル」を開き、次の1行を貼り付けて実行します。
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/create-lxc.sh)
+```
+
+- コンテナ番号 146、IP 192.168.1.46、ルーター 192.168.1.1、ディスクは local-lvm で作ります。
+- 違う場合は先頭に指定します。例：`GATEWAY=192.168.1.254 CTID=150 STORAGE=local-zfs bash <(curl ...)`
+- 最後に「セットアップが終わりました」と表示されれば完了です。
+
+すでにコンテナがある場合は、その中（Debian 12 / root）で次を実行しても同じです。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/setup.sh | HA_IP=192.168.1.45 SELF_IP=192.168.1.46 bash
+```
+
+### 5-2. iPad に証明書を入れる（1回だけ）
+家の中専用の https なので、iPad にこのサーバーの証明書を信頼させます。
+
+1. iPad の **Safari** で `http://192.168.1.46/ca.crt` を開き、「許可」→ プロファイルをダウンロードします。
+2. 「設定」アプリの上部に出る「プロファイルがダウンロードされました」→「インストール」。
+3. 「設定 → 一般 → 情報 → **証明書信頼設定**」で「Caddy Local Authority …」を**オン**にします。
+
+### 5-3. iPad で開く
+1. Safari で `https://192.168.1.46/` を開きます（自動で `/homepanel/` に移動します）。
+2. 「Home Assistant でログイン」→ いつもの Home Assistant のログイン画面でログインします（最初の1回だけ）。
+3. 共有ボタン（□↑）→「ホーム画面に追加」で、ホーム画面にアイコンができます。
+   - ホーム画面のアイコンから開いた後に、もう一度だけログインが必要です（Safari とログイン情報が別のため）。
+4. マイクボタンを初めて押したときに、マイクを「許可」にします。
+
+### 5-4. iPad 版でできること・違い
+- Android 版と同じく、時計と天気、機器ごとの操作、部屋ごとの表示、配色、音声操作・AI への質問、自動化、使い方画面があります。
+- 呼びかけ（ウェイクワード）は画面を表示している間だけ動きます。「設定 → 画面表示と明るさ → 自動ロック」を「しない」にすると、常時表示のパネルとして使えます。
+
+### 5-5. 更新
+- コンテナが5分おきに自動で更新します。画面上部に「更新する」が出たら押すと、入れ替わり次第、自動で読み込み直します。
+- すぐ更新したいとき：Proxmox でコンテナのコンソールを開き `homepanel-update` を実行します。
+
+### 5-6. うまくいかないとき
+- **「この接続ではプライバシーが保護されません」**：5-2 の証明書が入っていないか、「証明書信頼設定」がオフです。
+- **ログイン後に「400: Bad Request」**：Home Assistant の `configuration.yaml` に次を追加して再起動してください（通常は不要です）。
+  ```yaml
+  http:
+    use_x_forwarded_for: true
+    trusted_proxies:
+      - 192.168.1.46
+  ```
+- **画面が出ない**：コンテナのコンソールで `systemctl status caddy` を確認します。
+- コンテナの IP や Home Assistant の IP を変えたときは、5-1 のセットアップ用コマンド（2つ目）を新しい IP で実行し直します。
+
+### 5-7. （別の方法）Home Assistant の中に置く
+コンテナを作らずに、Home Assistant の `/config/www` に置く方法もあります。この場合、音声入力には Home Assistant Cloud の https のアドレスが必要です。
 
 ```yaml
 shell_command:
   update_homepanel: >-
     python3 -c "import io,json,urllib.request as u,zipfile;r=json.load(u.urlopen('https://api.github.com/repos/sato3123/HA_A/releases/latest'));a=[x['browser_download_url'] for x in r['assets'] if x['name']=='homepanel-web.zip'][0];zipfile.ZipFile(io.BytesIO(u.urlopen(a).read())).extractall('/config/www/homepanel')"
 ```
-
-2. 「開発者ツール → YAML → 設定を確認」で問題がないことを確認し、Home Assistant を再起動します。
-3. 「開発者ツール → アクション」で `shell_command.update_homepanel` を実行します。最新版が `/config/www/homepanel/` にダウンロードされます。
-4. `/config/www` フォルダがこれまで無かった場合は、もう一度 Home Assistant を再起動します（`/local/` が使えるようになります）。
-
-※ リポジトリが公開になっている必要があります（2章）。
-
-### 5-2. iPad で開く
-1. Safari で次のアドレスを開きます。
-   - **おすすめ**：`https://xxxx.ui.nabu.casa/local/homepanel/index.html`（Home Assistant Cloud のリモートURL）
-   - 家の中だけなら `http://192.168.1.10:8123/local/homepanel/index.html` でも開けますが、**http では音声入力が使えません**（iPad の制限で、マイクは https のページでしか使えないため）。
-2. 「Home Assistant でログイン」を押し、いつもの Home Assistant のログイン画面でログインします（最初の1回だけ）。
-3. 共有ボタン（□↑）→「ホーム画面に追加」を選ぶと、ホーム画面にアイコンができます。
-   - ログインはホーム画面のアイコンから開いた後にもう一度必要です（Safari とホーム画面のアプリはログイン情報が別のため）。
-4. マイクボタンを初めて押したときに、マイクの許可を「許可」にします。
-
-### 5-3. iPad 版でできること・違い
-- Android 版と同じく、時計と天気、機器ごとの操作、表示する機器の選択、音声操作・AI への質問、文字入力、使い方画面があります。
-- 呼びかけ（ウェイクワード）も使えますが、画面を表示している間だけです。iPad の「設定 → 画面表示と明るさ → 自動ロック」を「しない」にすると、常時表示のパネルとして使えます。
-- 外出先でも、同じ https のアドレスでそのまま使えます。
-
-### 5-4. iPad 版の更新
-- 新しいバージョンが出ると、画面上部に「更新する」ボタンが出ます。押すと Home Assistant が `shell_command.update_homepanel` で新しいファイルに入れ替え、画面が自動で読み込み直されます。
-- Home Assistant の「開発者ツール → アクション」から同じアクションを実行しても更新できます。
+`configuration.yaml` に追記 → 再起動 →「開発者ツール → アクション」で `shell_command.update_homepanel` を実行 → `https://xxxx.ui.nabu.casa/local/homepanel/index.html` を開きます。
 
 ## 6. スケジュール・オートメーションとアカウント
 
@@ -192,6 +231,7 @@ Home Assistant では、自動化の作成・編集は管理者ユーザーだ�
 - `Rules.kt`：スケジュール・オートメーションと Home Assistant の自動化設定の変換
 - `AutomationScreen.kt`：自動化の一覧と編集画面
 - `Updater.kt`：GitHub のリリースを確認してダウンロード・インストール
+- `server/`：iPad 版を配信する LXC コンテナの作成（create-lxc.sh）とセットアップ（setup.sh）
 - `web/`：iPad 版（Web アプリ）。`app.js` が本体、`index.html` はバージョン付きで本体を読み込むだけ
 
 ## 注意
