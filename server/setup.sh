@@ -19,7 +19,7 @@ CA_DIR=/srv/homepanel-ca
 echo "== 必要なソフトを入れています"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq caddy curl jq unzip rsync ca-certificates >/dev/null
+apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 >/dev/null
 
 echo "== 更新用スクリプトを作っています"
 mkdir -p "$WEB" "$CA_DIR"
@@ -64,6 +64,86 @@ OnUnitActiveSec=5min
 WantedBy=timers.target
 EOF
 
+echo "== スクリーンセーバー用の写真サービスを用意しています"
+cat > /usr/local/bin/homepanel-photos <<'PYEOF'
+#!/usr/bin/env python3
+"""Google フォトの「共有アルバム」のリンクから写真の URL 一覧を返す小さなサービス。
+iPad のブラウザからは Google のページを直接読めないため、このサーバーが代わりに読む。
+GET /photos-api/album?url=<共有リンク>  ->  {"photos": ["https://lh3.googleusercontent.com/pw/...", ...]}
+"""
+import json, re, time, urllib.parse, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ALLOWED = ("photos.app.goo.gl", "photos.google.com", "goo.gl")
+CACHE = {}
+PW = re.compile(r'\["(https://lh3\.googleusercontent\.com/pw/[A-Za-z0-9_\-]+)",(\d+),(\d+)')
+ANY = re.compile(r'\["(https://lh3\.googleusercontent\.com/[A-Za-z0-9_\-]{30,})",(\d+),(\d+)')
+
+def extract(html):
+    def find(rx):
+        seen, out = set(), []
+        for m in rx.finditer(html):
+            if int(m.group(2)) >= 300 and int(m.group(3)) >= 300 and m.group(1) not in seen:
+                seen.add(m.group(1)); out.append(m.group(1))
+        return out
+    return find(PW) or find(ANY)
+
+def album(url):
+    host = urllib.parse.urlparse(url).hostname or ""
+    if host not in ALLOWED:
+        raise ValueError("Google フォトの共有リンク（https://photos.app.goo.gl/…）を指定してください")
+    hit = CACHE.get(url)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/604.1",
+        "Accept-Language": "ja,en;q=0.8",
+    })
+    with urllib.request.urlopen(req, timeout=20) as r:
+        final = urllib.parse.urlparse(r.geturl()).hostname or ""
+        if final not in ALLOWED:
+            raise ValueError("Google フォト以外のページに移動しました")
+        html = r.read().decode("utf-8", "replace")
+    photos = extract(html)
+    CACHE[url] = (time.time(), photos)
+    return photos
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        if u.path.rstrip("/") not in ("/photos-api/album", "/album"):
+            self.send_response(404); self.end_headers(); return
+        q = urllib.parse.parse_qs(u.query)
+        try:
+            body = {"photos": album((q.get("url") or [""])[0].strip())}
+        except Exception as e:
+            body = {"error": str(e), "photos": []}
+        data = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+ThreadingHTTPServer(("127.0.0.1", 8099), H).serve_forever()
+PYEOF
+chmod +x /usr/local/bin/homepanel-photos
+cat > /etc/systemd/system/homepanel-photos.service <<'UNITEOF'
+[Unit]
+Description=ホームパネル スクリーンセーバーの写真サービス
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/homepanel-photos
+Restart=always
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
 echo "== iPad 版をダウンロードしています"
 /usr/local/bin/homepanel-update
 
@@ -100,6 +180,11 @@ https://$SELF_IP {
 		file_server
 	}
 
+	# スクリーンセーバーの写真一覧（このサーバーの中のサービス）
+	handle /photos-api/* {
+		reverse_proxy 127.0.0.1:8099
+	}
+
 	# それ以外（ログイン画面・API・WebSocket・読み上げ音声など）は Home Assistant へ中継
 	handle {
 		reverse_proxy $HA_IP:$HA_PORT {
@@ -116,6 +201,8 @@ systemctl enable --now caddy >/dev/null 2>&1 || true
 systemctl restart caddy
 systemctl daemon-reload
 systemctl enable --now homepanel-update.timer >/dev/null
+systemctl enable --now homepanel-photos.service >/dev/null
+systemctl restart homepanel-photos.service
 
 echo "== 証明書を用意しています"
 ROOT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt

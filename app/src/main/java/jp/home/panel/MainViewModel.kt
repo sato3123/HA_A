@@ -867,10 +867,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         if (manualBusy) {
-            if (assistant?.isSpeaking == true || v is VoiceState.Speaking) {
-                assistant?.stopSpeaking()
-                pendingListen = true
-            }
+            // 処理中・読み上げ中でも、押したら「終わり次第すぐ次を聞く」。読み上げ中なら止める
+            pendingListen = true
+            if (assistant?.isSpeaking == true || v is VoiceState.Speaking) assistant?.stopSpeaking()
+            addLog("次の聞き取りを予約しました")
             return
         }
         startManualListen()

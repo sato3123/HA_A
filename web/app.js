@@ -118,6 +118,12 @@
     edit: null,
     editError: null,
     saving: false,
+    timers: store.get("timers", []),
+    ringing: [],
+    ss: Object.assign({ enabled: false, minutes: 5, interval: 20, album: "" }, store.get("ss", {})),
+    ssOn: false,
+    photos: [],
+    photoStatus: null,
   };
   const pendingTemp = new Map();
 
@@ -704,14 +710,24 @@
     player.src = SILENT;
     player.play().catch(() => {});
   }
+  let playDone = null;
   function play(url) {
     return new Promise((res) => {
-      player.onended = res;
-      player.onerror = res;
+      let finished = false;
+      const finish = () => { if (finished) return; finished = true; clearTimeout(t); playDone = null; try { player.pause(); } catch (e) { /* noop */ } res(); };
+      // 読み上げが終わったと判定されなくても先へ進めるように（音声の長さ＋3秒、分からなければ30秒）
+      let t = setTimeout(finish, 30000);
+      player.onloadedmetadata = () => {
+        if (isFinite(player.duration) && player.duration > 0) { clearTimeout(t); t = setTimeout(finish, (player.duration + 3) * 1000); }
+      };
+      playDone = finish;
+      player.onended = finish;
+      player.onerror = () => { addLog("読み上げの再生エラー"); finish(); };
       player.src = url;
-      player.play().catch(() => res());
+      player.play().catch((e) => { addLog("読み上げを再生できません：" + e.message); finish(); });
     });
   }
+  function stopSpeaking() { if (playDone) playDone(); }
 
   class Mic {
     constructor() { this.ctx = null; this.sink = null; }
@@ -737,7 +753,7 @@
     }
     // 端末のサンプリング周波数（44.1/48kHz）→ 16kHz・16bit に変換して渡す
     onChunk(f32) {
-      if (!this.sink) { this.carry = new Float32Array(0); this.t = 0; return; }
+      if (!this.sink && !this.levelCb) { this.carry = new Float32Array(0); this.t = 0; return; }
       const buf = new Float32Array(this.carry.length + f32.length);
       buf.set(this.carry, 0);
       buf.set(f32, this.carry.length);
@@ -753,7 +769,12 @@
       this.t = t - used;
       const pcm = new Int16Array(out.length);
       for (let i = 0; i < out.length; i++) { const s = Math.max(-1, Math.min(1, out[i])); pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
-      this.sink(pcm);
+      if (this.levelCb) {
+        let sum = 0;
+        for (let i = 0; i < out.length; i++) sum += out[i] * out[i];
+        this.levelCb(Math.min(100, Math.round(Math.sqrt(sum / Math.max(1, out.length)) * 32768 / 3000 * 100)));
+      }
+      if (this.sink) this.sink(pcm);
     }
     beep() {
       if (!this.ctx) return;
@@ -789,25 +810,53 @@
 
   let currentAbort = null;
   class AbortErr extends Error {}
+  let enhanceAudio = true;
 
-  /** 音声（wake: 呼びかけ待ちから）または文字で Assist パイプラインを実行。命令を処理したら true */
-  async function runPipeline({ wake = false, text = null }) {
-    const ha = S.ha;
-    if (!ha) throw new Error("接続していません");
-    const isText = text !== null;
-    const input = isText ? { text } : Object.assign({ sample_rate: 16000 }, wake ? { timeout: 600 } : {});
-    const msg = { type: "assist_pipeline/run", start_stage: isText ? "intent" : wake ? "wake_word" : "stt", end_stage: "tts", input };
+  // ---- 動作ログ ----
+  const voiceLog = [];
+  function addLog(line) {
+    const d = new Date();
+    voiceLog.unshift(`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${line}`);
+    voiceLog.length = Math.min(voiceLog.length, 60);
+    const box = $("#voiceLog");
+    if (box) box.textContent = voiceLog.join("\n");
+  }
+
+  async function subscribeRun(ha, msg, cb) {
+    try {
+      return await ha.subscribe(msg, cb);
+    } catch (e) {
+      if (enhanceAudio && msg.input && "noise_suppression_level" in msg.input && /extra keys/i.test(e.message)) {
+        enhanceAudio = false;
+        addLog("マイク補正の指定に未対応のため外しました");
+        delete msg.input.noise_suppression_level;
+        delete msg.input.auto_gain_dbfs;
+        return ha.subscribe(msg, cb);
+      }
+      throw e;
+    }
+  }
+
+  function basePayload(start, end, input) {
+    const msg = { type: "assist_pipeline/run", start_stage: start, end_stage: end, input };
     const pid = effectivePipeline();
     if (pid) msg.pipeline = pid;
-    if (S.conv && Date.now() - S.conv.at < 5 * 60 * 1000) msg.conversation_id = S.conv.id;
+    if (start === "intent" && S.conv && Date.now() - S.conv.at < 5 * 60 * 1000) msg.conversation_id = S.conv.id;
+    return msg;
+  }
 
-    let handler = -1, heard = text || "", reply = "", tts = null, handled = isText, ended = false;
+  /** 聞き取って文字にする（wake: 呼びかけを待ってから）。呼びかけが無いまま時間切れなら null */
+  async function listen(wake) {
+    const ha = S.ha;
+    if (!ha) throw new Error("接続していません");
+    const input = Object.assign({ sample_rate: 16000 }, wake ? { timeout: 600 } : {}, enhanceAudio ? { noise_suppression_level: 2, auto_gain_dbfs: 15 } : {});
+    let handler = -1, heard = null, ended = false, frames = 0;
     let deadline = wake ? Infinity : Date.now() + 10000;
     let resolveDone, rejectDone;
     const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
     const stopAudio = () => {
       if (mic.sink === sink) mic.sink = null;
-      if (handler >= 0 && !ended) { ended = true; ha.sendBinary(new Uint8Array([handler])); }
+      if (handler >= 0 && !ended) { ended = true; ha.sendBinary(new Uint8Array([handler])); addLog(`音声送信を終了（約${Math.round(frames * 0.064)}秒分）`); }
     };
     const sink = (pcm) => {
       if (S.stopReq || Date.now() > deadline) { stopAudio(); return; }
@@ -815,15 +864,14 @@
       frame[0] = handler;
       frame.set(new Uint8Array(pcm.buffer), 1);
       ha.sendBinary(frame);
+      frames += pcm.length / 1024;
     };
     S.stopReq = false;
-    if (isText) setVoice({ type: "proc", heard: text });
-
-    const subId = await ha.subscribe(msg, (ev) => {
+    const subId = await subscribeRun(ha, basePayload(wake ? "wake_word" : "stt", "stt", input), (ev) => {
       const d = ev.data || {};
+      if (ev.type !== "stt-vad-start") addLog("← " + ev.type);
       switch (ev.type) {
         case "run-start":
-          if (isText) break;
           handler = d.runner_data ? d.runner_data.stt_binary_handler_id : -1;
           if (handler === undefined || handler === null || handler < 0) { rejectDone(new Error("音声入力を開始できませんでした")); break; }
           setVoice({ type: wake ? "wait" : "listen" });
@@ -831,6 +879,7 @@
           break;
         case "wake_word-end":
           if (!d.wake_word_output || !d.wake_word_output.wake_word_id) { resolveDone(); break; }
+          addLog("呼びかけを検知：" + d.wake_word_output.wake_word_id);
           deadline = Date.now() + 10000;
           mic.beep();
           setVoice({ type: "listen" });
@@ -838,10 +887,35 @@
         case "stt-vad-end": stopAudio(); break;
         case "stt-end":
           stopAudio();
-          handled = true;
           heard = (d.stt_output && d.stt_output.text) || "";
-          setVoice({ type: "proc", heard });
+          addLog(`聞き取り結果：「${heard}」`);
           break;
+        case "error":
+          addLog(`エラー：${d.code} ${d.message || ""}`);
+          if (d.code === "wake-word-timeout") resolveDone(); else rejectDone(errFor(d));
+          break;
+        case "run-end": resolveDone(); break;
+      }
+    });
+    addLog(wake ? "呼びかけの待ち受けを開始" : "聞き取りを開始");
+    currentAbort = () => rejectDone(new AbortErr("中止"));
+    const timer = setTimeout(() => rejectDone(new Error("時間切れになりました")), wake ? 690000 : 60000);
+    try { await done; } finally { clearTimeout(timer); currentAbort = null; stopAudio(); ha.unsub(subId); }
+    if (heard !== null && !heard.trim()) throw new Error("聞き取れませんでした");
+    return heard;
+  }
+
+  /** 文字を会話エージェント（start=intent）または読み上げ（start=tts）に渡して、答えを読み上げる */
+  async function runToTts(start, input, heard, fixedReply) {
+    const ha = S.ha;
+    if (!ha) throw new Error("接続していません");
+    setVoice({ type: "proc", heard });
+    let reply = fixedReply || "", tts = null, resolveDone, rejectDone;
+    const done = new Promise((res, rej) => { resolveDone = res; rejectDone = rej; });
+    const subId = await ha.subscribe(basePayload(start, "tts", input), (ev) => {
+      const d = ev.data || {};
+      addLog("← " + ev.type);
+      switch (ev.type) {
         case "intent-end": {
           const o = d.intent_output || {};
           reply = (o.response && o.response.speech && o.response.speech.plain && o.response.speech.plain.speech) || "";
@@ -849,25 +923,37 @@
           break;
         }
         case "tts-end": tts = d.tts_output && d.tts_output.url; break;
-        case "error": if (d.code === "wake-word-timeout") resolveDone(); else rejectDone(errFor(d)); break;
+        case "error": addLog(`エラー：${d.code} ${d.message || ""}`); rejectDone(errFor(d)); break;
         case "run-end": resolveDone(); break;
       }
     });
-    currentAbort = () => rejectDone(new AbortErr("中止"));
-    const timer = setTimeout(() => rejectDone(new Error("時間切れになりました")), wake ? 690000 : 90000);
-    try {
-      await done;
-    } finally {
-      clearTimeout(timer);
-      currentAbort = null;
-      stopAudio();
-      ha.unsub(subId);
+    const timer = setTimeout(() => rejectDone(new Error("時間切れになりました")), 90000);
+    try { await done; } finally { clearTimeout(timer); ha.unsub(subId); }
+    if (tts) {
+      setVoice({ type: "speak", heard, reply });
+      await play(tts);
     }
-    if (handled) {
-      setVoice({ type: "done", heard, reply });
-      if (tts) await play(tts);
+    setVoice({ type: "done", heard, reply });
+  }
+
+  /** 聞き取った文字を処理：タイマーなどアプリの命令はここで、それ以外は AI へ */
+  async function handleHeard(text) {
+    const cmd = parseTimerCommand(text);
+    if (!cmd) return runToTts("intent", { text }, text);
+    addLog("アプリの命令として処理：" + cmd.type);
+    let reply;
+    if (cmd.type === "start") {
+      addTimer(cmd.seconds, cmd.label);
+      reply = (cmd.label ? cmd.label + "の" : "") + speakRemaining(cmd.seconds * 1000) + "のタイマーをセットしました";
+    } else if (cmd.type === "cancel") {
+      const n = S.timers.length + S.ringing.length;
+      stopAlarm();
+      S.timers = []; saveTimers(); renderTimers();
+      reply = n ? "タイマーを止めました" : "動いているタイマーはありません";
+    } else {
+      reply = S.timers.length ? S.timers.map((t) => (t.label || "タイマー") + "は残り" + speakRemaining(timerRemaining(t))).join("、") + "です" : "動いているタイマーはありません";
     }
-    return handled;
+    return runToTts("tts", { text: reply }, text, reply);
   }
 
   // ---- 呼びかけ待ち受けループ ----
@@ -886,10 +972,12 @@
               await sleep(3000);
               continue;
             }
-            await runPipeline({ wake: true });
+            const heard = await listen(true);
+            if (heard) await handleHeard(heard);
             await sleep(300);
           } catch (e) {
             if (e instanceof AbortErr || !shouldWake()) break;
+            addLog("失敗：" + e.message);
             setVoice({ type: "fail", msg: e.message });
             await sleep(5000);
           }
@@ -904,22 +992,35 @@
   async function abortWake() {
     const p = wakeLoopPromise;
     if (currentAbort) currentAbort();
+    stopSpeaking();
     if (p) await p.catch(() => {});
   }
 
+  let pendingListen = false;
+  /** マイクボタン：聞き取り中→終える／読み上げ中→止めて次を聞く／それ以外→聞き取り開始 */
   async function onMicPressed() {
     unlockAudio();
+    onUserInteraction();
     if (S.voice.type === "listen") { S.stopReq = true; return; }
-    if (S.busy || !S.ha) return;
+    if (S.busy) {
+      // 処理中・読み上げ中でも、押したら「終わり次第すぐ次を聞く」。読み上げ中なら止める
+      pendingListen = true;
+      if (S.voice.type === "speak") stopSpeaking();
+      setVoice(Object.assign({}, S.voice, { queued: true }));
+      return;
+    }
+    if (!S.ha) return;
     S.busy = true;
     try {
       await abortWake();
       await mic.ensure();
-      await runPipeline({ wake: false });
+      const heard = await listen(false);
+      if (heard) await handleHeard(heard);
     } catch (e) {
-      if (!(e instanceof AbortErr)) setVoice({ type: "fail", msg: e.message });
+      if (!(e instanceof AbortErr)) { addLog("失敗：" + e.message); setVoice({ type: "fail", msg: e.message }); }
     } finally {
       S.busy = false;
+      if (pendingListen) { pendingListen = false; onMicPressed(); return; }
       if (!S.wake) mic.stop();
       kickWake();
     }
@@ -927,15 +1028,43 @@
 
   async function sendText(text) {
     unlockAudio();
-    if (!text.trim() || S.busy || !S.ha) return;
+    onUserInteraction();
+    if (!text.trim() || !S.ha) return;
+    if (S.busy) { if (S.voice.type === "speak") stopSpeaking(); else return; while (S.busy) await sleep(50); }
     S.busy = true;
     try {
       await abortWake();
-      await runPipeline({ text: text.trim() });
+      await handleHeard(text.trim());
     } catch (e) {
-      if (!(e instanceof AbortErr)) setVoice({ type: "fail", msg: e.message });
+      if (!(e instanceof AbortErr)) { addLog("失敗：" + e.message); setVoice({ type: "fail", msg: e.message }); }
     } finally {
       S.busy = false;
+      kickWake();
+    }
+  }
+
+  /** マイクテスト（5秒）：音の大きさを表示 */
+  async function micTest() {
+    const out = $("#micTestResult"), bar = $("#micBar");
+    if (S.busy) return;
+    S.busy = true;
+    try {
+      await abortWake();
+      await mic.ensure();
+      out.textContent = "5秒間、話しかけてください…";
+      let peak = 0;
+      mic.levelCb = (lv) => { peak = Math.max(peak, lv); if (bar) bar.style.width = lv + "%"; };
+      await sleep(5000);
+      mic.levelCb = null;
+      if (bar) bar.style.width = "0%";
+      out.textContent = peak < 3 ? `音がほとんど入っていません（最大 ${peak}）。Safari のマイクの許可を確認してください`
+        : peak < 15 ? `音が小さめです（最大 ${peak}）。もう少し近くで話すと認識しやすくなります` : `マイクは正常です（最大 ${peak}）`;
+    } catch (e) {
+      out.textContent = e.message;
+    } finally {
+      mic.levelCb = null;
+      S.busy = false;
+      if (!S.wake) mic.stop();
       kickWake();
     }
   }
@@ -946,18 +1075,19 @@
     const v = S.voice;
     const micBtn = $("#mic");
     micBtn.classList.toggle("listen", v.type === "listen");
-    micBtn.textContent = v.type === "listen" ? "■" : "🎤";
+    micBtn.textContent = v.type === "listen" ? "■" : v.type === "speak" ? "🔇" : "🎤";
     micBtn.disabled = S.conn !== "connected" || !window.isSecureContext;
     st.textContent = {
       idle: S.wake ? "呼びかけの準備をしています…" : "マイクを押して話しかけてください\n例：「リビングの電気をつけて」「近くのスーパーの営業時間は？」",
       wait: "呼びかけを待っています（マイクボタンでもすぐに話せます）",
       listen: "聞いています…（話し終わったら■で終了）",
-      proc: `「${v.heard || ""}」を処理しています…`,
+      proc: `「${v.heard || ""}」を処理しています…${v.queued ? "（終わったら続けて聞きます）" : ""}`,
+      speak: `「${v.heard || ""}」🔊（マイクを押すと止めて次を聞けます）`,
       done: `「${v.heard || ""}」`,
       fail: v.msg || "",
     }[v.type];
     let reply = "";
-    if (v.type === "done") reply = v.reply || "完了しました";
+    if (v.type === "done" || v.type === "speak") reply = v.reply || "完了しました";
     else if ((v.type === "wait" || v.type === "idle") && S.lastDone) reply = `前回：「${S.lastDone.heard}」→ ${S.lastDone.reply}`;
     $("#vreply").textContent = reply;
     $("#vnote").textContent = window.isSecureContext ? "" : "※ http のアドレスでは音声入力が使えません（文字入力は使えます）。https のアドレスで開いてください。";
@@ -1073,6 +1203,10 @@
         <label class="row"><input type="radio" name="pl" data-set="pipeline" data-id="${esc(p.id)}" ${p.id === pid ? "checked" : ""}>
         <span class="rt">${esc(p.name)}<div class="sub">${esc([p.id === S.preferred ? "優先" : null, p.wake ? "呼びかけ対応" : "呼びかけ未設定", p.agent || null].filter(Boolean).join("・"))}</div></span></label>`).join("") : ""}
 
+      ${voiceDiagHTML()}
+
+      <div class="sec">スクリーンセーバー</div>${screensaverSettingsHTML()}
+
       ${ws.length > 1 ? `<div class="sec">天気</div>` + ws.map((x) => `
         <label class="row"><input type="radio" name="wx" data-set="weather" data-id="${esc(x.entity_id)}" ${w && x.entity_id === w.entity_id ? "checked" : ""}>
         <span class="rt">${esc(nameOf(x))}<div class="sub">${esc(x.entity_id)}</div></span></label>`).join("") : ""}
@@ -1136,6 +1270,15 @@
     ["⚙ 表示する機器を選ぶ", [
       "⚙ 設定 →「表示する機器」で、チェックを付けた機器だけを表示します。名前で絞り込めます。",
     ]],
+    ["⏱ タイマー", [
+      "トップの「⏱ タイマー」から、いくつでも同時に設定できます。残り時間はホーム画面の上に表示されます。",
+      "音声でも「5分のタイマー」「パスタの3分タイマー」「タイマーの残りは？」「タイマーを止めて」と言えます。",
+      "時間になるとアラームが鳴り、「止める」ボタンが出ます（iPad の消音スイッチがオンだと音が出ないことがあります）。",
+    ]],
+    ["🖼 スクリーンセーバー", [
+      "⚙ 設定 →「スクリーンセーバー」でオンにすると、操作していない時間が続いたときに写真と時計を表示します。",
+      "Google フォトのアルバムを「共有」→「リンクを作成」して、そのリンクを貼り付けてください。画面に触れると元に戻ります。",
+    ]],
     ["🚪 部屋ごとに分ける", [
       "機器は Home Assistant のエリアごとに分けて表示されます。上の「すべて／リビング／寝室…」で部屋を絞り込めます。",
       "⚙ 設定 →「部屋」で、アプリだけの部屋を追加できます。「表示する機器」の各機器の「🏠」で部屋を変えられます。",
@@ -1168,6 +1311,8 @@
       "「呼びかけ検知が設定されていません」：Home Assistant の音声アシスタントでウェイクワードを設定してください。",
       "マイクが使えない：iPad の「設定 → アプリ → Safari → マイク」が許可になっているか確認してください。",
       "「この接続ではプライバシーが保護されません」と出る：iPad に専用サーバーの証明書（http://192.168.1.46/ca.crt）を入れ、「証明書信頼設定」でオンにしてください。",
+      "呼びかけに反応しない：⚙ 設定 →「音声」の「マイクのテスト」と「音声の動作ログ」で、音が入っているか・どこで止まっているかを確認できます。",
+      "回答の読み上げ中でも、マイクボタンを押すと読み上げを止めて次の質問を聞きます。",
       "ログインし直したいとき：⚙ 設定 → ログアウト。",
     ]],
   ];
@@ -1184,6 +1329,7 @@
     page.classList.remove("hidden");
     page.scrollTop = 0;
     if (name === "auto") { S.edit = null; S.autoMsg = null; renderAuto(); loadRules(); return; }
+    if (name === "timers") { page.innerHTML = timersHTML(); renderTimers(); return; }
     page.innerHTML = name === "settings" ? settingsHTML() : helpHTML();
     if (name === "settings") renderSelList();
     renderUpdate();
@@ -1207,6 +1353,7 @@
   }
 
   async function onSetting(el) {
+    if (await onExtraSetting(el)) return;
     if (S.page === "auto" && el.dataset.set !== "close" && (await onAutoSetting(el))) return;
     switch (el.dataset.set) {
       case "theme": S.theme = el.dataset.id; store.set("theme", S.theme); applyTheme(); openPageKeep(); break;
@@ -1771,6 +1918,273 @@
     return true;
   }
 
+  // ================= タイマー =================
+  const timerRemaining = (t, now = Date.now()) => (t.endAt ? Math.max(0, t.endAt - now) : t.remainingMs);
+  function formatRemaining(ms) {
+    const s = Math.ceil(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+  }
+  function speakRemaining(ms) {
+    const s = Math.ceil(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    let r = "";
+    if (h) r += h + "時間";
+    if (m) r += m + "分";
+    if (sec && !h) r += sec + "秒";
+    return r || "0秒";
+  }
+  const KANJI = { "〇": 0, "零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
+  function kanjiToNumber(str) {
+    let total = 0, cur = 0;
+    for (const c of str) {
+      if (c in KANJI) cur = KANJI[c];
+      else if (c === "十") { total += (cur || 1) * 10; cur = 0; }
+      else if (c === "百") { total += (cur || 1) * 100; cur = 0; }
+      else return null;
+    }
+    return total + cur;
+  }
+  function normalizeNumbers(text) {
+    const half = text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+    return half.replace(/[〇零一二三四五六七八九十百]+/g, (m) => { const n = kanjiToNumber(m); return n === null ? m : String(n); });
+  }
+  /** 声でのタイマー操作。該当しなければ null */
+  function parseTimerCommand(raw) {
+    const text = normalizeNumbers(raw).replace(/[\s　]/g, "");
+    if (!text.includes("タイマー")) return null;
+    if (/止め|とめ|キャンセル|消し|けし|解除|ストップ|終了|やめ/.test(text)) return { type: "cancel" };
+    if (/残り|のこり|あと何|あとどれ|何分/.test(text)) return { type: "remaining" };
+    const re = /(?:(\d+)時間)?(?:(\d+)分)?(?:(\d+)秒)?/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0] === "") { re.lastIndex++; continue; }
+      let total = (Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0);
+      if (/\d+分半/.test(text)) total += 30;
+      if (total <= 0) return null;
+      const before = text.slice(0, m.index).replace(/の$/, "").trim();
+      const label = before && before.length <= 12 && !before.includes("タイマー") ? before : "";
+      return { type: "start", seconds: total, label };
+    }
+    return null;
+  }
+
+  function saveTimers() { store.set("timers", S.timers); }
+  function addTimer(seconds, label) {
+    unlockAlarm();
+    const now = Date.now();
+    S.timers.push({ id: now, label: (label || "").trim(), totalMs: seconds * 1000, endAt: now + seconds * 1000, remainingMs: seconds * 1000 });
+    S.timers.sort((a, b) => timerRemaining(a) - timerRemaining(b));
+    saveTimers();
+    renderTimers();
+  }
+  function cancelTimer(id) { S.timers = S.timers.filter((t) => t.id !== id); saveTimers(); renderTimers(); }
+  function pauseResumeTimer(id) {
+    const now = Date.now();
+    S.timers = S.timers.map((t) => t.id !== id ? t : t.endAt ? Object.assign({}, t, { endAt: null, remainingMs: timerRemaining(t, now) }) : Object.assign({}, t, { endAt: now + t.remainingMs }));
+    saveTimers();
+    renderTimers();
+  }
+  function checkTimers() {
+    const now = Date.now();
+    const done = S.timers.filter((t) => t.endAt && t.endAt <= now);
+    if (done.length) {
+      S.timers = S.timers.filter((t) => !done.includes(t));
+      saveTimers();
+      S.ringing = S.ringing.concat(done);
+      addLog("タイマー終了");
+      onUserInteraction();
+      startAlarm();
+      renderAlarm();
+    }
+    renderTimers(true);
+  }
+
+  // アラーム音（iOS は操作をきっかけに音を出せるようにしておく必要がある）
+  let alarmCtx = null, alarmTimer = null;
+  function unlockAlarm() {
+    try {
+      if (!alarmCtx) alarmCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (alarmCtx.state === "suspended") alarmCtx.resume();
+    } catch (e) { /* noop */ }
+  }
+  function startAlarm() {
+    if (alarmTimer || !alarmCtx) return;
+    const until = Date.now() + 120000;
+    const ring = () => {
+      if (!S.ringing.length || Date.now() > until) { stopAlarm(); return; }
+      const t0 = alarmCtx.currentTime;
+      [0, 0.25, 0.5].forEach((dt) => {
+        const o = alarmCtx.createOscillator(), g = alarmCtx.createGain();
+        o.frequency.value = 1046;
+        g.gain.setValueAtTime(0.3, t0 + dt);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + dt + 0.2);
+        o.connect(g); g.connect(alarmCtx.destination);
+        o.start(t0 + dt); o.stop(t0 + dt + 0.2);
+      });
+    };
+    ring();
+    alarmTimer = setInterval(ring, 1200);
+  }
+  function stopAlarm() {
+    clearInterval(alarmTimer);
+    alarmTimer = null;
+    S.ringing = [];
+    renderAlarm();
+  }
+
+  function renderTimers(tickOnly) {
+    const strip = $("#timerStrip");
+    if (strip) {
+      const now = Date.now();
+      strip.innerHTML = S.timers.map((t) => `<button class="chip timer" data-set="openTimers">⏱ ${esc(t.label ? t.label + " " : "")}${formatRemaining(timerRemaining(t, now))}${t.endAt ? "" : "（停止中）"}</button>`).join("");
+      strip.classList.toggle("hidden", !S.timers.length);
+    }
+    const list = $("#timerList");
+    if (list) {
+      const now = Date.now();
+      list.innerHTML = S.timers.length ? S.timers.map((t) => `<div class="row" style="cursor:default"><span class="rt"><span style="font-size:24px;font-variant-numeric:tabular-nums">${formatRemaining(timerRemaining(t, now))}</span>
+        <div class="sub">${esc(t.label || "タイマー")}（${speakRemaining(t.totalMs)}）</div></span>
+        <button class="tbtn" data-set="timerPause" data-id="${t.id}">${t.endAt ? "一時停止" : "再開"}</button>
+        <button class="tbtn" data-set="timerCancel" data-id="${t.id}">取消</button></div>`).join("") : `<div class="note">動いているタイマーはありません</div>`;
+    }
+    const ss = $("#ssTimers");
+    if (ss) ss.innerHTML = S.timers.map((t) => `<div>⏱ ${esc(t.label ? t.label + " " : "")}${formatRemaining(timerRemaining(t))}</div>`).join("");
+    if (tickOnly) return;
+  }
+
+  function timersHTML() {
+    return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>⏱ タイマー</h2></div>
+      <div class="field"><div class="fl">すぐ始める</div><div class="brow">${[1, 3, 5, 10, 15, 30, 60].map((m) => `<button class="tb" data-set="timerQuick" data-id="${m * 60}">${m >= 60 ? m / 60 + "時間" : m + "分"}</button>`).join("")}</div></div>
+      <div class="field"><div class="fl">時間を指定</div>
+        <div class="brow" style="align-items:center"><input type="number" id="tMin" min="0" max="999" value="3" style="width:90px" class="search"> 分
+          <input type="number" id="tSec" min="0" max="59" value="0" style="width:90px" class="search"> 秒</div>
+        <input type="text" id="tLabel" class="search" placeholder="名前（例：パスタ）※なくてもOK" style="max-width:420px">
+        <div><button class="btn" data-set="timerStart">スタート</button></div></div>
+      <div class="field"><div class="fl">動いているタイマー</div><div id="timerList"></div></div>
+      <div class="note">音声でも「5分のタイマー」「パスタの3分タイマー」「タイマーの残りは？」「タイマーを止めて」と言えます。</div></div>`;
+  }
+
+  function renderAlarm() {
+    const box = $("#alarm");
+    if (!box) return;
+    box.classList.toggle("hidden", !S.ringing.length);
+    box.innerHTML = S.ringing.length ? `<div class="alarm-in"><div style="font-size:80px">⏰</div><div style="font-size:32px;font-weight:600">タイマーが終わりました</div>
+      ${S.ringing.map((t) => `<div style="font-size:20px">${esc(t.label || "タイマー")}（${speakRemaining(t.totalMs)}）</div>`).join("")}
+      <button class="btn" data-set="alarmStop" style="font-size:22px;padding:14px 40px">止める</button></div>` : "";
+  }
+
+  // ================= スクリーンセーバー =================
+  let lastInteraction = Date.now();
+  let ssTimer = null, ssIndex = 0;
+  function onUserInteraction() {
+    lastInteraction = Date.now();
+    if (S.ssOn) hideScreensaver();
+  }
+  function showScreensaver() {
+    if (S.ssOn) return;
+    S.ssOn = true;
+    const box = $("#saver");
+    box.classList.remove("hidden");
+    renderSaverInfo();
+    nextPhoto();
+    clearInterval(ssTimer);
+    ssTimer = setInterval(nextPhoto, (S.ss.interval || 20) * 1000);
+  }
+  function hideScreensaver() {
+    S.ssOn = false;
+    clearInterval(ssTimer);
+    $("#saver").classList.add("hidden");
+  }
+  function nextPhoto() {
+    const imgs = document.querySelectorAll("#saver .ssimg");
+    if (!S.photos.length || imgs.length < 2) return;
+    ssIndex = (ssIndex + 1) % S.photos.length;
+    const w = Math.min(1920, Math.round(window.innerWidth * (window.devicePixelRatio || 1)));
+    const h = Math.min(1920, Math.round(window.innerHeight * (window.devicePixelRatio || 1)));
+    const [a, b] = imgs[0].classList.contains("show") ? [imgs[1], imgs[0]] : [imgs[0], imgs[1]];
+    a.onload = () => { a.classList.add("show"); b.classList.remove("show"); };
+    a.src = `${S.photos[ssIndex]}=w${w}-h${h}`;
+  }
+  function renderSaverInfo() {
+    const now = new Date();
+    const t = $("#ssTime"), d = $("#ssDate"), w = $("#ssWeather");
+    if (!t) return;
+    t.textContent = `${now.getHours()}:${pad(now.getMinutes())}`;
+    d.textContent = `${now.getMonth() + 1}月${now.getDate()}日（${DOW[now.getDay()]}）`;
+    const we = weatherEntity();
+    if (we && !isUnav(we)) w.textContent = `${condEmoji(we.state)} ${num(we.attributes, "temperature") !== null ? fmt(num(we.attributes, "temperature")) + "°" : ""} ${condLabel(we.state)}`;
+  }
+  function checkIdle() {
+    const idle = Date.now() - lastInteraction;
+    if (S.ss.enabled && !S.ssOn && !S.page && !S.detail && !S.ringing.length && !S.busy && S.voice.type !== "listen" && idle > (S.ss.minutes || 5) * 60000) showScreensaver();
+    if (S.ssOn) renderSaverInfo();
+  }
+
+  /** Google フォトの共有アルバムの写真一覧（専用サーバー経由。ブラウザからは直接読めないため） */
+  async function loadPhotos() {
+    const url = S.ss.album;
+    if (!url) { S.photos = []; S.photoStatus = null; return; }
+    if (!SERVER_MODE) { S.photoStatus = "写真の表示は、Proxmox の専用サーバーから開いたときに使えます（今は時計のみ表示）"; return; }
+    S.photoStatus = "アルバムを読み込んでいます…";
+    renderPhotoStatus();
+    try {
+      const r = await fetch("/photos-api/album?url=" + encodeURIComponent(url), { cache: "no-store" });
+      if (r.status === 404) throw new Error("サーバーに写真の機能がありません。Proxmox でセットアップ用コマンドをもう一度実行してください（README 5-1）");
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+      S.photos = (j.photos || []).sort(() => Math.random() - 0.5);
+      S.photoStatus = S.photos.length ? `${S.photos.length}枚の写真を読み込みました` : "写真が見つかりませんでした。共有リンク（photos.app.goo.gl/…）か確認してください";
+    } catch (e) {
+      S.photoStatus = "アルバムを読み込めませんでした：" + e.message;
+    }
+    renderPhotoStatus();
+  }
+  function renderPhotoStatus() { const el = $("#photoStatus"); if (el) el.textContent = S.photoStatus || ""; }
+
+  function screensaverSettingsHTML() {
+    const c = (sel, id, label) => `<button class="chip${sel ? " sel" : ""}" data-set="ssMin" data-id="${id}">${label}</button>`;
+    const ci = (sel, id, label) => `<button class="chip${sel ? " sel" : ""}" data-set="ssInt" data-id="${id}">${label}</button>`;
+    return `<label class="row"><span class="rt">操作していないときに写真を表示する<div class="sub">時計・天気・タイマーも一緒に表示します。画面に触れると元に戻ります。写真を設定しない場合は時計だけを表示します。</div></span>
+        <input type="checkbox" data-set="ssOn" ${S.ss.enabled ? "checked" : ""}></label>
+      <div class="note">表示するまでの時間</div><div class="chips">${[1, 3, 5, 10, 15, 30].map((m) => c(S.ss.minutes === m, m, m + "分")).join("")}</div>
+      <div class="note" style="margin-top:8px">写真を切り替える間隔</div><div class="chips">${[10, 20, 30, 60, 300].map((x) => ci(S.ss.interval === x, x, x >= 60 ? x / 60 + "分" : x + "秒")).join("")}</div>
+      <div class="note" style="margin-top:8px">Google フォトのアルバムを「共有」→「リンクを作成」し、そのリンク（https://photos.app.goo.gl/…）を貼り付けてください。Google の仕様変更で、共有リンクにしたアルバムだけ表示できます（非公式の方法のため、Google 側の変更で使えなくなることがあります）。</div>
+      <input type="text" class="search" id="ssAlbum" value="${esc(S.ss.album || "")}" placeholder="Google フォトの共有アルバムのリンク">
+      <div class="brow"><button class="btn" data-set="ssAlbumSave">保存して読み込む</button><button class="btn outline" data-set="ssTest">今すぐ表示して試す</button></div>
+      <div class="note" id="photoStatus">${esc(S.photoStatus || "")}</div>`;
+  }
+
+  function voiceDiagHTML() {
+    return `<div class="note" style="margin-top:10px">呼びかけに反応しないときは、マイクのテストと動作ログで原因を確認できます。</div>
+      <div class="brow"><button class="btn outline" data-set="micTest">🎤 マイクのテスト（5秒）</button><button class="tbtn" data-set="logToggle">音声の動作ログ</button></div>
+      <div class="bar" style="margin:6px 0"><div id="micBar" style="height:100%;width:0;background:var(--primary)"></div></div>
+      <div class="note" id="micTestResult"></div>
+      <pre id="voiceLog" class="hidden" style="white-space:pre-wrap;font-size:12px;background:var(--surface2);padding:10px;border-radius:10px;max-height:300px;overflow:auto">${esc(voiceLog.join("\n") || "まだ記録はありません。マイクボタンや呼びかけを試すと、ここに流れが表示されます。")}</pre>`;
+  }
+
+  async function onExtraSetting(el) {
+    const id = el.dataset.id;
+    switch (el.dataset.set) {
+      case "openTimers": openPage("timers"); return true;
+      case "timerQuick": addTimer(Number(id), ""); return true;
+      case "timerStart": {
+        const sec = (Number($("#tMin").value) || 0) * 60 + (Number($("#tSec").value) || 0);
+        if (sec > 0) { addTimer(sec, $("#tLabel").value); $("#tLabel").value = ""; }
+        return true;
+      }
+      case "timerPause": pauseResumeTimer(Number(id)); return true;
+      case "timerCancel": cancelTimer(Number(id)); return true;
+      case "alarmStop": stopAlarm(); return true;
+      case "ssOn": S.ss.enabled = el.checked; store.set("ss", S.ss); if (el.checked) unlockAlarm(); return true;
+      case "ssMin": S.ss.minutes = Number(id); store.set("ss", S.ss); openPageKeep(); return true;
+      case "ssInt": S.ss.interval = Number(id); store.set("ss", S.ss); openPageKeep(); return true;
+      case "ssAlbumSave": S.ss.album = $("#ssAlbum").value.trim(); store.set("ss", S.ss); loadPhotos(); return true;
+      case "ssTest": closePage(); showScreensaver(); return true;
+      case "micTest": micTest(); return true;
+      case "logToggle": $("#voiceLog").classList.toggle("hidden"); return true;
+      default: return false;
+    }
+  }
+
   // ================= 画面の組み立て =================
   function setConn(c) {
     S.conn = c;
@@ -1798,7 +2212,7 @@
   function buildMain() {
     $("#app").innerHTML = `<div class="wrap">
       <div class="top"><span class="badge" id="badge"></span><span class="sp"></span>
-        <button class="tbtn" id="btnHelp">？ 使い方</button><button class="tbtn" id="btnAuto">⏰ 自動化</button><button class="tbtn" id="btnSettings">⚙ 設定</button></div>
+        <button class="tbtn" id="btnHelp">？ 使い方</button><button class="tbtn" id="btnTimers">⏱ タイマー</button><button class="tbtn" id="btnAuto">⏰ 自動化</button><button class="tbtn" id="btnSettings">⚙ 設定</button></div>
       <div id="updateBanner"></div>
       <section class="hero"><div><div class="time" id="time"></div><div class="date" id="date"></div></div><div id="weather"></div></section>
       <section class="card voice">
@@ -1807,6 +2221,7 @@
         <form class="tform" id="tform"><input type="text" id="tin" placeholder="文字で命令・質問する" enterkeyhint="send" autocomplete="off">
           <button class="tbtn" type="submit">送信</button></form>
       </section>
+      <div class="timerstrip hidden" id="timerStrip"></div>
       <div class="msg hidden" id="msg"></div>
       <div class="roombar" id="roombar"></div>
       <main class="grid" id="grid"></main>
@@ -1814,7 +2229,10 @@
     </div>
     <div class="sheet hidden" id="sheet"><div class="sheet-bg" id="sheetBg"></div>
       <div class="sheet-body"><button class="sheet-close" id="sheetClose" aria-label="閉じる">×</button><div id="sheetContent"></div></div></div>
-    <div class="page hidden" id="page"></div>`;
+    <div class="page hidden" id="page"></div>
+    <div class="saver hidden" id="saver"><img class="ssimg" alt=""><img class="ssimg" alt="">
+      <div class="ssinfo"><div id="ssTime" class="sst"></div><div id="ssDate"></div><div id="ssWeather"></div><div id="ssTimers"></div></div></div>
+    <div class="alarm hidden" id="alarm"></div>`;
 
     bindControls($("#grid"));
     bindControls($("#sheetContent"));
@@ -1824,6 +2242,7 @@
     $("#btnHelp").onclick = () => openPage("help");
     $("#btnSettings").onclick = () => openPage("settings");
     $("#btnAuto").onclick = () => openPage("auto");
+    $("#btnTimers").onclick = () => { unlockAlarm(); openPage("timers"); };
     $("#mic").onclick = onMicPressed;
     $("#tform").onsubmit = (ev) => { ev.preventDefault(); const t = $("#tin"); sendText(t.value); t.value = ""; t.blur(); };
 
@@ -1850,14 +2269,28 @@
     });
 
     // iOS は操作をきっかけにしないと音を出せない・マイクを再開できないので、タップのたびに再開を試みる
-    document.addEventListener("pointerdown", () => {
+    let swallowClick = false;
+    document.addEventListener("pointerdown", (ev) => {
+      if (S.ssOn) { swallowClick = true; ev.preventDefault(); }
+      onUserInteraction();
+      unlockAlarm();
       unlockAudio();
       if (mic.ctx && mic.ctx.state === "suspended") mic.ctx.resume().then(kickWake).catch(() => {});
       else kickWake();
     });
 
+    document.addEventListener("click", (ev) => {
+      if (swallowClick) { swallowClick = false; ev.stopPropagation(); ev.preventDefault(); }
+    }, true);
+    document.addEventListener("keydown", onUserInteraction);
+
     renderClock();
     setInterval(renderClock, 1000);
+    setInterval(checkTimers, 500);
+    setInterval(checkIdle, 2000);
+    renderTimers();
+    loadPhotos();
+    setInterval(loadPhotos, 6 * 60 * 60 * 1000);
     setConn("connecting");
     renderVoice();
     renderUpdate();

@@ -237,8 +237,8 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
         val url = ttsUrl?.takeIf { it.isNotBlank() }
         if (url != null) {
             onState(VoiceState.Speaking(heard, reply))
-            // 読み上げが終わらなくても、長くても2分で次へ進めるようにする
-            withTimeoutOrNull(120_000L) { play(if (url.startsWith("http")) url else baseUrl + url) }
+            // 読み上げが終わったと判定されなくても先へ進めるように（音声の長さ＋3秒、分からなければ30秒）
+            withTimeoutOrNull(300_000L) { play(if (url.startsWith("http")) url else baseUrl + url) }
             stopPlayer()
         }
         onState(VoiceState.Done(heard, reply))
@@ -337,7 +337,9 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
         stopPlayer()
         val mp = MediaPlayer()
         player = mp
+        var finishRef: (() -> Unit)? = null
         val finish = {
+            finishRef?.invoke()
             if (cont.isActive) cont.resume(Unit)
         }
         playDone = finish
@@ -347,7 +349,18 @@ class VoiceAssistant(private val baseUrl: String, private val log: (String) -> U
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
         )
-        mp.setOnPreparedListener { it.start() }
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val guard = Runnable { log("読み上げの終了を確認できないため先へ進みます"); finish() }
+        finishRef = { handler.removeCallbacks(guard) }
+        // 再生の準備が30秒たっても終わらなければ先へ
+        handler.postDelayed(guard, 30_000L)
+        mp.setOnPreparedListener {
+            handler.removeCallbacks(guard)
+            val d = it.duration
+            // 音声の長さ＋3秒たっても終了の知らせが来なければ先へ
+            handler.postDelayed(guard, if (d > 0) d + 3_000L else 120_000L)
+            it.start()
+        }
         mp.setOnCompletionListener { finish() }
         mp.setOnErrorListener { _, what, extra ->
             log("読み上げの再生エラー ($what/$extra)")
