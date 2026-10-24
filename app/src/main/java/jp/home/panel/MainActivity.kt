@@ -4,6 +4,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.WindowManager
+import android.widget.Toast
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,6 +45,21 @@ class MainActivity : ComponentActivity() {
                     onMic = { withMic { vm.onMicPressed() } },
                     onEnableWake = { withMic { vm.setWakeEnabled(true) } },
                 )
+            }
+        }
+    }
+
+    init {
+        // インストール画面・許可設定画面を開く
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.launchRequest.collect { intent ->
+                    try {
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "画面を開けませんでした: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         }
     }

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 家のマーク。アイコンの安全領域（中央 66dp）に収まるように配置 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 煙突 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M66,31 L72,31 L72,42.2 L66,37.2 Z" />
+    <!-- 屋根と壁 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,26 L81,49.5 Q82,51 80,51 L75,51 L75,78 Q75,81 72,81 L36,81 Q33,81 33,78 L33,51 L28,51 Q26,51 27,49.5 Z" />
+    <!-- ドア -->
+    <path
+        android:fillColor="#FFF57C00"
+        android:pathData="M47,81 L47,66 Q47,61 52,61 L56,61 Q61,61 61,66 L61,81 Z" />
+    <!-- 窓（明かり） -->
+    <path
+        android:fillColor="#FFF57C00"
+        android:pathData="M51,46 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 Z" />
+</vector>

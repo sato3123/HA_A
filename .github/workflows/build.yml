@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     # Android SDK が入っている環境に固定
@@ -18,20 +21,49 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::署名鍵（KEYSTORE_BASE64）が未登録のため、デバッグ署名でビルドします。アプリ内アップデート用のリリースは作成しません。"
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           chmod +x gradlew
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           set -o pipefail
-          ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log || {
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee build.log || {
             # コンパイルエラーを注釈として出す（ログを開かなくても確認できるように）
             grep -E "^e: |What went wrong|^> " build.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             exit 1
           }
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk "out/HomePanel-1.0.${GITHUB_RUN_NUMBER}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: HomePanel-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: out/*.apk
+
+      # main ブランチで、署名鍵がある場合だけ「リリース」を作る。
+      # アプリはこの最新リリースを見て、新しいバージョンがあれば自分で更新する。
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' && env.SIGNED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git log -1 --pretty=%B > notes.txt
+          gh release create "v1.0.${GITHUB_RUN_NUMBER}" out/*.apk \
+            --title "ホームパネル 1.0.${GITHUB_RUN_NUMBER}" \
+            --notes-file notes.txt

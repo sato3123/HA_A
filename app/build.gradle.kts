@@ -13,15 +13,33 @@ android {
         // Fire HD 8 第10世代 = Fire OS 7 (Android 9 / API 28)、第12世代 = Fire OS 8 (Android 11)
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // GitHub Actions の実行番号がそのままバージョン番号になる（ローカルビルドは 1）
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "1.0.$build"
+        // アプリ内アップデートの確認先（GitHub の owner/repo）
+        buildConfigField("String", "UPDATE_REPO", "\"sato3123/HA_A\"")
+    }
+
+    signingConfigs {
+        // 更新を上書きインストールするには、毎回同じ鍵で署名する必要がある。
+        // 鍵は GitHub の Secrets（KEYSTORE_BASE64 / KEYSTORE_PASSWORD）から CI が用意する。
+        val ksFile = System.getenv("KEYSTORE_FILE")
+        val ksPass = System.getenv("KEYSTORE_PASSWORD")
+        if (!ksFile.isNullOrBlank() && !ksPass.isNullOrBlank() && file(ksFile).exists()) {
+            create("release") {
+                storeFile = file(ksFile)
+                storePassword = ksPass
+                keyAlias = "homepanel"
+                keyPassword = ksPass
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // 自分用なのでデバッグ署名で配布できるようにしておく
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
@@ -33,6 +51,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

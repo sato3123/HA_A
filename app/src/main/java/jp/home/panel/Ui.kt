@@ -177,10 +177,20 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     val forecast by vm.forecast.collectAsState()
 
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    // 初めてホーム画面を開いたときは使い方を自動で表示
+    var showHelp by rememberSaveable { mutableStateOf(!vm.helpShown) }
     var detailId by rememberSaveable { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
 
-    BackHandler(enabled = showSettings) { showSettings = false }
+    BackHandler(enabled = showSettings || showHelp) {
+        showSettings = false
+        showHelp = false
+        vm.helpShown = true
+    }
+    if (showHelp) {
+        HelpScreen(vm, onClose = { showHelp = false; vm.helpShown = true })
+        return
+    }
     if (showSettings) {
         SettingsScreen(vm, onClose = { showSettings = false }, onEnableWake = onEnableWake)
         return
@@ -200,9 +210,11 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ConnectionBadge(conn, route)
                 Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showHelp = true }) { Text("？ 使い方") }
                 TextButton(onClick = { showSettings = true }) { Text("⚙ 設定") }
             }
         }
+        item(span = { full(this) }) { UpdateCard(vm, showWhenIdle = false) }
         item(span = { full(this) }) { ClockWeather(weather, forecast) }
         item(span = { full(this) }) {
             VoicePanel(

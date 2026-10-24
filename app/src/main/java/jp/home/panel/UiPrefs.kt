@@ -26,6 +26,11 @@ class UiPrefs(context: Context) {
         get() = p.getString("pipeline_id", null)
         set(v) = p.edit().putString("pipeline_id", v).apply()
 
+    /** 使い方を一度表示したか */
+    var helpShown: Boolean
+        get() = p.getBoolean("help_shown", false)
+        set(v) = p.edit().putBoolean("help_shown", v).apply()
+
     /** 天気に使う weather エンティティ。null = 最初に見つかったもの */
     var weatherEntityId: String?
         get() = p.getString("weather_entity", null)

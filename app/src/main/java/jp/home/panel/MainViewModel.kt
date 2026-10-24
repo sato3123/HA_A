@@ -2,6 +2,7 @@ package jp.home.panel
 
 import android.Manifest
 import android.app.Application
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.core.content.ContextCompat
@@ -12,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -78,6 +80,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val wakeEnabled = MutableStateFlow(prefs.wakeEnabled)
     val remoteUrl = MutableStateFlow(store.remoteUrl.orEmpty())
 
+    // ---- アップデート ----
+    private val updater = Updater(app)
+    val update = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    /** Activity に開いてもらう画面（インストール画面・許可設定画面） */
+    val launchRequest = MutableSharedFlow<Intent>(extraBufferCapacity = 1)
+    val versionName: String = BuildConfig.VERSION_NAME
+
+    var helpShown: Boolean
+        get() = prefs.helpShown
+        set(v) {
+            prefs.helpShown = v
+        }
+
     val loginBusy = MutableStateFlow(false)
     val loginError = MutableStateFlow<String?>(null)
     val needOtp = MutableStateFlow(false)
@@ -97,6 +112,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         start()
+        // 起動して少し後と、その後6時間ごとに新しいバージョンを確認
+        viewModelScope.launch {
+            delay(15_000)
+            while (isActive) {
+                checkUpdate(silent = true)
+                delay(6 * 60 * 60 * 1000L)
+            }
+        }
+    }
+
+    // ================= アップデート =================
+
+    fun checkUpdate(silent: Boolean = false) {
+        val cur = update.value
+        if (cur is UpdateState.Downloading || cur is UpdateState.Installing || cur == UpdateState.Checking) return
+        viewModelScope.launch {
+            if (!silent) update.value = UpdateState.Checking
+            try {
+                val info = updater.check()
+                update.value = when {
+                    info != null -> UpdateState.Available(info)
+                    silent -> UpdateState.Idle
+                    else -> UpdateState.UpToDate
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 自動確認の失敗は表示しない（GitHubに届かないときなど）
+                update.value = if (silent) UpdateState.Idle
+                else UpdateState.Failed(e.message ?: "更新を確認できませんでした", null)
+            }
+        }
+    }
+
+    /** 「更新する」ボタン：ダウンロードしてインストール画面を開く */
+    fun installUpdate() {
+        val info = when (val s = update.value) {
+            is UpdateState.Available -> s.info
+            is UpdateState.NeedPermission -> s.info
+            is UpdateState.Failed -> s.info
+            else -> null
+        } ?: return
+        viewModelScope.launch {
+            if (!updater.canInstall()) {
+                update.value = UpdateState.NeedPermission(info)
+                launchRequest.emit(updater.permissionIntent())
+                return@launch
+            }
+            try {
+                update.value = UpdateState.Downloading(info, 0f)
+                val file = updater.download(info) { p -> update.value = UpdateState.Downloading(info, p) }
+                update.value = UpdateState.Installing(info)
+                launchRequest.emit(updater.installIntent(file))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                update.value = UpdateState.Failed(e.message ?: "ダウンロードに失敗しました", info)
+            }
+        }
     }
 
     fun onResume() {

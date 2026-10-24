@@ -173,6 +173,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        // ---- 更新 ----
+        item { SectionTitle("アプリの更新") }
+        item { UpdateCard(vm, showWhenIdle = true) }
+
         // ---- アカウント ----
         item { SectionTitle("アカウント") }
         item { OutlinedButton(onClick = { confirmLogout = true }) { Text("ログアウト") } }
