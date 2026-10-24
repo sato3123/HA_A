@@ -193,6 +193,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     var showAuto by rememberSaveable { mutableStateOf(false) }
     var showTimers by rememberSaveable { mutableStateOf(false) }
     var showCalendar by rememberSaveable { mutableStateOf(false) }
+    var showEnergy by rememberSaveable { mutableStateOf(false) }
     // 初めてホーム画面を開いたときは使い方を自動で表示
     var showHelp by rememberSaveable { mutableStateOf(!vm.helpShown) }
     var detailId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -267,6 +268,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 HomeSection.CALENDAR -> item(span = { full(this) }) { CalendarStrip(vm, onOpen = { showCalendar = true }) }
                 HomeSection.TIMERS -> item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
                 HomeSection.AUTOMATIONS -> item(span = { full(this) }) { AutomationQuick(vm) }
+                HomeSection.ENERGY -> item(span = { full(this) }) { EnergyStrip(vm, onOpen = { showEnergy = true }) }
                 HomeSection.DEVICES -> {
                     if (entities.isEmpty()) {
                         item(span = { full(this) }) {
@@ -317,6 +319,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
 
     if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })
     if (showCalendar) CalendarDialog(vm, onDismiss = { showCalendar = false })
+    if (showEnergy) EnergyDialog(vm, onDismiss = { showEnergy = false })
     VoicePopup(vm)
 
     val detail = detailId?.let { id -> entities.firstOrNull { it.entityId == id } }

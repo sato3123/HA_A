@@ -8,6 +8,7 @@ enum class HomeSection(val key: String, val label: String) {
     CLOCK("clock", "時計・天気（マイクボタン）"),
     CALENDAR("calendar", "予定（TimeTree）"),
     TIMERS("timers", "タイマーの残り時間"),
+    ENERGY("energy", "今日の電気（エネルギーの収支）"),
     AUTOMATIONS("automations", "オートメーション・シーンのすぐ実行ボタン"),
     DEVICES("devices", "機器"),
     ;
@@ -34,6 +35,7 @@ fun defaultSections() = listOf(
     SectionPref(HomeSection.CLOCK, true),
     SectionPref(HomeSection.CALENDAR, true),
     SectionPref(HomeSection.TIMERS, true),
+    SectionPref(HomeSection.ENERGY, true),
     SectionPref(HomeSection.AUTOMATIONS, false),
     SectionPref(HomeSection.DEVICES, true),
 )

@@ -168,6 +168,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             delay(5_000)
             while (isActive) {
                 loadEvents()
+                loadEnergy()
                 delay(5 * 60 * 1000L)
             }
         }
@@ -284,6 +285,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val collector = launch { c.states.collect { onStates(c, it) } }
                     launch { loadPipelines(c) }
                     launch { loadRegistries(c) }
+                    launch { delay(1_500); loadEnergy() }
                     launch { loadUser(c) }
                     // 外出先接続中は、家に戻ったらローカル接続に切り替える
                     val upgrader = if (r.remote) launch {
@@ -1038,6 +1040,69 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 manualBusy = false
                 refreshWakeLoop()
+            }
+        }
+    }
+
+    // ================= エネルギーの収支 =================
+
+    val energy = MutableStateFlow<EnergyReport?>(null)
+    val energyStatus = MutableStateFlow<String?>(null)
+
+    /** Home Assistant の「エネルギー」の設定と記録から、今日・昨日・今月の収支を計算する */
+    fun loadEnergy() {
+        val c = client ?: return
+        viewModelScope.launch {
+            try {
+                val prefsJ = c.request(JSONObject().put("type", "energy/get_prefs")).optJSONObject("result") ?: JSONObject()
+                val src = parseEnergyPrefs(prefsJ)
+                if (src.isEmpty) {
+                    energy.value = null
+                    energyStatus.value = "Home Assistant の「設定 → ダッシュボード → エネルギー」が未設定です"
+                    return@launch
+                }
+                val ids = JSONArray(src.all)
+                val meta = c.request(JSONObject().put("type", "recorder/get_statistics_metadata").put("statistic_ids", ids))
+                    .optJSONArray("result") ?: JSONArray()
+                val units = (0 until meta.length()).mapNotNull { meta.optJSONObject(it) }
+                    .associate { it.optString("statistic_id") to it.optString("statistics_unit_of_measurement") }
+                val factor = { id: String -> unitFactor(units[id]) }
+
+                val zone = ZoneId.systemDefault()
+                val today = LocalDate.now().atStartOfDay(zone)
+                suspend fun stats(start: java.time.ZonedDateTime, end: java.time.ZonedDateTime, period: String): JSONObject =
+                    c.request(
+                        JSONObject()
+                            .put("type", "recorder/statistics_during_period")
+                            .put("start_time", start.toOffsetDateTime().toString())
+                            .put("end_time", end.toOffsetDateTime().toString())
+                            .put("statistic_ids", ids)
+                            .put("period", period)
+                            .put("types", JSONArray().put("change"))
+                    ).optJSONObject("result") ?: JSONObject()
+
+                val now = java.time.ZonedDateTime.now(zone)
+                val todayHours = stats(today, now.plusHours(1), "hour")
+                val yesterday = stats(today.minusDays(1), today, "day")
+                val month = stats(today.withDayOfMonth(1), now.plusHours(1), "day")
+
+                val devices = src.devices.map { id -> id to sumChanges(todayHours, listOf(id), factor) }
+                    .filter { it.second > 0.0 }.sortedByDescending { it.second }.take(5)
+                energy.value = EnergyReport(
+                    today = totalsOf(todayHours, src, factor),
+                    yesterday = totalsOf(yesterday, src, factor),
+                    month = totalsOf(month, src, factor),
+                    hourlyUsed = hourlyUsed(todayHours, src, factor, today.toInstant().toEpochMilli(), 24),
+                    topDevices = devices,
+                    hasSolar = src.solar.isNotEmpty(),
+                    hasBattery = src.batteryOut.isNotEmpty() || src.batteryIn.isNotEmpty(),
+                    hasExport = src.gridOut.isNotEmpty(),
+                )
+                energyStatus.value = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                energyStatus.value = "エネルギーの記録を読めませんでした：${e.message}"
             }
         }
     }
