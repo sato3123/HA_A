@@ -44,6 +44,10 @@ class TokenStore(context: Context) {
     var accessExpiresAt: Long
         get() = prefs.getLong("access_expires_at", 0L)
         set(v) = prefs.edit().putLong("access_expires_at", v).apply()
+    /** 外出先用URL（Home Assistant Cloud のリモートURL） */
+    var remoteUrl: String?
+        get() = prefs.getString("remote_url", null)
+        set(v) = prefs.edit().putString("remote_url", v).apply()
 
     fun save(base: String, t: Tokens) {
         baseUrl = base
@@ -115,12 +119,16 @@ class AuthApi(private val http: OkHttpClient) {
         }
 
     /** 戻り値: アクセストークンと有効期限 */
-    suspend fun refresh(base: String, refreshToken: String): Pair<String, Long> =
+    /**
+     * base = 今つないでいるURL（ローカル or Cloud）。
+     * client_id はログイン時のローカルURLと同じ値を使う必要がある。
+     */
+    suspend fun refresh(base: String, loginBase: String, refreshToken: String): Pair<String, Long> =
         withContext(Dispatchers.IO) {
             val body = FormBody.Builder()
                 .add("grant_type", "refresh_token")
                 .add("refresh_token", refreshToken)
-                .add("client_id", clientId(base))
+                .add("client_id", clientId(loginBase))
                 .build()
             http.newCall(Request.Builder().url("$base/auth/token").post(body).build()).execute().use { resp ->
                 // 400 = トークン失効、403 = ユーザー無効化。どちらも再ログインが必要

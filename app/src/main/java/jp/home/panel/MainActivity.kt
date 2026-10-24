@@ -15,10 +15,12 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
+    private var afterMicGrant: (() -> Unit)? = null
 
     private val micPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) vm.onMicPressed()
+            if (granted) afterMicGrant?.invoke()
+            afterMicGrant = null
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,19 +35,35 @@ class MainActivity : ComponentActivity() {
                     onPrimaryContainer = Color(0xFFFFE0B2),
                 )
             ) {
-                App(vm, onMic = ::onMic)
+                App(
+                    vm,
+                    onMic = { withMic { vm.onMicPressed() } },
+                    onEnableWake = { withMic { vm.setWakeEnabled(true) } },
+                )
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
+        vm.setForeground(true)
         vm.onResume()
     }
 
-    private fun onMic() {
+    override fun onPause() {
+        // 画面を離れたらマイクの待ち受けを止める
+        vm.setForeground(false)
+        super.onPause()
+    }
+
+    private fun withMic(action: () -> Unit) {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (granted) vm.onMicPressed() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        if (granted) {
+            action()
+        } else {
+            afterMicGrant = action
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 }
