@@ -242,14 +242,13 @@ val TRIGGER_DOMAINS = listOf("binary_sensor", "person", "device_tracker", "light
 
 fun actLabel(a: Act, name: String): String {
     val op = opOf(a)
-    val extra = when (op?.param) {
-        Param.BRIGHTNESS -> "（明るさ ${a.data["brightness_pct"]}%）"
-        Param.TEMPERATURE -> "（${a.data["temperature"]}℃）"
-        Param.HVAC_MODE -> "（${hvacLabel(a.data["hvac_mode"].toString())}）"
-        Param.POSITION -> "（${a.data["position"]}%）"
-        null -> ""
+    return when (op?.param) {
+        Param.BRIGHTNESS -> "$name を明るさ ${a.data["brightness_pct"]}% でつける"
+        Param.TEMPERATURE -> "$name を ${a.data["temperature"]}℃ に設定する"
+        Param.HVAC_MODE -> "$name を${hvacLabel(a.data["hvac_mode"].toString())}にする"
+        Param.POSITION -> "$name を ${a.data["position"]}% 開ける"
+        null -> "$name を${op?.label ?: a.service}"
     }
-    return "$name を${op?.label ?: a.service}$extra"
 }
 
 fun weekdayText(days: Set<String>): String = when {

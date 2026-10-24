@@ -101,6 +101,21 @@
     page: null, // "settings" | "help"
     update: { type: "idle" },
     conv: null,
+    theme: store.get("theme", "orange"),
+    haAreas: [],
+    entityAreas: {},
+    customRooms: store.get("rooms", {}),
+    roomOv: store.get("roomOv", {}),
+    groupRooms: store.get("groupRooms", true),
+    roomFilter: store.get("roomFilter", null),
+    user: null,
+    rules: {},
+    rulesLoading: false,
+    autoTab: 0,
+    autoMsg: null,
+    edit: null,
+    editError: null,
+    saving: false,
   };
   const pendingTemp = new Map();
 
@@ -116,8 +131,8 @@
     return r.json();
   }
 
-  function startLogin() {
-    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  function startLogin(slot) {
+    const state = (slot === "admin" ? "admin-" : "") + Math.random().toString(36).slice(2) + Date.now().toString(36);
     store.set("state", state);
     location.href = "/auth/authorize?" + new URLSearchParams({ response_type: "code", client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, state });
   }
@@ -129,6 +144,13 @@
     history.replaceState(null, "", location.pathname);
     if (q.get("state") !== store.get("state")) throw new Error("ログインの確認に失敗しました。もう一度お試しください");
     const t = await tokenRequest({ grant_type: "authorization_code", code, client_id: CLIENT_ID });
+    if (String(q.get("state")).startsWith("admin-")) {
+      // 管理者ログインの追加。普段使いのログインはそのまま
+      try { await finishAdminLogin(t); store.set("flash", "管理者ログインを追加しました"); }
+      catch (e) { store.set("flash", e.message); }
+      store.set("openPage", "settings");
+      return;
+    }
     store.set("tokens", { access: t.access_token, refresh: t.refresh_token, expires: Date.now() + t.expires_in * 1000 });
   }
 
@@ -252,6 +274,7 @@
           const d = ev.data || {};
           if (d.new_state) ha.states[d.entity_id] = d.new_state; else delete ha.states[d.entity_id];
           if (d.entity_id && d.entity_id.startsWith("weather.")) renderWeather();
+          if (d.entity_id && d.entity_id.startsWith("automation.") && S.page === "auto" && !S.edit) scheduleAuto();
           scheduleRender();
         });
         setConn("connected");
@@ -260,6 +283,8 @@
         renderEntities();
         renderWeather();
         loadPipelines();
+        loadRegistries();
+        loadUser().then(() => { if (S.page === "auto") loadRules(); });
         kickWake();
         await ha.closed;
       } catch (e) {
@@ -319,9 +344,15 @@
       .filter((e) => SUPPORTED.includes(dom(e)))
       .sort((a, b) => SUPPORTED.indexOf(dom(a)) - SUPPORTED.indexOf(dom(b)) || nameOf(a).localeCompare(nameOf(b), "ja"));
   }
-  function shownEntities() {
+  function shownEntitiesAll() {
     const all = allEntities();
     return S.selection ? all.filter((e) => S.selection.includes(e.entity_id)) : all;
+  }
+  function shownEntities() {
+    const list = shownEntitiesAll();
+    const present = groupedByRoom(list).map(([r]) => r.key);
+    if (!S.roomFilter || !present.includes(S.roomFilter)) return list;
+    return list.filter((e) => roomKey(e.entity_id) === S.roomFilter);
   }
   function selectedSet() { return new Set(S.selection || allEntities().map((e) => e.entity_id)); }
   function saveSelection(set) { S.selection = [...set]; store.set("selection", S.selection); }
@@ -442,7 +473,14 @@
 
   // ---- 描画（操作中の機器は描き直さない） ----
   const tileCache = new Map(); // entity_id -> { html, el }
+  const headerCache = new Map(); // 部屋の key -> 見出し
   const busy = (id) => S.dragging === id || [...pendingTemp.keys()].some((k) => k.startsWith(id + "|"));
+  let autoQueued = false;
+  function scheduleAuto() {
+    if (autoQueued) return;
+    autoQueued = true;
+    setTimeout(() => { autoQueued = false; if (S.page === "auto" && !S.edit) renderAuto(); }, 500);
+  }
   let renderQueued = false;
   function scheduleRender() {
     if (renderQueued) return;
@@ -455,7 +493,16 @@
     if (!grid) return;
     const list = shownEntities();
     const els = [];
-    for (const e of list) {
+    const multi = groupedByRoom(shownEntitiesAll()).length > 1;
+    const sections = S.groupRooms && multi ? groupedByRoom(list) : [[null, list]];
+    for (const [room, items] of sections) {
+      if (room) {
+        let h = headerCache.get(room.key);
+        if (!h) { h = document.createElement("div"); h.className = "roomh"; headerCache.set(room.key, h); }
+        h.textContent = room.name;
+        els.push(h);
+      }
+      for (const e of items) {
       const html = tileHTML(e);
       let c = tileCache.get(e.entity_id);
       if (!c || (c.html !== html && !busy(e.entity_id))) {
@@ -465,9 +512,11 @@
         tileCache.set(e.entity_id, c);
       }
       els.push(c.el);
+      }
     }
     const same = els.length === grid.children.length && els.every((el, i) => grid.children[i] === el);
     if (!same) grid.replaceChildren(...els);
+    renderRoomBar();
     $("#empty").classList.toggle("hidden", list.length > 0);
     $("#empty").textContent = S.conn === "connected" ? "表示する機器がありません（⚙ 設定 から選べます）" : "接続しています…";
     renderSheet();
@@ -981,6 +1030,16 @@
     const ws = S.ha ? Object.values(S.ha.states).filter((e) => e.entity_id.startsWith("weather.")) : [];
     const w = weatherEntity();
     return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>設定</h2></div>
+      <div class="sec">配色</div>${themesHTML()}
+
+      <div class="sec">部屋</div>
+      <label class="row"><span class="rt">部屋ごとに分けて表示する<div class="sub">Home Assistant のエリアを部屋として使います。アプリで部屋を追加したり、機器の部屋を変えたりもできます（下の「表示する機器」で機器ごとに選べます）。</div></span>
+        <input type="checkbox" data-set="groupRooms" ${S.groupRooms ? "checked" : ""}></label>
+      ${rooms().map((r) => `<div class="row" style="cursor:default"><span class="rt">${esc(r.name)}<div class="sub">${r.ha ? "Home Assistant のエリア" : "アプリで追加した部屋"}</div></span>
+        ${r.ha ? "" : `<button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn" data-set="roomDel" data-id="${esc(r.key)}">削除</button>`}</div>`).join("")}
+      <div class="brow" style="align-items:center;margin-top:6px"><input class="search" id="newRoom" type="text" placeholder="部屋を追加（例：子ども部屋）" style="max-width:320px;margin:0">
+        <button class="tbtn" data-set="roomAdd">追加</button></div>
+
       <div class="sec">接続</div>
       <div class="note">このアプリのアドレス：${esc(location.origin + location.pathname)}<br>
       ${location.protocol === "https:" ? "家の外からもこのアドレスで使えます。" : "http のアドレスです。音声入力と外出先での利用には https のアドレス（Home Assistant Cloud のリモートURL）で開いてください。"}</div>
@@ -1003,7 +1062,7 @@
 
       <div class="sec">アプリの更新</div><div data-update-slot></div>
       <div class="sec">アカウント</div>
-      <button class="btn outline" data-set="logout">ログアウト</button>
+      ${accountHTML()}
       <div style="height:40px"></div></div>`;
   }
 
@@ -1017,8 +1076,14 @@
     let html = "", last = null;
     for (const e of filtered) {
       if (dom(e) !== last) { last = dom(e); html += `<div class="gtitle">${esc(DOMAIN_LABEL[last] || last)}</div>`; }
-      html += `<label class="row"><input type="checkbox" data-set="sel" data-id="${esc(e.entity_id)}" ${sel.has(e.entity_id) ? "checked" : ""}>
-        <span class="rt">${esc(nameOf(e))}<div class="sub">${esc(e.entity_id)}</div></span></label>`;
+      const rk = roomKey(e.entity_id);
+      const ov = S.roomOv[e.entity_id];
+      html += `<div class="row" style="cursor:default"><label class="row" style="flex:1;padding:0"><input type="checkbox" data-set="sel" data-id="${esc(e.entity_id)}" ${sel.has(e.entity_id) ? "checked" : ""}>
+        <span class="rt">${esc(nameOf(e))}<div class="sub">${esc(e.entity_id)}</div></span></label>
+        <select class="roomsel" data-set="room" data-id="${esc(e.entity_id)}" aria-label="部屋">
+          ${rooms().map((r) => `<option value="${esc(r.key)}" ${r.key === rk ? "selected" : ""}>🏠 ${esc(r.name)}</option>`).join("")}
+          <option value="none" ${rk === "none" ? "selected" : ""}>🏠 その他</option>
+          ${ov ? `<option value="__ha__">Home Assistant のエリアに戻す</option>` : ""}</select></div>`;
     }
     list.innerHTML = html || `<div class="note">該当する機器がありません</div>`;
     $("#selTitle").textContent = `表示する機器（${all.filter((e) => sel.has(e.entity_id)).length}／${all.length}）`;
@@ -1049,6 +1114,23 @@
     ["⚙ 表示する機器を選ぶ", [
       "⚙ 設定 →「表示する機器」で、チェックを付けた機器だけを表示します。名前で絞り込めます。",
     ]],
+    ["🚪 部屋ごとに分ける", [
+      "機器は Home Assistant のエリアごとに分けて表示されます。上の「すべて／リビング／寝室…」で部屋を絞り込めます。",
+      "⚙ 設定 →「部屋」で、アプリだけの部屋を追加できます。「表示する機器」の各機器の「🏠」で部屋を変えられます。",
+    ]],
+    ["⏰ スケジュール・オートメーション", [
+      "トップの「⏰ 自動化」を開きます。",
+      "スケジュール：「平日の7:00にエアコンを冷房にする」のように、時刻と曜日で自動実行します。",
+      "オートメーション：「人感センサーが反応したら照明をつける」「日の入りの10分前にカーテンを閉める」のように、きっかけに合わせて動かします。",
+      "Home Assistant に保存されるので、iPad を閉じていても実行されます。一覧のスイッチでオン/オフ、「今すぐ実行」で試せます。",
+      "作成・編集には管理者の権限が必要です（下の「アカウント」）。",
+    ]],
+    ["👤 アカウント（管理者とその他）", [
+      "普段は管理者以外のユーザーで使うのがおすすめです。",
+      "自動化を作成・編集するときだけ、⚙ 設定 →「アカウント」→「管理者ログインを追加」で管理者としてもログインします。",
+      "使い終わったら「管理者ログインを解除」できます。",
+    ]],
+    ["🎨 配色", ["⚙ 設定 →「配色」で、11種類の色の組み合わせから選べます。"]],
     ["📱 ホーム画面に追加", [
       "Safari でこのページを開き、共有ボタン（□↑）→「ホーム画面に追加」を選ぶと、アプリのように使えます。",
     ]],
@@ -1073,21 +1155,65 @@
   function openPage(name) {
     S.page = name;
     const page = $("#page");
-    page.innerHTML = name === "settings" ? settingsHTML() : helpHTML();
     page.classList.remove("hidden");
     page.scrollTop = 0;
+    if (name === "auto") { S.edit = null; S.autoMsg = null; renderAuto(); loadRules(); return; }
+    page.innerHTML = name === "settings" ? settingsHTML() : helpHTML();
     if (name === "settings") renderSelList();
     renderUpdate();
+  }
+  /** 設定ページを開いたまま描き直す（スクロール位置は保つ） */
+  function openPageKeep() {
+    if (S.page !== "settings") return;
+    const page = $("#page");
+    const y = page.scrollTop;
+    page.innerHTML = settingsHTML();
+    renderSelList();
+    renderUpdate();
+    page.scrollTop = y;
   }
   function closePage() {
     if (S.page === "help") store.set("helpShown", true);
     S.page = null;
+    S.edit = null;
     $("#page").classList.add("hidden");
     $("#page").innerHTML = "";
   }
 
   async function onSetting(el) {
+    if (S.page === "auto" && el.dataset.set !== "close" && (await onAutoSetting(el))) return;
     switch (el.dataset.set) {
+      case "theme": S.theme = el.dataset.id; store.set("theme", S.theme); applyTheme(); openPageKeep(); break;
+      case "roomFilter": S.roomFilter = el.dataset.id || null; store.set("roomFilter", S.roomFilter); renderEntities(); break;
+      case "groupRooms": S.groupRooms = el.checked; store.set("groupRooms", S.groupRooms); renderEntities(); break;
+      case "roomAdd": {
+        const inp = $("#newRoom");
+        const n = inp && inp.value.trim();
+        if (!n) break;
+        S.customRooms["local:" + Date.now()] = n;
+        saveRooms(); openPageKeep(); renderEntities();
+        break;
+      }
+      case "roomRename": {
+        const n = prompt("部屋の名前", S.customRooms[el.dataset.id] || "");
+        if (n && n.trim()) { S.customRooms[el.dataset.id] = n.trim(); saveRooms(); openPageKeep(); renderEntities(); }
+        break;
+      }
+      case "roomDel":
+        if (!confirm(`「${S.customRooms[el.dataset.id]}」を削除しますか？（機器は「その他」などに戻ります）`)) break;
+        delete S.customRooms[el.dataset.id];
+        Object.keys(S.roomOv).forEach((k) => { if (S.roomOv[k] === el.dataset.id) delete S.roomOv[k]; });
+        saveRooms(); openPageKeep(); renderEntities();
+        break;
+      case "room":
+        if (el.value === "__ha__") delete S.roomOv[el.dataset.id]; else S.roomOv[el.dataset.id] = el.value;
+        saveRooms(); renderEntities();
+        break;
+      case "adminLogin": startLogin("admin"); break;
+      case "adminLogout":
+        store.del("admin_tokens"); store.del("admin_user"); S.rules = {};
+        openPageKeep();
+        break;
       case "close": closePage(); break;
       case "wake":
         if (el.checked) {
@@ -1119,10 +1245,504 @@
       }
       case "all": saveSelection(new Set(allEntities().map((e) => e.entity_id))); renderSelList(); renderEntities(); break;
       case "none": saveSelection(new Set()); renderSelList(); renderEntities(); break;
-      case "logout": if (confirm("ログアウトしますか？\nもう一度使うにはログインが必要です。")) logout(); break;
+      case "logout": if (confirm("ログアウトしますか？\nもう一度使うにはログインが必要です。")) { store.del("admin_tokens"); store.del("admin_user"); logout(); } break;
       case "checkUpdate": checkUpdate(false); break;
       case "doUpdate": doUpdate(); break;
     }
+  }
+
+  // ================= 配色 =================
+  const THEMES = [
+    { id: "orange", name: "オレンジ", colors: ["#ffb74d", "#5d4020", "#2b2930"], bg: "#141218", fg: "#e6e1e5" },
+    { id: "blue", name: "ブルー", colors: ["#90caf9", "#1e3a5f", "#1f2a33"], bg: "#0f1418", fg: "#e1e6ec" },
+    { id: "green", name: "グリーン", colors: ["#a5d6a7", "#1f4d2b", "#1f2b22"], bg: "#0f1511", fg: "#e0e6e0" },
+    { id: "purple", name: "パープル", colors: ["#ce93d8", "#4a2655", "#2a2430"], bg: "#151218", fg: "#e8e0ea" },
+    { id: "red", name: "レッド", colors: ["#ef9a9a", "#5c2222", "#302424"], bg: "#181212", fg: "#ede0de" },
+    { id: "teal", name: "ティール", colors: ["#80cbc4", "#1c4a47", "#1d2b2a"], bg: "#0e1515", fg: "#dfe6e5" },
+    { id: "mono", name: "モノクロ", colors: ["#e0e0e0", "#424242", "#262626"], bg: "#101010", fg: "#e6e6e6" },
+    { id: "night", name: "ナイト（暗め）", colors: ["#b0855a", "#3a2817", "#141210"], bg: "#000000", fg: "#a89f96" },
+    { id: "light_orange", name: "ライト・オレンジ", colors: ["#e65100", "#ffe0b2", "#f3e9e0"], bg: "#fff8f3", fg: "#1f1b16" },
+    { id: "light_blue", name: "ライト・ブルー", colors: ["#1565c0", "#d6e8ff", "#e3eaf2"], bg: "#f7f9fc", fg: "#191c20" },
+    { id: "light_green", name: "ライト・グリーン", colors: ["#2e7d32", "#d7f5d8", "#e2ede2"], bg: "#f6fbf5", fg: "#191d19" },
+  ];
+
+  function applyTheme() {
+    document.documentElement.dataset.theme = S.theme;
+    const t = THEMES.find((x) => x.id === S.theme) || THEMES[0];
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", t.bg);
+    document.body.style.background = t.bg;
+  }
+  function themesHTML() {
+    return `<div class="themes">${THEMES.map((t) => `<button class="theme${t.id === S.theme ? " sel" : ""}" data-set="theme" data-id="${t.id}"
+      style="background:${t.bg};color:${t.fg}"><span class="dots">${t.colors.map((c) => `<span style="background:${c}"></span>`).join("")}</span>
+      ${t.id === S.theme ? "✓ " : ""}${esc(t.name)}</button>`).join("")}</div>`;
+  }
+
+  // ================= 部屋 =================
+  const NO_ROOM = "none";
+  function rooms() {
+    return S.haAreas.concat(Object.entries(S.customRooms).sort((a, b) => a[0].localeCompare(b[0])).map(([key, name]) => ({ key, name, ha: false })));
+  }
+  function roomKey(id) {
+    const rs = rooms();
+    const o = S.roomOv[id];
+    if (o && (o === NO_ROOM || rs.some((r) => r.key === o))) return o;
+    const a = S.entityAreas[id];
+    return a && rs.some((r) => r.key === "area:" + a) ? "area:" + a : NO_ROOM;
+  }
+  function roomName(key) { const r = rooms().find((x) => x.key === key); return r ? r.name : "その他"; }
+  function groupedByRoom(list) {
+    const by = {};
+    list.forEach((e) => { const k = roomKey(e.entity_id); (by[k] = by[k] || []).push(e); });
+    return rooms().concat([{ key: NO_ROOM, name: "その他" }]).filter((r) => by[r.key] && by[r.key].length).map((r) => [r, by[r.key]]);
+  }
+  async function loadRegistries() {
+    try {
+      const ha = S.ha;
+      const areas = await ha.send({ type: "config/area_registry/list" });
+      S.haAreas = areas.map((a) => ({ key: "area:" + a.area_id, name: a.name, ha: true })).sort((a, b) => a.name.localeCompare(b.name, "ja"));
+      const devs = await ha.send({ type: "config/device_registry/list" });
+      const devArea = {};
+      devs.forEach((d) => { if (d.area_id) devArea[d.id] = d.area_id; });
+      const ents = await ha.send({ type: "config/entity_registry/list" });
+      const map = {};
+      ents.forEach((e) => { const a = e.area_id || (e.device_id && devArea[e.device_id]); if (a) map[e.entity_id] = a; });
+      S.entityAreas = map;
+      renderEntities();
+    } catch (e) { /* エリアを読めなくても、アプリで追加した部屋は使える */ }
+  }
+  function saveRooms() {
+    store.set("rooms", S.customRooms);
+    store.set("roomOv", S.roomOv);
+  }
+  function renderRoomBar() {
+    const bar = $("#roombar");
+    if (!bar) return;
+    const present = groupedByRoom(shownEntitiesAll()).map(([r]) => r);
+    if (present.length <= 1) { bar.innerHTML = ""; return; }
+    const f = present.some((r) => r.key === S.roomFilter) ? S.roomFilter : null;
+    bar.innerHTML = `<button class="chip${f === null ? " sel" : ""}" data-set="roomFilter" data-id="">すべて</button>` +
+      present.map((r) => `<button class="chip${f === r.key ? " sel" : ""}" data-set="roomFilter" data-id="${esc(r.key)}">${esc(r.name)}</button>`).join("");
+  }
+
+  // ================= アカウント（普段使い／管理者） =================
+  async function loadUser() {
+    try {
+      const u = await S.ha.send({ type: "auth/current_user" });
+      S.user = { name: u.name, isAdmin: !!u.is_admin };
+    } catch (e) { /* 不明のまま */ }
+  }
+  const canEditRules = () => (S.user && S.user.isAdmin) || !!store.get("admin_tokens");
+
+  async function editorToken() {
+    const t = store.get("admin_tokens");
+    if (!t) return accessToken();
+    if (t.access && t.expires - 60000 > Date.now()) return t.access;
+    try {
+      const r = await tokenRequest({ grant_type: "refresh_token", refresh_token: t.refresh, client_id: CLIENT_ID });
+      t.access = r.access_token;
+      t.expires = Date.now() + r.expires_in * 1000;
+      store.set("admin_tokens", t);
+      return t.access;
+    } catch (e) {
+      if (e instanceof RevokedError) { store.del("admin_tokens"); store.del("admin_user"); throw new Error("管理者ログインの期限が切れました。設定 → アカウント でもう一度ログインしてください"); }
+      throw e;
+    }
+  }
+
+  async function rest(method, path, body) {
+    const token = await editorToken();
+    const r = await fetch(path, {
+      method,
+      headers: Object.assign({ Authorization: "Bearer " + token }, body ? { "Content-Type": "application/json" } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (r.status === 401) throw new Error("自動化の編集には管理者の権限が必要です（設定 → アカウント で管理者ログインを追加してください）");
+    if (!r.ok) throw new Error("Home Assistant でエラーになりました (HTTP " + r.status + ")");
+    const text = await r.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  /** 管理者ログインの結果を受け取る（Home Assistant のログイン画面から戻ってきたとき） */
+  async function finishAdminLogin(t) {
+    const r = await fetch("/api/config/automation/config/__homepanel_check__", { headers: { Authorization: "Bearer " + t.access_token } });
+    if (r.status === 401) throw new Error("ログインしたユーザーは管理者ではありません。Home Assistant の管理者ユーザーでログインしてください");
+    let name = "管理者";
+    try {
+      const ha = new HA();
+      await ha.connect(t.access_token);
+      const u = await ha.send({ type: "auth/current_user" });
+      name = u.name;
+      ha.close();
+    } catch (e) { /* 名前は分からなくても使える */ }
+    store.set("admin_tokens", { access: t.access_token, refresh: t.refresh_token, expires: Date.now() + t.expires_in * 1000 });
+    store.set("admin_user", name);
+  }
+
+  function accountHTML() {
+    const u = S.user;
+    const adminUser = store.get("admin_user");
+    let h = `<div class="note" style="font-size:16px;color:var(--on)">普段使いのユーザー：${esc(u ? u.name : "（確認中）")}${u ? (u.isAdmin ? "（管理者）" : "（管理者以外）") : ""}</div>`;
+    if (u && u.isAdmin) {
+      h += `<div class="note">このユーザーは管理者なので、オートメーション・スケジュールの作成や編集もできます。</div>`;
+    } else if (adminUser && store.get("admin_tokens")) {
+      h += `<div class="note" style="font-size:16px;color:var(--on)">管理者ログイン（自動化の編集用）：${esc(adminUser)}</div>
+        <div class="note">機器の操作は普段使いのユーザーで行い、オートメーション・スケジュールの編集だけ管理者の権限を使います。</div>
+        <div><button class="btn outline" data-set="adminLogout">管理者ログインを解除</button></div>`;
+    } else {
+      h += `<div class="note">オートメーション・スケジュールを作成・編集するには、管理者ユーザーでのログインを追加してください。普段の操作はこのまま管理者以外のユーザーで行えます。<br>
+        ボタンを押すと Home Assistant のログイン画面が開くので、<b>管理者のユーザー名</b>でログインしてください。</div>
+        <div><button class="btn" data-set="adminLogin">管理者ログインを追加</button></div>`;
+    }
+    return h + `<div style="margin-top:14px"><button class="btn outline" data-set="logout">ログアウト（すべて）</button></div>`;
+  }
+
+  // ================= オートメーション・スケジュール =================
+  const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const WD = { mon: "月", tue: "火", wed: "水", thu: "木", fri: "金", sat: "土", sun: "日" };
+  const TRIGGER_DOMAINS = ["binary_sensor", "person", "device_tracker", "light", "switch", "fan", "cover", "climate", "input_boolean", "lock"];
+  const isAppRule = (id) => String(id).startsWith("hp_");
+  const isSched = (id) => String(id).startsWith("hp_sched_");
+  const pad = (n) => String(n).padStart(2, "0");
+  const hhmm = (s) => { const p = String(s).split(":"); return p.length >= 2 ? pad(+p[0] || 0) + ":" + pad(+p[1] || 0) : s; };
+
+  function newRule(schedule) {
+    return { id: (schedule ? "hp_sched_" : "hp_auto_") + Date.now(), name: "", schedule, trigger: { kind: "time", at: "07:00" }, weekdays: [], after: null, before: null, actions: [], isNew: true };
+  }
+
+  function opsFor(d) {
+    switch (d) {
+      case "light": return [["turn_on", "つける"], ["turn_on", "明るさを指定してつける", "brightness_pct"], ["turn_off", "消す"], ["toggle", "切り替える"]];
+      case "switch": case "input_boolean": case "fan": return [["turn_on", "オンにする"], ["turn_off", "オフにする"], ["toggle", "切り替える"]];
+      case "climate": return [["set_hvac_mode", "運転モードを変える", "hvac_mode"], ["set_temperature", "温度を設定する", "temperature"], ["turn_off", "停止する"]];
+      case "cover": return [["open_cover", "開ける"], ["close_cover", "閉める"], ["set_cover_position", "開き具合を指定する", "position"]];
+      case "scene": case "script": return [["turn_on", "実行する"]];
+      default: return [["turn_on", "オンにする"], ["turn_off", "オフにする"]];
+    }
+  }
+  const PARAM_DEFAULT = { brightness_pct: 100, temperature: 25, hvac_mode: "cool", position: 50 };
+  function opIndex(a) {
+    const d = a.entity.split(".")[0], svc = a.service.split(".")[1];
+    const ops = opsFor(d);
+    let i = ops.findIndex((o) => o[0] === svc && o[2] && a.data[o[2]] !== undefined);
+    if (i < 0) i = ops.findIndex((o) => o[0] === svc && !o[2]);
+    if (i < 0) i = ops.findIndex((o) => o[0] === svc);
+    return i;
+  }
+  function makeAct(entity, op) {
+    const d = entity.split(".")[0];
+    return { entity, service: d + "." + op[0], data: op[2] ? { [op[2]]: PARAM_DEFAULT[op[2]] } : {} };
+  }
+  function stateOptions(d) {
+    switch (d) {
+      case "binary_sensor": return [["on", "反応した"], ["off", "反応しなくなった"]];
+      case "person": case "device_tracker": return [["home", "帰宅した"], ["not_home", "外出した"]];
+      case "cover": return [["open", "開いた"], ["closed", "閉まった"]];
+      case "lock": return [["locked", "施錠した"], ["unlocked", "解錠した"]];
+      case "climate": return [["off", "停止した"], ["cool", "冷房になった"], ["heat", "暖房になった"], ["dry", "除湿になった"]];
+      default: return [["on", "オンになった"], ["off", "オフになった"]];
+    }
+  }
+  const entName = (id) => (S.ha && S.ha.states[id] ? nameOf(S.ha.states[id]) : id);
+  const DOMAIN_LABEL2 = Object.assign({}, DOMAIN_LABEL, { binary_sensor: "センサー", person: "人", device_tracker: "位置", lock: "鍵" });
+
+  function actLabel(a) {
+    const d = a.entity.split(".")[0];
+    const op = opsFor(d)[opIndex(a)];
+    const n = entName(a.entity);
+    if (op && op[2] === "brightness_pct") return `${n} を明るさ ${a.data.brightness_pct}% でつける`;
+    if (op && op[2] === "temperature") return `${n} を ${a.data.temperature}℃ に設定する`;
+    if (op && op[2] === "hvac_mode") return `${n} を${hvacLabel(a.data.hvac_mode)}にする`;
+    if (op && op[2] === "position") return `${n} を ${a.data.position}% 開ける`;
+    return `${n} を${op ? op[1] : a.service}`;
+  }
+  function weekdayText(w) {
+    if (!w.length || w.length === 7) return "毎日";
+    const s = WEEKDAYS.filter((d) => w.includes(d));
+    if (s.join() === "mon,tue,wed,thu,fri") return "平日";
+    if (s.join() === "sat,sun") return "土日";
+    return s.map((d) => WD[d]).join("・");
+  }
+  function trigLabel(t) {
+    if (t.kind === "time") return `${t.at.replace(/^0(\d)/, "$1")} に`;
+    if (t.kind === "state") {
+      const o = stateOptions(t.entity.split(".")[0]).find((x) => x[0] === t.to);
+      return `${entName(t.entity)} が${o ? o[1] : `「${t.to}」になった`}とき`;
+    }
+    const base = t.event === "sunrise" ? "日の出" : "日の入り";
+    return base + (t.offset < 0 ? `の${-t.offset}分前に` : t.offset > 0 ? `の${t.offset}分後に` : "に");
+  }
+  function ruleSummary(r) {
+    const time = [weekdayText(r.weekdays), r.after || r.before ? `${r.after || "0:00"}〜${r.before || "24:00"} の間` : null].filter(Boolean).join("・");
+    return `${time} ${trigLabel(r.trigger)} → ${r.actions.map(actLabel).join("、") || "（操作なし）"}`;
+  }
+
+  function toConfig(r) {
+    const t = r.trigger;
+    let trig;
+    if (t.kind === "time") trig = { trigger: "time", at: hhmm(t.at) + ":00" };
+    else if (t.kind === "state") trig = { trigger: "state", entity_id: t.entity, to: t.to };
+    else {
+      trig = { trigger: "sun", event: t.event };
+      if (t.offset) trig.offset = (t.offset < 0 ? "-" : "") + `${pad(Math.floor(Math.abs(t.offset) / 60))}:${pad(Math.abs(t.offset) % 60)}:00`;
+    }
+    const conds = [];
+    if (r.weekdays.length || r.after || r.before) {
+      const c = { condition: "time" };
+      if (r.weekdays.length) c.weekday = WEEKDAYS.filter((d) => r.weekdays.includes(d));
+      if (r.after) c.after = hhmm(r.after) + ":00";
+      if (r.before) c.before = hhmm(r.before) + ":00";
+      conds.push(c);
+    }
+    return {
+      id: r.id, alias: r.name, description: "ホームパネルで作成", mode: "single",
+      triggers: [trig], conditions: conds,
+      actions: r.actions.map((a) => ({ action: a.service, target: { entity_id: a.entity }, data: a.data })),
+    };
+  }
+
+  const asList = (v) => (Array.isArray(v) ? v : v ? [v] : null);
+  const single = (v) => (typeof v === "string" ? v : Array.isArray(v) && v.length === 1 ? v[0] : null);
+  function parseOffset(v) {
+    if (v === undefined || v === null) return 0;
+    if (typeof v === "number") return Math.round(v / 60);
+    if (typeof v === "object") return (v.hours || 0) * 60 + (v.minutes || 0);
+    const neg = String(v).startsWith("-");
+    const p = String(v).replace(/^[-+]/, "").split(":").map(Number);
+    const m = p.length >= 2 ? p[0] * 60 + p[1] : Math.round(p[0] / 60);
+    return neg ? -m : m;
+  }
+  /** Home Assistant の自動化設定を読み込む。アプリで扱えない形なら null */
+  function parseRule(id, j) {
+    const trigs = asList(j.triggers || j.trigger);
+    if (!trigs || trigs.length !== 1) return null;
+    const t = trigs[0], kind = t.trigger || t.platform;
+    let trigger;
+    if (kind === "time") { const at = single(t.at); if (!at) return null; trigger = { kind: "time", at: hhmm(at) }; }
+    else if (kind === "state") { const e = single(t.entity_id); if (!e || t.to === undefined) return null; trigger = { kind: "state", entity: e, to: String(t.to) }; }
+    else if (kind === "sun") trigger = { kind: "sun", event: t.event || "sunset", offset: parseOffset(t.offset) };
+    else return null;
+    const conds = asList(j.conditions || j.condition) || [];
+    if (conds.length > 1) return null;
+    let weekdays = [], after = null, before = null;
+    if (conds.length === 1) {
+      const c = conds[0];
+      if (c.condition !== "time") return null;
+      weekdays = asList(c.weekday) || [];
+      after = c.after ? hhmm(c.after) : null;
+      before = c.before ? hhmm(c.before) : null;
+    }
+    const acts = asList(j.actions || j.action);
+    if (!acts) return null;
+    const actions = [];
+    for (const a of acts) {
+      const svc = a.action || a.service;
+      if (!svc || !svc.includes(".")) return null;
+      const data = Object.assign({}, a.data || a.service_data || {});
+      const entity = single(a.target && a.target.entity_id) || single(data.entity_id) || single(a.entity_id);
+      if (!entity) return null;
+      delete data.entity_id;
+      actions.push({ entity, service: svc, data });
+    }
+    return { id, name: j.alias || "", schedule: isSched(id), trigger, weekdays, after, before, actions };
+  }
+
+  function automations() {
+    return S.ha ? Object.values(S.ha.states).filter((e) => e.entity_id.startsWith("automation.")).sort((a, b) => nameOf(a).localeCompare(nameOf(b), "ja")) : [];
+  }
+
+  async function loadRules() {
+    if (!canEditRules()) return;
+    S.rulesLoading = true;
+    renderAuto();
+    try {
+      const map = {};
+      for (const a of automations()) {
+        const id = a.attributes.id;
+        if (!isAppRule(id)) continue;
+        try { map[id] = parseRule(id, await rest("GET", "/api/config/automation/config/" + encodeURIComponent(id))); }
+        catch (e) { if (/権限/.test(e.message)) throw e; map[id] = null; }
+      }
+      S.rules = map;
+      S.autoMsg = null;
+    } catch (e) {
+      S.autoMsg = e.message;
+    } finally {
+      S.rulesLoading = false;
+      renderAuto();
+    }
+  }
+
+  function autoListHTML() {
+    const tab = S.autoTab;
+    const list = automations().filter((a) => (tab === 0 ? isSched(a.attributes.id) : !isSched(a.attributes.id)));
+    const can = canEditRules();
+    return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>自動化</h2>${S.rulesLoading ? `<span class="note">読み込み中…</span>` : ""}</div>
+      <div class="tabs"><button class="tab${tab === 0 ? " sel" : ""}" data-set="autoTab" data-id="0">⏰ スケジュール</button>
+        <button class="tab${tab === 1 ? " sel" : ""}" data-set="autoTab" data-id="1">⚡ オートメーション</button></div>
+      <div class="note" style="font-size:15px;color:var(--on)">${tab === 0 ? "決まった時刻・曜日に機器を自動で操作します（例：平日の7時にエアコンをつける）。"
+        : "「人感センサーが反応したら照明をつける」「日の入りにカーテンを閉める」のように、きっかけに合わせて自動で操作します。"}</div>
+      <div class="note">設定は Home Assistant に保存されるので、この iPad を閉じていても実行されます。</div>
+      ${can ? "" : `<div class="info-box">作成・編集には管理者の権限が必要です。⚙ 設定 → アカウント で「管理者ログインを追加」してください。オン/オフと今すぐ実行は、このままでも使えます。</div>`}
+      ${S.autoMsg ? `<div class="info-box">${esc(S.autoMsg)}</div>` : ""}
+      <div style="margin:12px 0"><button class="btn" data-set="newRule" ${can ? "" : "disabled"}>${tab === 0 ? "＋ 新しいスケジュール" : "＋ 新しいオートメーション"}</button></div>
+      ${list.length ? "" : `<div class="note" style="padding:16px">${tab === 0 ? "スケジュール" : "オートメーション"}はまだありません。</div>`}
+      ${list.map((a) => {
+        const id = a.attributes.id, rule = S.rules[id];
+        const sum = rule ? ruleSummary(rule) : isAppRule(id) ? "（内容を読み込み中、または読み込めません）" : "Home Assistant で作成";
+        const last = a.attributes.last_triggered ? "最後に実行：" + String(a.attributes.last_triggered).slice(0, 16).replace("T", " ") : "";
+        return `<div class="auto" data-set="editRule" data-id="${esc(a.entity_id)}"><div class="at"><div class="an">${esc(nameOf(a))}</div>
+          <div class="as">${esc(sum)}</div>${last ? `<div class="as">${esc(last)}</div>` : ""}</div>
+          <button class="tbtn" data-set="runAuto" data-id="${esc(a.entity_id)}">今すぐ実行</button>
+          <label class="sw"><input type="checkbox" data-set="autoOn" data-id="${esc(a.entity_id)}" ${a.state === "on" ? "checked" : ""}><span></span></label></div>`;
+      }).join("")}</div>`;
+  }
+
+  function entityOptions(domains, selected) {
+    if (!S.ha) return "";
+    const groups = {};
+    Object.values(S.ha.states).filter((e) => domains.includes(dom(e))).forEach((e) => { (groups[dom(e)] = groups[dom(e)] || []).push(e); });
+    return domains.filter((d) => groups[d]).map((d) => `<optgroup label="${esc(DOMAIN_LABEL2[d] || d)}">${groups[d]
+      .sort((a, b) => nameOf(a).localeCompare(nameOf(b), "ja"))
+      .map((e) => `<option value="${esc(e.entity_id)}" ${e.entity_id === selected ? "selected" : ""}>${esc(nameOf(e))}</option>`).join("")}</optgroup>`).join("");
+  }
+
+  function editorHTML() {
+    const r = S.edit;
+    const t = r.trigger;
+    const chip = (sel, set, id, label) => `<button class="chip${sel ? " sel" : ""}" data-set="${set}" data-id="${esc(id)}">${esc(label)}</button>`;
+    let trig = "";
+    if (!r.schedule) {
+      trig += `<div class="chips">${chip(t.kind === "time", "trigKind", "time", "時刻")}${chip(t.kind === "state", "trigKind", "state", "機器の状態")}
+        ${chip(t.kind === "sun" && t.event === "sunrise", "trigKind", "sunrise", "日の出")}${chip(t.kind === "sun" && t.event === "sunset", "trigKind", "sunset", "日の入り")}</div>`;
+    }
+    if (t.kind === "time") trig += `<input type="time" data-set="trigAt" value="${esc(t.at)}">`;
+    else if (t.kind === "state") {
+      trig += `<select data-set="trigEntity"><option value="">機器を選ぶ…</option>${entityOptions(TRIGGER_DOMAINS, t.entity)}</select>`;
+      if (t.entity) trig += `<div class="chips">${stateOptions(t.entity.split(".")[0]).map(([v, l]) => chip(t.to === v, "trigTo", v, l)).join("")}</div>`;
+    } else {
+      trig += `<div class="brow" style="align-items:center"><button class="tb" data-set="sunOff" data-id="-10">−10分</button>
+        <span style="font-size:20px;min-width:90px;text-align:center">${t.offset < 0 ? -t.offset + "分前" : t.offset > 0 ? t.offset + "分後" : "ちょうど"}</span>
+        <button class="tb" data-set="sunOff" data-id="10">＋10分</button></div>`;
+    }
+    const days = `<div class="chips">${WEEKDAYS.map((d) => chip(r.weekdays.includes(d), "wd", d, WD[d])).join("")}
+      <button class="tbtn" data-set="wdPreset" data-id="weekday">平日</button><button class="tbtn" data-set="wdPreset" data-id="weekend">土日</button><button class="tbtn" data-set="wdPreset" data-id="all">毎日</button></div>`;
+    const range = r.schedule ? "" : `<div class="field"><div class="fl">時間帯で絞る</div>
+      <label class="row"><span class="rt">特定の時間帯だけ動かす<div class="sub">例：夜（18:00〜23:00）だけ</div></span><input type="checkbox" data-set="rangeOn" ${r.after || r.before ? "checked" : ""}></label>
+      ${r.after || r.before ? `<div class="brow" style="align-items:center"><input type="time" data-set="after" value="${esc(r.after || "00:00")}"> 〜 <input type="time" data-set="before" value="${esc(r.before || "23:59")}"></div>` : ""}</div>`;
+    const acts = r.actions.map((a, i) => {
+      const d = a.entity.split(".")[0];
+      const ops = opsFor(d), oi = opIndex(a), op = ops[oi];
+      let param = "";
+      if (op && op[2] === "brightness_pct") param = `<div class="rng"><div class="rl">明るさ ${a.data.brightness_pct}%</div><input type="range" min="1" max="100" value="${a.data.brightness_pct}" data-set="actParam" data-id="${i}"></div>`;
+      if (op && op[2] === "position") param = `<div class="rng"><div class="rl">開き具合 ${a.data.position}%</div><input type="range" min="0" max="100" value="${a.data.position}" data-set="actParam" data-id="${i}"></div>`;
+      if (op && op[2] === "temperature") param = `<div class="stepper"><span class="sl">温度</span><button class="tb" data-set="actTemp" data-id="${i}" data-d="-0.5">−</button><span class="tv">${fmt(Number(a.data.temperature))}℃</span><button class="tb" data-set="actTemp" data-id="${i}" data-d="0.5">＋</button></div>`;
+      if (op && op[2] === "hvac_mode") {
+        const ent = S.ha && S.ha.states[a.entity];
+        const modes = ((ent && ent.attributes.hvac_modes) || ["cool", "heat", "dry", "fan_only", "auto"]).filter((m) => m !== "off");
+        param = `<div class="chips">${modes.map((m) => `<button class="chip${a.data.hvac_mode === m ? " sel" : ""}" data-set="actMode" data-id="${i}" data-v="${esc(m)}">${esc(hvacLabel(m))}</button>`).join("")}</div>`;
+      }
+      return `<div class="act"><div class="head"><div class="ht"><div class="dom">${esc(DOMAIN_LABEL2[d] || d)}</div><div class="name">${esc(entName(a.entity))}</div></div>
+        <button class="tbtn" data-set="actDel" data-id="${i}">削除</button></div>
+        <div class="chips">${ops.map((o, j) => `<button class="chip${j === oi ? " sel" : ""}" data-set="actOp" data-id="${i}" data-j="${j}">${esc(o[1])}</button>`).join("")}</div>${param}</div>`;
+    }).join("");
+    return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="editCancel">← キャンセル</button>
+        <h2>${r.isNew ? "新しい" : ""}${r.schedule ? "スケジュール" : "オートメーション"}</h2></div>
+      <div class="field"><div class="fl">名前</div><input type="text" data-set="ruleName" value="${esc(r.name)}" placeholder="空欄なら内容から自動で付けます"></div>
+      <div class="field"><div class="fl">${r.schedule ? "時刻" : "きっかけ"}</div>${trig}</div>
+      <div class="field"><div class="fl">曜日（選ばなければ毎日）</div>${days}</div>
+      ${range}
+      <div class="field"><div class="fl">実行すること</div>${acts}
+        <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(SUPPORTED, "")}</select></div>
+      <div class="summary" id="ruleSummary">内容：${esc(ruleSummary(r))}</div>
+      ${S.editError ? `<div class="warn">${esc(S.editError)}</div>` : ""}
+      <div class="brow" style="margin:12px 0 40px"><button class="btn" data-set="ruleSave" ${S.saving ? "disabled" : ""}>${S.saving ? "保存しています…" : "保存"}</button>
+        ${r.isNew ? "" : `<button class="btn outline" data-set="ruleDelete">削除</button>`}</div></div>`;
+  }
+
+  function renderAuto() {
+    if (S.page !== "auto") return;
+    const page = $("#page");
+    const y = page.scrollTop;
+    page.innerHTML = S.edit ? editorHTML() : autoListHTML();
+    page.scrollTop = y;
+  }
+
+  async function onAutoSetting(el) {
+    const r = S.edit;
+    const id = el.dataset.id;
+    switch (el.dataset.set) {
+      case "autoTab": S.autoTab = Number(id); renderAuto(); return true;
+      case "newRule": S.edit = newRule(S.autoTab === 0); S.editError = null; $("#page").scrollTop = 0; renderAuto(); return true;
+      case "editRule": {
+        if (el.tagName !== "DIV") return true;
+        const a = S.ha && S.ha.states[id];
+        if (!a) return true;
+        const cid = a.attributes.id;
+        if (!canEditRules()) S.autoMsg = "編集するには管理者ログインが必要です（⚙ 設定 → アカウント）";
+        else if (!isAppRule(cid)) S.autoMsg = `「${nameOf(a)}」は Home Assistant で作られた自動化なので、Home Assistant の画面で編集してください`;
+        else if (!S.rules[cid]) S.autoMsg = `「${nameOf(a)}」の設定を読み込めませんでした`;
+        else { S.edit = JSON.parse(JSON.stringify(S.rules[cid])); S.editError = null; $("#page").scrollTop = 0; }
+        renderAuto();
+        return true;
+      }
+      case "runAuto": { const a = S.ha.states[id]; call(a, "trigger"); S.autoMsg = `「${nameOf(a)}」を実行しました`; renderAuto(); return true; }
+      case "autoOn": call(S.ha.states[id], el.checked ? "turn_on" : "turn_off"); return true;
+      case "editCancel": S.edit = null; renderAuto(); return true;
+      case "trigKind":
+        if (id === "time") r.trigger = { kind: "time", at: "07:00" };
+        else if (id === "state") { if (r.trigger.kind !== "state") r.trigger = { kind: "state", entity: "", to: "on" }; }
+        else r.trigger = { kind: "sun", event: id, offset: 0 };
+        break;
+      case "trigAt": r.trigger.at = el.value || "07:00"; break;
+      case "trigEntity": r.trigger = { kind: "state", entity: el.value, to: el.value ? stateOptions(el.value.split(".")[0])[0][0] : "on" }; break;
+      case "trigTo": r.trigger.to = id; break;
+      case "sunOff": r.trigger.offset += Number(id); break;
+      case "wd": r.weekdays = r.weekdays.includes(id) ? r.weekdays.filter((d) => d !== id) : r.weekdays.concat([id]); break;
+      case "wdPreset": r.weekdays = id === "weekday" ? ["mon", "tue", "wed", "thu", "fri"] : id === "weekend" ? ["sat", "sun"] : []; break;
+      case "rangeOn": if (el.checked) { r.after = "18:00"; r.before = "23:00"; } else { r.after = null; r.before = null; } break;
+      case "after": r.after = el.value || null; break;
+      case "before": r.before = el.value || null; break;
+      case "actAdd": if (el.value) r.actions.push(makeAct(el.value, opsFor(el.value.split(".")[0])[0])); break;
+      case "actDel": r.actions.splice(Number(id), 1); break;
+      case "actOp": { const a = r.actions[Number(id)]; r.actions[Number(id)] = makeAct(a.entity, opsFor(a.entity.split(".")[0])[Number(el.dataset.j)]); break; }
+      case "actTemp": { const a = r.actions[Number(id)]; a.data.temperature = Math.round((Number(a.data.temperature) + Number(el.dataset.d)) * 10) / 10; break; }
+      case "actMode": r.actions[Number(id)].data.hvac_mode = el.dataset.v; break;
+      case "actParam": {
+        const a = r.actions[Number(id)];
+        const key = Object.keys(a.data)[0];
+        a.data[key] = Number(el.value);
+        break;
+      }
+      case "ruleSave": {
+        if (!r.actions.length) { S.editError = "「＋ 操作を追加」で、実行することを1つ以上選んでください"; break; }
+        if (r.trigger.kind === "state" && !r.trigger.entity) { S.editError = "きっかけにする機器を選んでください"; break; }
+        S.saving = true; S.editError = null; renderAuto();
+        try {
+          if (!r.name.trim()) r.name = ruleSummary(r).slice(0, 40);
+          await rest("POST", "/api/config/automation/config/" + encodeURIComponent(r.id), toConfig(r));
+          const saved = Object.assign({}, r); delete saved.isNew;
+          S.rules[r.id] = saved;
+          S.autoMsg = `「${r.name}」を保存しました`;
+          S.edit = null;
+        } catch (e) { S.editError = e.message; }
+        S.saving = false;
+        break;
+      }
+      case "ruleDelete":
+        if (!confirm(`「${r.name || "この自動化"}」を Home Assistant から削除しますか？`)) return true;
+        try {
+          await rest("DELETE", "/api/config/automation/config/" + encodeURIComponent(r.id));
+          delete S.rules[r.id];
+          S.autoMsg = "削除しました";
+          S.edit = null;
+        } catch (e) { S.editError = e.message; }
+        break;
+      default: return false;
+    }
+    renderAuto();
+    return true;
   }
 
   // ================= 画面の組み立て =================
@@ -1146,13 +1766,13 @@
       ${reason ? `<div class="warn">${esc(reason)}</div>` : ""}
       <div><button class="btn" id="loginBtn">Home Assistant でログイン</button></div>
       ${window.isSecureContext ? "" : `<div class="note">※ いまは http のアドレスで開いています。音声入力と外出先での利用には、Home Assistant Cloud のリモートURL（https）で開いてください。</div>`}</div>`;
-    $("#loginBtn").onclick = startLogin;
+    $("#loginBtn").onclick = () => startLogin();
   }
 
   function buildMain() {
     $("#app").innerHTML = `<div class="wrap">
       <div class="top"><span class="badge" id="badge"></span><span class="sp"></span>
-        <button class="tbtn" id="btnHelp">？ 使い方</button><button class="tbtn" id="btnSettings">⚙ 設定</button></div>
+        <button class="tbtn" id="btnHelp">？ 使い方</button><button class="tbtn" id="btnAuto">⏰ 自動化</button><button class="tbtn" id="btnSettings">⚙ 設定</button></div>
       <div id="updateBanner"></div>
       <section class="hero"><div><div class="time" id="time"></div><div class="date" id="date"></div></div><div id="weather"></div></section>
       <section class="card voice">
@@ -1162,6 +1782,7 @@
           <button class="tbtn" type="submit">送信</button></form>
       </section>
       <div class="msg hidden" id="msg"></div>
+      <div class="roombar" id="roombar"></div>
       <main class="grid" id="grid"></main>
       <div class="note" id="empty" style="text-align:center;padding:32px"></div>
     </div>
@@ -1176,20 +1797,31 @@
     $("#sheetClose").onclick = closeSheet;
     $("#btnHelp").onclick = () => openPage("help");
     $("#btnSettings").onclick = () => openPage("settings");
+    $("#btnAuto").onclick = () => openPage("auto");
     $("#mic").onclick = onMicPressed;
     $("#tform").onsubmit = (ev) => { ev.preventDefault(); const t = $("#tin"); sendText(t.value); t.value = ""; t.blur(); };
 
     // 設定・使い方・更新ボタン（data-set）
     document.addEventListener("click", (ev) => {
+      if (ev.target.closest("label.sw, label.row")) return; // チェックボックス類は change で処理
       const el = ev.target.closest("[data-set]");
-      if (!el || el.tagName === "INPUT") return;
+      if (!el || el.tagName === "INPUT" || el.tagName === "SELECT") return;
       onSetting(el);
     });
     document.addEventListener("change", (ev) => {
       const el = ev.target;
-      if (el.dataset && el.dataset.set && el.tagName === "INPUT") onSetting(el);
+      if (el.dataset && el.dataset.set && (el.tagName === "INPUT" || el.tagName === "SELECT")) onSetting(el);
     });
-    document.addEventListener("input", (ev) => { if (ev.target.dataset && ev.target.dataset.set === "query") renderSelList(); });
+    document.addEventListener("input", (ev) => {
+      const el = ev.target;
+      if (!el.dataset) return;
+      if (el.dataset.set === "query") renderSelList();
+      if (el.dataset.set === "ruleName" && S.edit) S.edit.name = el.value;
+      if (el.dataset.set === "actParam" && S.edit) {
+        const l = el.parentElement.querySelector(".rl");
+        if (l) l.textContent = l.textContent.replace(/\d+%/, el.value + "%");
+      }
+    });
 
     // iOS は操作をきっかけにしないと音を出せない・マイクを再開できないので、タップのたびに再開を試みる
     document.addEventListener("pointerdown", () => {
@@ -1218,6 +1850,7 @@
 
   // ================= 起動 =================
   async function boot() {
+    applyTheme();
     try {
       await handleCallback();
     } catch (e) {
@@ -1226,6 +1859,10 @@
     }
     if (!store.get("tokens")) { showLogin(null); return; }
     buildMain();
+    const back = store.get("openPage");
+    if (back) { store.del("openPage"); openPage(back); }
+    const flash = store.get("flash");
+    if (flash) { store.del("flash"); setTimeout(() => alert(flash), 300); }
     keepAwake();
     connectLoop();
     setTimeout(() => checkUpdate(true), 10000);

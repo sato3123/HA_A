@@ -1,17 +1,17 @@
-:root {
-  --bg: #141218;
-  --surface: #211f26;
-  --surface2: #2b2930;
-  --on: #e6e1e5;
-  --muted: #cac4d0;
-  --primary: #ffb74d;
-  --on-primary: #3e2400;
-  --pc: #5d4020;
-  --on-pc: #ffe0b2;
-  --error: #f2b8b5;
-  --outline: #49454f;
-  --radius: 16px;
-}
+:root { --radius: 16px; }
+/* ---- 配色（Android 版 Themes.kt と同じ色。生成元：Themes.kt） ---- */
+:root { --primary: #ffb74d; --on-primary: #3e2400; --pc: #5d4020; --on-pc: #ffe0b2; --bg: #141218; --surface: #1d1b20; --surface2: #2b2930; --on: #e6e1e5; --muted: #cac4d0; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="blue"] { --primary: #90caf9; --on-primary: #0b2a4a; --pc: #1e3a5f; --on-pc: #d6e8ff; --bg: #0f1418; --surface: #161d23; --surface2: #1f2a33; --on: #e1e6ec; --muted: #c0cad4; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="green"] { --primary: #a5d6a7; --on-primary: #0b3311; --pc: #1f4d2b; --on-pc: #d7f5d8; --bg: #0f1511; --surface: #161d18; --surface2: #1f2b22; --on: #e0e6e0; --muted: #c1ccc1; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="purple"] { --primary: #ce93d8; --on-primary: #3a0e45; --pc: #4a2655; --on-pc: #f6d9ff; --bg: #151218; --surface: #1d1921; --surface2: #2a2430; --on: #e8e0ea; --muted: #cdc3d1; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="red"] { --primary: #ef9a9a; --on-primary: #4a0e0e; --pc: #5c2222; --on-pc: #ffdad6; --bg: #181212; --surface: #201919; --surface2: #302424; --on: #ede0de; --muted: #d6c3c1; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="teal"] { --primary: #80cbc4; --on-primary: #003732; --pc: #1c4a47; --on-pc: #cff5f1; --bg: #0e1515; --surface: #151d1c; --surface2: #1d2b2a; --on: #dfe6e5; --muted: #bfcbc9; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="mono"] { --primary: #e0e0e0; --on-primary: #1a1a1a; --pc: #424242; --on-pc: #fafafa; --bg: #101010; --surface: #181818; --surface2: #262626; --on: #e6e6e6; --muted: #bdbdbd; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="night"] { --primary: #b0855a; --on-primary: #1f1408; --pc: #3a2817; --on-pc: #d9bfa0; --bg: #000000; --surface: #0a0a0a; --surface2: #141210; --on: #a89f96; --muted: #8a827a; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="light_orange"] { --primary: #e65100; --on-primary: #ffffff; --pc: #ffe0b2; --on-pc: #3e2400; --bg: #fff8f3; --surface: #ffffff; --surface2: #f3e9e0; --on: #1f1b16; --muted: #51453a; --outline: #c4c6cf; --error: #b3261e; color-scheme: light; }
+:root[data-theme="light_blue"] { --primary: #1565c0; --on-primary: #ffffff; --pc: #d6e8ff; --on-pc: #0b2a4a; --bg: #f7f9fc; --surface: #ffffff; --surface2: #e3eaf2; --on: #191c20; --muted: #42474e; --outline: #c4c6cf; --error: #b3261e; color-scheme: light; }
+:root[data-theme="light_green"] { --primary: #2e7d32; --on-primary: #ffffff; --pc: #d7f5d8; --on-pc: #0b3311; --bg: #f6fbf5; --surface: #ffffff; --surface2: #e2ede2; --on: #191d19; --muted: #424942; --outline: #c4c6cf; --error: #b3261e; color-scheme: light; }
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; background: var(--bg); color: var(--on); }
 body {
@@ -144,3 +144,31 @@ input[type=range] { width: 100%; accent-color: var(--primary); height: 32px; }
 /* ---- ログイン ---- */
 .login { max-width: 520px; margin: 12vh auto; padding: 24px; text-align: center; display: flex; flex-direction: column; gap: 16px; }
 .login img { width: 96px; height: 96px; border-radius: 22px; margin: 0 auto; }
+
+/* ---- 部屋 ---- */
+.roombar { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+.roomh { grid-column: 1 / -1; color: var(--primary); font-size: 17px; font-weight: 600; margin-top: 8px; }
+select { font: inherit; font-size: 15px; background: var(--surface2); color: var(--on); border: 1px solid var(--outline); border-radius: 10px; padding: 8px; max-width: 100%; }
+.roomsel { max-width: 40%; }
+
+/* ---- 配色の選択 ---- */
+.themes { display: flex; flex-wrap: wrap; gap: 10px; }
+.theme { width: 112px; height: 96px; border-radius: 14px; border: 1px solid rgba(136,136,136,.35); padding: 10px 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 13px; }
+.theme.sel { border: 3px solid var(--primary); }
+.theme .dots { display: flex; gap: 4px; }
+.theme .dots span { width: 22px; height: 22px; border-radius: 50%; display: block; }
+
+/* ---- 自動化 ---- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--outline); margin: 8px 0 12px; }
+.tab { background: none; border: none; padding: 12px 16px; font-size: 16px; color: var(--muted); border-bottom: 3px solid transparent; }
+.tab.sel { color: var(--primary); border-bottom-color: var(--primary); }
+.auto { display: flex; align-items: center; gap: 10px; background: var(--surface2); border-radius: var(--radius); padding: 12px; margin-bottom: 8px; cursor: pointer; }
+.auto .at { flex: 1; min-width: 0; }
+.auto .an { font-size: 17px; font-weight: 600; }
+.auto .as { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.field > .fl { color: var(--primary); font-size: 16px; font-weight: 600; }
+.field input[type=text], .field input[type=time], .field input[type=password] { font: inherit; font-size: 17px; background: var(--surface2); color: var(--on); border: 1px solid var(--outline); border-radius: 10px; padding: 10px; max-width: 420px; }
+.act { background: var(--surface2); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.summary { background: var(--pc); color: var(--on-pc); border-radius: var(--radius); padding: 12px; margin: 12px 0; line-height: 1.6; }
+.info-box { background: var(--pc); color: var(--on-pc); border-radius: var(--radius); padding: 12px; margin: 8px 0; line-height: 1.6; }
