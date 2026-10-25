@@ -39,6 +39,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Fire タブレット・スマートフォン（ARM）の分だけ入れて、更新ファイルを小さくする
+            // （開発用のビルドは、パソコン上の仮想端末でも動くようにすべて入れる）
+            ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
