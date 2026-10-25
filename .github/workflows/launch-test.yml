@@ -1,11 +1,13 @@
 name: Launch test (Android emulator)
 
-# 仮想の Android 端末でアプリを実際に起動して、止まらないことを確かめる
+# 仮想の Android 端末（スマートフォンとタブレット）でアプリを実際に起動して、
+# 止まらないことと、画面のレイアウトを確かめる
 on:
   push:
     paths:
       - "app/**"
       - ".github/workflows/launch-test.yml"
+      - ".github/scripts/launch-check.sh"
   workflow_dispatch:
 
 permissions:
@@ -15,6 +17,14 @@ jobs:
   launch:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - form: phone
+            profile: pixel_3a     # 1080x2220（幅 約393dp）
+          - form: tablet
+            profile: pixel_c      # 2560x1800（幅 約1280dp。Fire HD 8 の横向きに近い広さ）
     steps:
       - uses: actions/checkout@v5
 
@@ -40,29 +50,42 @@ jobs:
       # Fire HD 8（第10世代）と同じ Android 9 で試す
       - name: Launch on emulator
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          FORM: ${{ matrix.form }}
         with:
           api-level: 28
           arch: x86_64
           target: default
+          profile: ${{ matrix.profile }}
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash .github/scripts/launch-check.sh
 
-      # 画面写真を確認用のリリース（ui-preview）に載せる（アプリの更新には使われない「プレリリース」）
-      - name: Publish screenshots
-        if: always() && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ls launch-*.png >/dev/null 2>&1 || exit 0
-          gh release delete ui-preview --yes --cleanup-tag 2>/dev/null || true
-          gh release create ui-preview launch-*.png --prerelease --title "画面の確認用（自動テスト）" \
-            --notes "自動テストで撮った画面写真です。アプリの更新には使われません。（${GITHUB_SHA::7}）"
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: launch-test-result
+          name: shots-${{ matrix.form }}
           path: |
-            launch-*.png
-            logcat.txt
+            shots/*.png
+            logcat-*.txt
+
+  # 画面写真を確認用のリリース（ui-preview）に載せる（アプリの更新には使われない「プレリリース」）
+  publish:
+    needs: launch
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shots-*
+          merge-multiple: true
+          path: shots
+      - name: Publish screenshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls shots/*.png >/dev/null 2>&1 || exit 0
+          gh release delete ui-preview --yes --cleanup-tag 2>/dev/null || true
+          gh release create ui-preview shots/*.png --prerelease --title "画面の確認用（自動テスト）" \
+            --notes "自動テストで撮った画面写真です。アプリの更新には使われません。（${GITHUB_SHA::7}）"
