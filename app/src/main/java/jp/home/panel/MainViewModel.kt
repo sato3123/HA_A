@@ -1471,6 +1471,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 elStatus.value = "機器を探せませんでした：${e.message}"
+                elDiagnostics.value = "機器を探している途中でエラーになりました：${e.message ?: e.javaClass.simpleName}"
             } finally {
                 elBusy.value = false
             }
@@ -1488,6 +1489,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         elManualIps.value = next
         discoverEchonet()
         return null
+    }
+
+    /** 1台だけをくわしく調べる */
+    fun probeEl(ip: String) {
+        if (elBusy.value) return
+        viewModelScope.launch {
+            elBusy.value = true
+            try {
+                elDiagnostics.value = echonet.probe(ip)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                elDiagnostics.value = "【$ip を調べた結果】\n調べられませんでした：${e.message}"
+            } finally {
+                elBusy.value = false
+            }
+        }
     }
 
     fun removeElIp(ip: String) {

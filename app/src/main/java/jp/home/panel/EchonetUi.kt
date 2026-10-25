@@ -65,6 +65,9 @@ fun EchonetSettings(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            if (diag == null && !busy) {
+                Text("「機器を探す」か、下の IP アドレスの「調べる」を押すと、ここに診断結果が出ます。", style = MaterialTheme.typography.bodySmall)
+            }
             diag?.let { d ->
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                     Column(Modifier.padding(10.dp)) {
@@ -125,6 +128,7 @@ fun EchonetSettings(vm: MainViewModel) {
             ips.sorted().forEach { ip ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("・$ip", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { vm.probeEl(ip) }, enabled = !busy) { Text("🩺 調べる") }
                     TextButton(onClick = { vm.removeElIp(ip) }) { Text("外す") }
                 }
             }

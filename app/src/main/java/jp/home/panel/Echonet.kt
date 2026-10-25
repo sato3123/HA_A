@@ -73,6 +73,7 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
     private val rxFrom = ConcurrentHashMap<String, MutableSet<String>>()   // 返事をくれた IP → 送り主の種類
     private val makers = ConcurrentHashMap<String, String>()               // IP → メーカー名
     @Volatile private var rxCount = 0
+    private val sendErrors = ConcurrentHashMap<String, String>()          // 送れなかった宛先 → 理由
     val diagnostics = MutableStateFlow<String?>(null)
 
     val devices = MutableStateFlow<Map<String, ElDevice>>(emptyMap())
@@ -168,7 +169,10 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         val s = socket ?: return
         val data = frame.encode()
         runCatching { s.send(DatagramPacket(data, data.size, InetAddress.getByName(ip), EL_PORT)) }
-            .onFailure { log("ECHONET：送信できません（$ip）${it.message}") }
+            .onFailure {
+                sendErrors[ip] = it.message ?: it.javaClass.simpleName
+                log("ECHONET：送信できません（$ip）${it.message}")
+            }
     }
 
     /** 1台に頼んで返事を待つ。返事が無ければ null */
@@ -200,8 +204,14 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
      */
     suspend fun discover(extraIps: List<String>, names: Map<String, String>, sweep: Boolean = false): Int = withContext(Dispatchers.IO) {
         if (socket == null) start()
-        if (socket == null) return@withContext 0
+        if (socket == null) {
+            diagnostics.value = "ECHONET Lite の通信を開始できませんでした。\n${status.value ?: ""}\n" +
+                "タブレットが家の Wi-Fi につながっているか確認してください。"
+            return@withContext 0
+        }
         status.value = "機器を探しています…"
+        diagnostics.value = null
+        sendErrors.clear()
         val found = ConcurrentHashMap<String, MutableSet<Eoj>>()
         discoverySink = { ip, f ->
             if (f.seoj.classCode == 0x0EF0) {
@@ -278,6 +288,55 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         count
     }
 
+    /**
+     * 1台だけをくわしく調べる（IP アドレスが分かっている機器が見つからないとき用）。
+     * 結果を診断の欄に書く。
+     */
+    suspend fun probe(ip: String): String = withContext(Dispatchers.IO) {
+        if (socket == null) start()
+        val lines = mutableListOf("【$ip を調べた結果】")
+        if (socket == null) {
+            lines += "ECHONET Lite の通信を開始できませんでした（${status.value ?: ""}）"
+            return@withContext lines.joinToString("\n").also { diagnostics.value = it }
+        }
+        lines += "タブレット：${localIp ?: "IP不明"}（${ifName ?: "経路不明"}）・待ち受け番号 ${socket?.localPort}"
+        sendErrors.remove(ip)
+        // 1. ノードプロファイル（機器の中身の一覧）
+        val node = request(ip, EOJ_NODE_PROFILE, Esv.GET, listOf(Prop(0xD6)), 3000)
+        sendErrors[ip]?.let { lines += "✕ 送信できません：$it" }
+        val list = node?.props?.firstOrNull { it.epc == 0xD6 }?.edt?.let(::parseInstanceList).orEmpty()
+        if (node != null) {
+            lines += "✓ 返事あり。中の機能：" + list.joinToString("・") { elClassOf(it.classCode).name + "(" + it.hex() + ")" }.ifBlank { "なし" }
+            request(ip, EOJ_NODE_PROFILE, Esv.GET, listOf(Prop(0x8A)), 2000)?.props?.firstOrNull { it.epc == 0x8A }?.edt?.let {
+                makers[ip] = makerName(it)
+                lines += "メーカー：${makers[ip]}"
+            }
+        } else {
+            lines += "✕ 機器の一覧の問い合わせに返事がありません"
+        }
+        // 2. エアコンとして直接問い合わせ（一覧に答えない機器もあるため）
+        val ac = list.firstOrNull { it.classCode == 0x0130 } ?: Eoj(0x01, 0x30, 0x01)
+        val st = request(ip, ac, Esv.GET, listOf(Prop(0x80), Prop(0xB0), Prop(0xB3)), 3000)
+        if (st != null) {
+            val on = st.props.firstOrNull { it.epc == 0x80 }?.edt?.firstOrNull()?.toInt()?.and(0xFF)
+            val temp = st.props.firstOrNull { it.epc == 0xB3 }?.edt?.firstOrNull()?.toInt()?.and(0xFF)
+            lines += "✓ エアコン（${ac.hex()}）が返事：" + (if (on == 0x30) "運転中" else if (on == 0x31) "停止中" else "状態不明") +
+                (temp?.takeIf { it in 1..50 }?.let { "・設定 ${it}℃" } ?: "")
+        } else {
+            lines += "✕ エアコンとしての問い合わせにも返事がありません"
+        }
+        if (node == null && st == null) {
+            lines += "→ この IP からは ECHONET Lite の返事がありません。考えられる原因："
+            lines += "　・機器の ECHONET Lite（HEMS 連携）がオフ。Panasonic のエアコンは、エオリアアプリなどで「HEMS 接続」「ECHONET Lite」を有効にする必要がある機種があります"
+            lines += "　・別売りの無線 LAN アダプターや HEMS アダプターが必要な機種"
+            lines += "　・IP が別の機器（ルーターで割り当てを確認）"
+            lines += "　・ルーターの「端末どうしの通信を分ける機能」（プライバシーセパレーター／AP アイソレーション）"
+        } else {
+            lines += "→ 返事があったので、もう一度「機器を探す」を押すと一覧に追加されます"
+        }
+        lines.joinToString("\n").also { diagnostics.value = it }
+    }
+
     private fun writeDiagnostics(sent: List<String>, found: Map<String, Set<Eoj>>) {
         val lines = mutableListOf<String>()
         lines += "タブレット：${localIp ?: "IPアドレス不明（Wi-Fi につながっていない可能性）"}（${ifName ?: "経路不明"}）"
@@ -285,6 +344,10 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         lines += "マルチキャスト参加：" + if (mcastJoined) "OK" else "できませんでした"
         lines += "呼びかけ：" + sent.joinToString("・")
         lines += "受け取った ECHONET Lite の電文：${rxCount} 件"
+        if (sendErrors.isNotEmpty()) {
+            lines += "送信できなかった宛先：" + sendErrors.entries.take(5).joinToString("・") { "${it.key}（${it.value}）" } +
+                if (sendErrors.size > 5) " ほか${sendErrors.size - 5}件" else ""
+        }
         if (rxFrom.isEmpty()) {
             lines += "→ どの機器からも返事がありません。"
             lines += "　・機器側：ECHONET Lite（HEMS 連携）の設定がオフ、または機器が別の Wi-Fi（ゲスト用・別の周波数帯で分離）につながっている"
