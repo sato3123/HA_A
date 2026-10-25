@@ -303,7 +303,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     }
 
     pick?.let { p ->
-        val domains = if (p == PickFor.TRIGGER) TRIGGER_DOMAINS else SUPPORTED_DOMAINS
+        val domains = if (p == PickFor.TRIGGER) TRIGGER_DOMAINS else SUPPORTED_DOMAINS - "camera"
         EntityPicker(
             entities = states.values.filter { it.domain in domains }.sortedWith(compareBy({ domains.indexOf(it.domain) }, { it.name })),
             onDismiss = { pick = null },

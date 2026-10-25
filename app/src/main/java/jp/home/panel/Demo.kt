@@ -1,5 +1,6 @@
 package jp.home.panel
 
+import androidx.compose.ui.graphics.asImageBitmap
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -45,11 +46,13 @@ object Demo {
         e("sensor.meter_kids_battery", "12", "friendly_name" to "子ども部屋 電池", "device_class" to "battery", "unit_of_measurement" to "%"),
         e("sensor.outdoor_temperature", "29.4", "friendly_name" to "ベランダ 温度", "device_class" to "temperature", "unit_of_measurement" to "°C"),
         e("calendar.timetree_family", "off", "friendly_name" to "TimeTree 家族"),
+        e("camera.entrance", "streaming", "friendly_name" to "玄関カメラ"),
     ).associateBy { it.entityId }
 
     val areas = listOf(Room("area:living", "リビング", true), Room("area:bedroom", "寝室", true), Room("area:kitchen", "キッチン", true))
     val entityAreas = mapOf(
         "climate.living" to "living", "light.living" to "living", "cover.curtain" to "living", "switch.tv" to "living",
+        "camera.entrance" to "living",
         "climate.bedroom" to "bedroom", "fan.bedroom" to "bedroom", "light.kitchen" to "kitchen",
     )
 
@@ -81,6 +84,28 @@ object Demo {
             val hourOfDay = ((t / 3_600_000L + 9) % 24).toDouble()
             MainViewModel.Point(t, center + amp * kotlin.math.sin((hourOfDay - 9) / 24 * 2 * Math.PI) + (i % 5) * 0.05)
         }
+    }
+
+    /** カメラの見本の映像（時刻と動く丸） */
+    fun cameraFrame(entityId: String): androidx.compose.ui.graphics.ImageBitmap {
+        val w = 640; val h = 360
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.RGB_565)
+        val c = android.graphics.Canvas(bmp)
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        p.shader = android.graphics.LinearGradient(0f, 0f, 0f, h.toFloat(), 0xFF37474F.toInt(), 0xFF263238.toInt(), android.graphics.Shader.TileMode.CLAMP)
+        c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
+        p.shader = null
+        p.color = 0xFF546E7A.toInt()
+        c.drawRect(80f, 120f, 300f, 360f, p)           // ドア
+        c.drawRect(380f, 90f, 580f, 230f, p)           // 窓
+        val t = System.currentTimeMillis()
+        p.color = 0xFFFFB74D.toInt()
+        c.drawCircle(320f + 200f * kotlin.math.sin(t / 1500.0).toFloat(), 290f, 26f, p)
+        p.color = android.graphics.Color.WHITE
+        p.textSize = 26f
+        c.drawText(java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss")), 16f, 36f, p)
+        c.drawText(entityId, 16f, h - 16f, p)
+        return bmp.asImageBitmap()
     }
 
     fun energy(): EnergyReport {

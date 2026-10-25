@@ -94,6 +94,10 @@ adb shell input swipe $((W/2)) $((HH*8/10)) $((W/2)) $((HH*2/10)) 500 < /dev/nul
 check "4-scrolled" 3
 adb shell input swipe $((W/2)) $((HH*8/10)) $((W/2)) $((HH*2/10)) 500 < /dev/null
 check "5-scrolled2" 3
+for i in 1 2 3; do
+  if tap_text "▶ タップで動画"; then check "5b-camera" 4; adb shell input keyevent 4 < /dev/null; sleep 2; break; fi
+  adb shell input swipe $((W/2)) $((HH*3/10)) $((W/2)) $((HH*7/10)) 400 < /dev/null; sleep 2
+done
 
 # 4. 向きを変える
 adb shell settings put system user_rotation 1 < /dev/null

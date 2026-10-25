@@ -68,6 +68,7 @@ fun isWide(e: Entity): Boolean = when (e.domain) {
     "light" -> e.dimmable
     "fan" -> e.hasPercentage
     "cover" -> e.hasPosition
+    "camera" -> true
     else -> false
 }
 
@@ -78,6 +79,10 @@ fun fmt(d: Double): String = if (d % 1.0 == 0.0) d.toInt().toString() else Strin
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
+    if (e.domain == "camera") {
+        CameraTile(e, vm)
+        return
+    }
     val active = e.isOn && e.domain !in setOf("scene", "script")
     // スイッチ類・シーンはタップで実行、それ以外はタップで詳細パネル
     val simple = e.domain in setOf("switch", "input_boolean", "scene", "script")
@@ -113,7 +118,7 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
 }
 
 @Composable
-private fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
+fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
     val toggle = !e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean")
     val info: @Composable () -> Unit = {
         // 動作の詳細（状態・最後に変わった時刻・履歴）
@@ -434,6 +439,7 @@ fun domainLabel(domain: String) = when (domain) {
     "person" -> "人"
     "device_tracker" -> "位置"
     "lock" -> "鍵"
+    "camera" -> "カメラ"
     "automation" -> "自動化"
     else -> domain
 }

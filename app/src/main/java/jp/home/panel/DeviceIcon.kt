@@ -121,6 +121,13 @@ private fun DrawScope.drawDevice(domain: String, c: Color, on: Boolean) {
             }
             drawPath(tri, c)
         }
+        "camera" -> {
+            // カメラ：本体とレンズ、上のでっぱり
+            drawRoundRect(c, topLeft = p(0.06f, 0.28f), size = Size(w * 0.88f, w * 0.58f), cornerRadius = CornerRadius(w * 0.12f), style = stroke)
+            drawRoundRect(c, topLeft = p(0.32f, 0.14f), size = Size(w * 0.36f, w * 0.16f), cornerRadius = CornerRadius(w * 0.05f))
+            drawCircle(c, radius = w * 0.16f, center = p(0.5f, 0.57f), style = stroke)
+            if (on) drawCircle(c, radius = w * 0.06f, center = p(0.82f, 0.42f))
+        }
         else -> drawCircle(c, radius = w * 0.2f, center = p(0.5f, 0.5f))
     }
 }

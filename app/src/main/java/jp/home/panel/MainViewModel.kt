@@ -1,5 +1,6 @@
 package jp.home.panel
 
+import androidx.compose.ui.graphics.asImageBitmap
 import android.Manifest
 import android.app.Application
 import android.content.Intent
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -47,9 +49,28 @@ enum class Conn { CONNECTING, CONNECTED, RETRYING }
 
 data class Pipeline(val id: String, val name: String, val hasWakeWord: Boolean, val agent: String)
 
+private val JPEG_START = okio.ByteString.of(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())
+private val JPEG_END = okio.ByteString.of(0xFF.toByte(), 0xD9.toByte())
+
+/** JPEG を読む（幅が maxWidth に収まるように縮める。メモリを抑えるため RGB565） */
+fun decodeJpeg(bytes: ByteArray, maxWidth: Int): androidx.compose.ui.graphics.ImageBitmap? {
+    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
+    if (o.outWidth <= 0) return null
+    var sample = 1
+    while (o.outWidth / (sample * 2) >= maxWidth) sample *= 2
+    val opts = android.graphics.BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+    }
+    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)?.let {
+        it.asImageBitmap()
+    }
+}
+
 /** 画面に出す機器の種類（並び順もこの順） */
 val SUPPORTED_DOMAINS = listOf(
-    "climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script",
+    "climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script", "camera",
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -845,6 +866,85 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             else -> call(e, "toggle")
         }
     }
+
+    // ================= カメラ =================
+
+    /** 映像を開いているカメラ（null = 閉じている） */
+    val cameraFor = MutableStateFlow<String?>(null)
+
+    fun openCamera(entityId: String) {
+        onUserInteraction()
+        cameraFor.value = entityId
+    }
+
+    fun closeCamera() {
+        cameraFor.value = null
+    }
+
+    /** 映像用（つなぎっぱなしにするので、読み込みの待ち時間を長めに） */
+    private val streamHttp by lazy { http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build() }
+
+    private val isDemo get() = BuildConfig.DEBUG && prefs.demoMode
+
+    private suspend fun cameraRequest(path: String): Request {
+        val r = route.value ?: throw HaException("接続していません")
+        val local = store.baseUrl ?: throw HaException("接続していません")
+        val token = validAccessToken(r.base, local)
+        return Request.Builder().url(r.base + path).header("Authorization", "Bearer $token").build()
+    }
+
+    /** カメラの静止画（Home Assistant の camera_proxy）。maxWidth に合わせて縮めて読む */
+    suspend fun cameraSnapshot(entityId: String, maxWidth: Int): androidx.compose.ui.graphics.ImageBitmap? {
+        if (isDemo) return Demo.cameraFrame(entityId)
+        return try {
+            val req = cameraRequest("/api/camera_proxy/$entityId")
+            withContext(Dispatchers.IO) {
+                http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext null
+                    val bytes = resp.body?.bytes() ?: return@withContext null
+                    decodeJpeg(bytes, maxWidth)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * カメラの動画（Home Assistant の camera_proxy_stream。MJPEG の連続した JPEG）。
+     * どのカメラでも Home Assistant 側で MJPEG にして送ってくれる。
+     */
+    fun cameraStream(entityId: String): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> = kotlinx.coroutines.flow.flow {
+        if (isDemo) {
+            while (true) {
+                emit(Demo.cameraFrame(entityId))
+                delay(300)
+            }
+        }
+        val call = streamHttp.newCall(cameraRequest("/api/camera_proxy_stream/$entityId"))
+        // 画面を閉じたら、読み込み待ちの途中でもすぐに切る
+        val handle = kotlinx.coroutines.currentCoroutineContext()[Job]?.invokeOnCompletion { call.cancel() }
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) throw HaException("映像を開けませんでした (HTTP ${resp.code})")
+                val src = resp.body?.source() ?: throw HaException("映像がありません")
+                while (true) {
+                    val start = src.indexOf(JPEG_START)
+                    if (start < 0) break
+                    src.skip(start)
+                    val end = src.indexOf(JPEG_END, 3)
+                    if (end < 0) break
+                    val bytes = src.readByteArray(end + 2)
+                    decodeJpeg(bytes, 1920)?.let { emit(it) }
+                }
+            }
+        } finally {
+            handle?.dispose()
+        }
+        throw HaException("映像が途切れました")
+    }.flowOn(Dispatchers.IO)
 
     // ================= 音声 =================
 
