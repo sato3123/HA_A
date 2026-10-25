@@ -85,7 +85,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          ls shots/*.png >/dev/null 2>&1 || exit 0
+          # 写真はフォルダの中の階層に入っていることがあるので、まとめて探す
+          mapfile -t files < <(find shots -name '*.png' | sort)
+          [ ${#files[@]} -gt 0 ] || { echo "::warning::画面写真がありません"; exit 0; }
           gh release delete ui-preview --yes --cleanup-tag 2>/dev/null || true
-          gh release create ui-preview shots/*.png --prerelease --title "画面の確認用（自動テスト）" \
+          gh release create ui-preview "${files[@]}" --prerelease --title "画面の確認用（自動テスト）" \
             --notes "自動テストで撮った画面写真です。アプリの更新には使われません。（${GITHUB_SHA::7}）"
