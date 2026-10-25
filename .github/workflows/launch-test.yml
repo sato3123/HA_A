@@ -8,6 +8,9 @@ on:
       - ".github/workflows/launch-test.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   launch:
     runs-on: ubuntu-24.04
@@ -44,6 +47,17 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash .github/scripts/launch-check.sh
+
+      # 画面写真を確認用のリリース（ui-preview）に載せる（アプリの更新には使われない「プレリリース」）
+      - name: Publish screenshots
+        if: always() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls launch-*.png >/dev/null 2>&1 || exit 0
+          gh release delete ui-preview --yes --cleanup-tag 2>/dev/null || true
+          gh release create ui-preview launch-*.png --prerelease --title "画面の確認用（自動テスト）" \
+            --notes "自動テストで撮った画面写真です。アプリの更新には使われません。（${GITHUB_SHA::7}）"
 
       - uses: actions/upload-artifact@v4
         if: always()

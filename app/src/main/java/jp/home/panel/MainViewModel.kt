@@ -199,6 +199,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onResume() {
+        if (BuildConfig.DEBUG && prefs.demoMode) return
         if (connectJob?.isActive != true && screen.value != Screen.Login) start()
     }
 
@@ -305,6 +306,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             loadEvents()
         }
         automations.value = m.values.filter { it.domain == "automation" }.sortedBy { it.name }
+        updateThermos(m)
         haEntityList = m.values
             .filter { it.domain in SUPPORTED_DOMAINS }
             .sortedWith(compareBy({ SUPPORTED_DOMAINS.indexOf(it.domain) }, { it.name }))
@@ -379,19 +381,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .sortedBy { it.name }
             val devArr = c.request(JSONObject().put("type", "config/device_registry/list")).optJSONArray("result") ?: JSONArray()
             val devArea = HashMap<String, String>()
+            val devNames = HashMap<String, String>()
             for (i in 0 until devArr.length()) {
                 val d = devArr.optJSONObject(i) ?: continue
                 if (!d.isNull("area_id")) devArea[d.optString("id")] = d.optString("area_id")
+                val dn = d.optString("name_by_user").takeIf { it.isNotBlank() && it != "null" } ?: d.optString("name")
+                if (dn.isNotBlank() && dn != "null") devNames[d.optString("id")] = dn
             }
+            deviceNames.value = devNames
             val entArr = c.request(JSONObject().put("type", "config/entity_registry/list")).optJSONArray("result") ?: JSONArray()
             val map = HashMap<String, String>()
+            val entDev = HashMap<String, String>()
             for (i in 0 until entArr.length()) {
                 val e = entArr.optJSONObject(i) ?: continue
+                if (!e.isNull("device_id")) entDev[e.optString("entity_id")] = e.optString("device_id")
                 val area = if (!e.isNull("area_id")) e.optString("area_id")
                 else if (!e.isNull("device_id")) devArea[e.optString("device_id")] else null
                 if (!area.isNullOrBlank()) map[e.optString("entity_id")] = area
             }
             entityAreas.value = map
+            entityDevice.value = entDev
+            allStates.value.let { updateThermos(it) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1012,6 +1022,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= 温度計（SwitchBot など） =================
+
+    val entityDevice = MutableStateFlow<Map<String, String>>(emptyMap())
+    val deviceNames = MutableStateFlow<Map<String, String>>(emptyMap())
+    val thermos = MutableStateFlow<List<Thermo>>(emptyList())
+    val thermoHidden = MutableStateFlow(prefs.thermoHidden)
+
+    private fun updateThermos(m: Map<String, Entity>) {
+        thermos.value = buildThermos(m.values, entityDevice.value, deviceNames.value)
+    }
+
+    fun toggleThermo(key: String) {
+        val next = if (key in thermoHidden.value) thermoHidden.value - key else thermoHidden.value + key
+        prefs.thermoHidden = next
+        thermoHidden.value = next
+    }
+
     // ================= ECHONET Lite（直接通信） =================
 
     private var haEntityList: List<Entity> = emptyList()
@@ -1566,12 +1593,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun loadDemo() {
+        val m = Demo.states()
+        allStates.value = m
+        haAreas.value = Demo.areas
+        entityAreas.value = Demo.entityAreas
+        haEntityList = m.values.filter { it.domain in SUPPORTED_DOMAINS }
+        mergeEntities()
+        automations.value = m.values.filter { it.domain == "automation" }
+        updateThermos(m)
+        weatherEntities.value = listOfNotNull(m["weather.home"])
+        weather.value = m["weather.home"]
+        forecast.value = Demo.forecast()
+        calendarEntities.value = listOfNotNull(m["calendar.timetree_family"])
+        events.value = Demo.events()
+        energy.value = Demo.energy()
+        userName.value = "デモ"
+        isAdmin.value = false
+        if (timers.value.isEmpty()) addTimer(5 * 60L, "パスタ")
+        route.value = Route("http://demo.invalid", false)
+        conn.value = Conn.CONNECTED
+        screen.value = Screen.Home
+    }
+
     /*
      * 起動処理。Kotlin は上から順に準備するので、すべての値の準備が終わった
      * このクラスの最後で動かす（途中に置くと、まだ準備できていない値を読んで止まる）
      */
     init {
-        start()
+        // 開発用のビルドの「デモ表示」：Home Assistant につながず、見本のデータで画面を出す（画面の確認用）
+        if (BuildConfig.DEBUG && prefs.demoMode) loadDemo() else start()
         startEchonet()
         // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）
         viewModelScope.launch {

@@ -46,13 +46,13 @@ import kotlinx.coroutines.delay
 
 /** マイクボタンとマイクレベルだけの小さな操作部（時計の横に置く） */
 @Composable
-fun MicControl(voice: VoiceState, micLevel: Int?, waiting: Boolean, enabled: Boolean, onMic: () -> Unit) {
+fun MicControl(voice: VoiceState, micLevel: Int?, waiting: Boolean, enabled: Boolean, onMic: () -> Unit, compact: Boolean = false) {
     val listening = voice == VoiceState.Listening
     val busy = voice is VoiceState.Processing || voice is VoiceState.Speaking
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp)) {
         // マイクレベル（録音中だけ）。音が入っていなければ赤
         Box(
-            Modifier.width(90.dp).height(8.dp)
+            Modifier.width(if (compact) 48.dp else 90.dp).height(8.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
         ) {
             if (micLevel != null) {
@@ -66,7 +66,7 @@ fun MicControl(voice: VoiceState, micLevel: Int?, waiting: Boolean, enabled: Boo
             onClick = onMic,
             enabled = enabled,
             shape = CircleShape,
-            modifier = Modifier.size(60.dp),
+            modifier = Modifier.size(if (compact) 48.dp else 60.dp),
             contentPadding = PaddingValues(0.dp),
             colors = when {
                 listening -> ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
@@ -81,7 +81,7 @@ fun MicControl(voice: VoiceState, micLevel: Int?, waiting: Boolean, enabled: Boo
                     voice is VoiceState.Speaking -> "🔇"
                     else -> "🎤"
                 },
-                fontSize = 24.sp,
+                fontSize = if (compact) 20.sp else 24.sp,
             )
         }
     }

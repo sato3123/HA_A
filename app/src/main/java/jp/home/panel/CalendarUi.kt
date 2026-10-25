@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package jp.home.panel
 
 import androidx.compose.foundation.clickable
@@ -140,7 +142,7 @@ fun CalendarSettings(vm: MainViewModel) {
                     }
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 OutlinedButton(onClick = vm::loadEvents) { Text("予定を読み込み直す") }
                 status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package jp.home.panel
 
 import androidx.compose.foundation.layout.Arrangement
@@ -99,7 +101,7 @@ fun ProfileSettings(vm: MainViewModel) {
                 FilterChip(p.id == current.id, { vm.switchProfile(p.id) }, { Text("👤 " + p.name) })
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             OutlinedTextField(
                 newName, { newName = it },
                 modifier = Modifier.widthIn(max = 280.dp),
@@ -168,7 +170,7 @@ fun BackupSettings(vm: MainViewModel) {
                 "ログイン情報・外出先用URLなどの接続情報は書き出しません。",
             style = MaterialTheme.typography.bodySmall,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Button(onClick = { vm.requestFile("export") }) { Text("📤 設定を書き出す") }
             OutlinedButton(onClick = { vm.requestFile("import") }) { Text("📥 設定を読み込む") }
         }

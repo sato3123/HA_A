@@ -93,6 +93,14 @@ class UiPrefs(context: Context) {
         get() = p.getStringSet("el_ips", emptySet())!!.toSet()
         set(v) = p.edit().putStringSet("el_ips", v).apply()
 
+    /** ホーム画面に出さない温度計 */
+    var thermoHidden: Set<String>
+        get() = p.getStringSet("thermo_hidden", emptySet())!!.toSet()
+        set(v) = p.edit().putStringSet("thermo_hidden", v).apply()
+
+    /** 画面確認用のデモ表示（開発用のビルドだけで使う） */
+    val demoMode: Boolean get() = p.getBoolean("demo_mode", false)
+
     /** タイマー（JSON） */
     var timersJson: String?
         get() = p.getString("timers", null)

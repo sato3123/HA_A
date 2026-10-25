@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package jp.home.panel
 
 import androidx.compose.foundation.clickable
@@ -128,6 +130,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        // ---- 温度計 ----
+        item { SectionTitle("温度・湿度（SwitchBot などの温度計）") }
+        item { ThermoSettings(vm) }
+
         // ---- ECHONET Lite ----
         item { SectionTitle("ECHONET Lite（Home Assistant を通さずに直接つなぐ）") }
         item { EchonetSettings(vm) }
@@ -157,7 +163,7 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
                 remoteError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Button(onClick = { remoteError = vm.saveRemoteUrl(remoteInput) }) { Text("保存") }
                     if (remote.isNotEmpty()) {
                         TextButton(onClick = { remoteInput = ""; vm.saveRemoteUrl("") }) { Text("削除") }
@@ -470,7 +476,7 @@ private fun ScreensaverSettings(vm: MainViewModel) {
             label = { Text("Google フォトの共有アルバムのリンク") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Button(onClick = { vm.setAlbum(input) }) { Text("保存して読み込む") }
             OutlinedButton(onClick = vm::showScreensaverNow) { Text("今すぐ表示して試す") }
         }
@@ -495,7 +501,7 @@ private fun HomeLocationSettings(vm: MainViewModel) {
             singleLine = true,
             label = { Text("自宅の場所（例：滋賀県大津市○○町、JR○○駅の近く）") },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Button(onClick = { vm.setHomeLocation(input); note = if (input.isBlank()) "自宅の位置を削除しました" else "保存しました" }) { Text("保存") }
             OutlinedButton(onClick = { vm.useHaLocation { err -> note = err ?: "Home Assistant に登録されている位置を入れました" } }) {
                 Text("Home Assistant の位置を使う")

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package jp.home.panel
 
 import androidx.compose.animation.Crossfade
@@ -100,7 +102,7 @@ fun TimerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     }
                 }
                 Text("時間を指定", style = MaterialTheme.typography.labelLarge)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = { minutes = (minutes - 1).coerceAtLeast(0) }) { Text("−") }
                     Text("${minutes}分", fontSize = 22.sp)
                     TextButton(onClick = { minutes += 1 }) { Text("＋") }
@@ -237,7 +239,7 @@ fun VoiceDiagnostics(vm: MainViewModel) {
     val log by vm.voiceLog.collectAsState()
     var showLog by rememberSaveable { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             FilledTonalButton(onClick = vm::runMicTest, enabled = level == null) { Text("🎤 マイクのテスト（5秒）") }
             TextButton(onClick = { showLog = !showLog }) { Text(if (showLog) "動作ログを閉じる" else "音声の動作ログを見る") }
         }

@@ -6,6 +6,7 @@ import org.json.JSONObject
 /** ホーム画面に並べる項目 */
 enum class HomeSection(val key: String, val label: String) {
     CLOCK("clock", "時計・天気（マイクボタン）"),
+    THERMO("thermo", "温度・湿度（SwitchBot などの温度計）"),
     CALENDAR("calendar", "予定（TimeTree）"),
     TIMERS("timers", "タイマーの残り時間"),
     ENERGY("energy", "今日の電気（エネルギーの収支）"),
@@ -33,6 +34,7 @@ data class Profile(
 
 fun defaultSections() = listOf(
     SectionPref(HomeSection.CLOCK, true),
+    SectionPref(HomeSection.THERMO, true),
     SectionPref(HomeSection.CALENDAR, true),
     SectionPref(HomeSection.TIMERS, true),
     SectionPref(HomeSection.ENERGY, true),
@@ -44,8 +46,17 @@ fun defaultProfile(themeId: String) = Profile("p_default", "みんな", defaultS
 
 /** 保存されていない項目（あとから増えた項目など）を末尾に補う */
 private fun completeSections(list: List<SectionPref>): List<SectionPref> {
-    val missing = defaultSections().filter { d -> list.none { it.section == d.section } }
-    return list + missing
+    val out = list.toMutableList()
+    val defaults = defaultSections()
+    defaults.forEachIndexed { i, d ->
+        if (out.none { it.section == d.section }) {
+            // 標準の並びで1つ前にある項目のすぐ後ろに入れる（無ければ先頭）
+            val prev = defaults.take(i).lastOrNull { p -> out.any { it.section == p.section } }
+            val at = prev?.let { p -> out.indexOfFirst { it.section == p.section } + 1 } ?: 0
+            out.add(at, d)
+        }
+    }
+    return out
 }
 
 fun profilesToJson(list: List<Profile>): String = JSONArray().apply {

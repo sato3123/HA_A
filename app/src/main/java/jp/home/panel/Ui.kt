@@ -218,6 +218,8 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         return
     }
 
+    // スマートフォンなど幅の狭い画面
+    val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 600
     val profiles by vm.profiles.collectAsState()
     val profile by vm.activeProfile.collectAsState()
     val clockShown = profile.sections.any { it.section == HomeSection.CLOCK && it.visible }
@@ -228,6 +230,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             waiting = wake && route?.remote == false,
             enabled = conn == Conn.CONNECTED,
             onMic = onMic,
+            compact = compact,
         )
     }
 
@@ -235,23 +238,23 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         { GridItemSpan(it.maxLineSpan) }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(140.dp),
-        contentPadding = PaddingValues(12.dp),
+        columns = GridCells.Adaptive(if (compact) 150.dp else 140.dp),
+        contentPadding = PaddingValues(if (compact) 8.dp else 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
         // ---- 上部：接続状態・表示のユーザー・ボタン（いつも表示） ----
         item(span = { full(this) }) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                ConnectionBadge(conn, route)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (compact) 0.dp else 4.dp)) {
+                ConnectionBadge(conn, route, showLabel = !compact)
                 if (profiles.size > 1) ProfileSwitcher(profiles, profile) { vm.switchProfile(it) }
                 Spacer(Modifier.weight(1f))
                 if (!clockShown) mic()
-                TextButton(onClick = { showHelp = true }) { Text("？ 使い方") }
-                TextButton(onClick = { showTimers = true }) { Text("⏱ タイマー") }
-                TextButton(onClick = { showAuto = true }) { Text("⏰ 自動化") }
-                TextButton(onClick = { showSettings = true }) { Text("⚙ 設定") }
+                TopButton("？", "使い方", compact) { showHelp = true }
+                TopButton("⏱", "タイマー", compact) { showTimers = true }
+                TopButton("⏰", "自動化", compact) { showAuto = true }
+                TopButton("⚙", "設定", compact) { showSettings = true }
             }
         }
         item(span = { full(this) }) { UpdateCard(vm, showWhenIdle = false) }
@@ -265,6 +268,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         profile.sections.filter { it.visible }.forEach { sp ->
             when (sp.section) {
                 HomeSection.CLOCK -> item(span = { full(this) }) { ClockWeather(weather, forecast) { mic() } }
+                HomeSection.THERMO -> item(span = { full(this) }) { ThermoStrip(vm) }
                 HomeSection.CALENDAR -> item(span = { full(this) }) { CalendarStrip(vm, onOpen = { showCalendar = true }) }
                 HomeSection.TIMERS -> item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
                 HomeSection.AUTOMATIONS -> item(span = { full(this) }) { AutomationQuick(vm) }
@@ -345,7 +349,18 @@ private fun RoomFilterRow(rooms: List<Room>, selected: String?, onSelect: (Strin
 }
 
 @Composable
-private fun ConnectionBadge(conn: Conn, route: Route?) {
+private fun TopButton(icon: String, label: String, compact: Boolean, onClick: () -> Unit) {
+    if (compact) {
+        TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 6.dp), modifier = Modifier.size(width = 44.dp, height = 44.dp)) {
+            Text(icon, fontSize = 20.sp)
+        }
+    } else {
+        TextButton(onClick = onClick) { Text("$icon $label") }
+    }
+}
+
+@Composable
+private fun ConnectionBadge(conn: Conn, route: Route?, showLabel: Boolean = true) {
     val (color, label) = when (conn) {
         Conn.CONNECTED -> Color(0xFF66BB6A) to if (route?.remote == true) "外出先（Cloud）" else "家の中"
         Conn.CONNECTING -> Color(0xFFFFCA28) to "接続しています"
@@ -353,7 +368,7 @@ private fun ConnectionBadge(conn: Conn, route: Route?) {
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(10.dp).background(color, CircleShape))
-        Text(" $label", style = MaterialTheme.typography.labelMedium)
+        if (showLabel) Text(" $label", style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -400,18 +415,20 @@ private val DOW_FMT = DateTimeFormatter.ofPattern("E", Locale.JAPAN)
 
 @Composable
 private fun ClockBlock(now: LocalDateTime) {
-    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(now.format(TIME_FMT), fontSize = 52.sp, fontWeight = FontWeight.Light, lineHeight = 56.sp)
-        Text(now.format(DATE_FMT), fontSize = 17.sp, modifier = Modifier.padding(bottom = 8.dp))
+    val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 600
+    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 10.dp)) {
+        Text(now.format(TIME_FMT), fontSize = if (compact) 40.sp else 52.sp, fontWeight = FontWeight.Light, lineHeight = if (compact) 44.sp else 56.sp)
+        Text(now.format(DATE_FMT), fontSize = if (compact) 14.sp else 17.sp, modifier = Modifier.padding(bottom = if (compact) 6.dp else 8.dp))
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WeatherBlock(weather: Entity?, forecast: List<JSONObject>, modifier: Modifier, showDays: Boolean = true) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    FlowRow(modifier, verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (weather == null || weather.unavailable) {
             Text("天気の情報がありません", style = MaterialTheme.typography.bodySmall)
-            return@Row
+            return@FlowRow
         }
         val unit = weather.attributes.optString("temperature_unit", "°C")
         val today = LocalDate.now()

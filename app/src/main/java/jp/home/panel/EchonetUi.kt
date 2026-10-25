@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package jp.home.panel
 
 import androidx.compose.foundation.layout.Arrangement
@@ -51,7 +53,7 @@ fun EchonetSettings(vm: MainViewModel) {
         ) { vm.setElEnabled(it) }
 
         if (enabled) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Button(onClick = { vm.discoverEchonet(false) }, enabled = !busy) { Text("🔍 機器を探す") }
                 androidx.compose.material3.OutlinedButton(onClick = { vm.discoverEchonet(true) }, enabled = !busy) {
                     Text("🔎 すべてのアドレスに問い合わせ")
@@ -106,7 +108,7 @@ fun EchonetSettings(vm: MainViewModel) {
                 "ルーターによっては、機器を探す呼びかけ（マルチキャスト）が届かないことがあります。その場合は、機器（またはその機器の HEMS アダプター）の IP アドレスを入れてください。",
                 style = MaterialTheme.typography.bodySmall,
             )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 OutlinedTextField(
                     ipInput, { ipInput = it; ipError = null },
                     modifier = Modifier.widthIn(max = 260.dp),
