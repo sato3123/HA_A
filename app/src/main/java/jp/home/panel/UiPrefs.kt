@@ -82,6 +82,17 @@ class UiPrefs(context: Context) {
         get() = p.getString("active_profile", null)
         set(v) = p.edit().putString("active_profile", v).apply()
 
+    // ---- ECHONET Lite（Home Assistant を通さない直接通信） ----
+    var elEnabled: Boolean
+        get() = p.getBoolean("el_enabled", false)
+        set(v) = p.edit().putBoolean("el_enabled", v).apply()
+    var elDevicesJson: String?
+        get() = p.getString("el_devices", null)
+        set(v) = p.edit().putString("el_devices", v).apply()
+    var elManualIps: Set<String>
+        get() = p.getStringSet("el_ips", emptySet())!!.toSet()
+        set(v) = p.edit().putStringSet("el_ips", v).apply()
+
     /** タイマー（JSON） */
     var timersJson: String?
         get() = p.getString("timers", null)

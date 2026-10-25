@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- ECHONET Lite の機器を家の Wi-Fi で探すため（マルチキャスト） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- アプリ内アップデートで新しい APK をインストールするため -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 

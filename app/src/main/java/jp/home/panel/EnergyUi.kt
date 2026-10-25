@@ -36,12 +36,22 @@ import androidx.compose.ui.unit.sp
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EnergyStrip(vm: MainViewModel, onOpen: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
     val r by vm.energy.collectAsState()
     val status by vm.energyStatus.collectAsState()
+    val live by vm.elLive.collectAsState()
     val report = r
+    if (live.buyW != null || live.solarW != null || live.batteryPct != null) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(horizontal = 4.dp)) {
+            Text("🔌 いま", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            live.buyW?.let { Stat(if (it >= 0) "買電" else "売電", "${kotlin.math.abs(it)} W") }
+            live.solarW?.let { Stat("発電", "$it W") }
+            live.batteryPct?.let { Stat("蓄電池", "$it%") }
+        }
+    }
     if (report == null) {
         status?.let { Text("⚡ $it", style = MaterialTheme.typography.bodySmall) }
-        return
+        return@Column
     }
     val t = report.today
     Card(
@@ -61,6 +71,7 @@ fun EnergyStrip(vm: MainViewModel, onOpen: () -> Unit) {
             if (report.hasSolar || report.hasBattery) t.selfRate?.let { Stat("自給率", String.format("%.0f%%", it)) }
             t.cost?.let { Stat("電気代", String.format("%,.0f円", it)) }
         }
+    }
     }
 }
 

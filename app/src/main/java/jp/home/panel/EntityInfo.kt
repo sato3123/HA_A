@@ -105,7 +105,9 @@ fun EntityInfoDialog(vm: MainViewModel) {
     val status by vm.historyStatus.collectAsState()
     val rooms by vm.rooms.collectAsState()
     val entityId = id ?: return
-    val e = states[entityId]
+    val elDevs by vm.elDevices.collectAsState()
+    val el = elDevs.firstOrNull { it.entityId == entityId }
+    val e = states[entityId] ?: el?.toEntity()
     AlertDialog(
         onDismissRequest = vm::hideInfo,
         title = { Text("ⓘ " + (e?.name ?: entityId)) },
@@ -121,7 +123,15 @@ fun EntityInfoDialog(vm: MainViewModel) {
                 InfoRow("種類", domainLabel(e.domain))
                 val rk = vm.roomKey(e.entityId)
                 InfoRow("部屋", rooms.firstOrNull { it.key == rk }?.name ?: "その他")
-                InfoRow("ID", e.entityId)
+                if (el != null) {
+                    InfoRow("つなぎ方", "ECHONET Lite（直接）")
+                    InfoRow("機器の種類", el.cls.name)
+                    InfoRow("IPアドレス", el.ip)
+                    InfoRow("通信", if (el.online) "応答あり" else "応答なし")
+                    el.props[0x80]?.u8()?.let { InfoRow("動作状態", if (it == 0x30) "オン" else "オフ") }
+                } else {
+                    InfoRow("ID", e.entityId)
+                }
 
                 val attrs: JSONObject = e.attributes
                 val shown = ATTR_LABELS.filterKeys { attrs.has(it) && !attrs.isNull(it) }

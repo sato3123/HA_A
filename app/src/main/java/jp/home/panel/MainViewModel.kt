@@ -149,6 +149,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         start()
+        startEchonet()
         // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）
         viewModelScope.launch {
             delay(1_000)
@@ -347,9 +348,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             loadEvents()
         }
         automations.value = m.values.filter { it.domain == "automation" }.sortedBy { it.name }
-        allEntities.value = m.values
+        haEntityList = m.values
             .filter { it.domain in SUPPORTED_DOMAINS }
             .sortedWith(compareBy({ SUPPORTED_DOMAINS.indexOf(it.domain) }, { it.name }))
+        mergeEntities()
 
         val ws = m.values.filter { it.domain == "weather" }.sortedBy { it.name }
         weatherEntities.value = ws
@@ -766,7 +768,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         store.clearTokens()
         store.clearAdmin()
         adminUser.value = null
-        allEntities.value = emptyList()
+        haEntityList = emptyList()
+        mergeEntities()
         voice.value = VoiceState.Idle
         loginError.value = reason
         screen.value = Screen.Login
@@ -833,6 +836,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ================= 機器操作 =================
 
     fun call(e: Entity, service: String, data: JSONObject = JSONObject(), domain: String = e.domain) {
+        // ECHONET Lite の機器は Home Assistant を通さず直接操作する
+        if (isEchonetEntity(e.entityId)) {
+            viewModelScope.launch {
+                val err = echonet.callService(e.entityId, service, data)
+                if (err != null) message.value = "「${e.name}」：$err"
+            }
+            return
+        }
         val c = client ?: return
         viewModelScope.launch {
             try {
@@ -1044,6 +1055,111 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= ECHONET Lite（直接通信） =================
+
+    private var haEntityList: List<Entity> = emptyList()
+    private val echonet by lazy { EchonetClient(getApplication(), ::addLog) }
+    val elEnabled = MutableStateFlow(prefs.elEnabled)
+    val elDevices = MutableStateFlow<List<ElDevice>>(emptyList())
+    val elStatus = MutableStateFlow<String?>(null)
+    val elManualIps = MutableStateFlow(prefs.elManualIps)
+    val elBusy = MutableStateFlow(false)
+    val elLive = MutableStateFlow(ElLive(null, null, null))
+
+    /** Home Assistant の機器と ECHONET Lite の機器を1つの一覧にする */
+    private fun mergeEntities() {
+        val el = if (elEnabled.value) elDevices.value.filter { it.haDomain in SUPPORTED_DOMAINS }.map { it.toEntity() } else emptyList()
+        allEntities.value = (haEntityList + el)
+            .sortedWith(compareBy({ SUPPORTED_DOMAINS.indexOf(it.domain) }, { it.name }))
+    }
+
+    fun elEntity(entityId: String): ElDevice? = elDevices.value.firstOrNull { it.entityId == entityId }
+
+    private fun startEchonet() {
+        if (!elEnabled.value) return
+        echonet.restore(EchonetClient.fromJson(prefs.elDevicesJson))
+        echonet.start()
+        viewModelScope.launch {
+            echonet.devices.collect { map ->
+                elDevices.value = map.values.sortedWith(compareBy({ it.cls.kind.ordinal }, { it.name }))
+                elLive.value = elLive(map.values)
+                mergeEntities()
+            }
+        }
+        viewModelScope.launch { echonet.status.collect { elStatus.value = it } }
+        // 30秒ごとに状態を読み直す（機器からの通知があればすぐ反映）
+        viewModelScope.launch {
+            while (isActive && elEnabled.value) {
+                if (foreground) echonet.refreshAll()
+                delay(30_000)
+            }
+        }
+    }
+
+    private fun saveElDevices() {
+        prefs.elDevicesJson = echonet.toJson()
+    }
+
+    fun setElEnabled(on: Boolean) {
+        prefs.elEnabled = on
+        elEnabled.value = on
+        if (on) {
+            startEchonet()
+            if (elDevices.value.isEmpty()) discoverEchonet()
+        } else {
+            echonet.stop()
+            mergeEntities()
+        }
+    }
+
+    fun discoverEchonet() {
+        if (elBusy.value) return
+        viewModelScope.launch {
+            elBusy.value = true
+            try {
+                val names = elDevices.value.associate { it.key to it.name }
+                echonet.discover(elManualIps.value.toList(), names)
+                saveElDevices()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                elStatus.value = "機器を探せませんでした：${e.message}"
+            } finally {
+                elBusy.value = false
+            }
+        }
+    }
+
+    fun addElIp(ip: String): String? {
+        val v = ip.trim()
+        // 数字だけの IP アドレスに限る（名前の問い合わせを画面の処理中にしないため）
+        if (!Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(v)) return "IPアドレス（例：192.168.1.50）を入力してください"
+        val addr = runCatching { java.net.InetAddress.getByName(v) }.getOrNull() ?: return "IPアドレスが正しくありません"
+        if (!NetworkGuard.isLocal(addr)) return "家の中のアドレスを入力してください"
+        val next = elManualIps.value + v
+        prefs.elManualIps = next
+        elManualIps.value = next
+        discoverEchonet()
+        return null
+    }
+
+    fun removeElIp(ip: String) {
+        val next = elManualIps.value - ip
+        prefs.elManualIps = next
+        elManualIps.value = next
+    }
+
+    fun renameEl(key: String, name: String) {
+        if (name.isBlank()) return
+        echonet.rename(key, name.trim())
+        saveElDevices()
+    }
+
+    fun removeEl(key: String) {
+        echonet.remove(key)
+        saveElDevices()
+    }
+
     // ================= エネルギーの収支 =================
 
     val energy = MutableStateFlow<EnergyReport?>(null)
@@ -1146,6 +1262,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         onUserInteraction()
         infoFor.value = entityId
         history.value = null
+        if (isEchonetEntity(entityId)) {
+            historyStatus.value = "ECHONET Lite で直接つないでいる機器は、履歴を記録していません"
+            return
+        }
         historyStatus.value = "履歴を読み込んでいます…"
         viewModelScope.launch { loadHistory(entityId) }
     }
@@ -1478,6 +1598,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        if (elEnabled.value) echonet.close()
         client?.close()
     }
 

@@ -128,6 +128,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
         }
 
+        // ---- ECHONET Lite ----
+        item { SectionTitle("ECHONET Lite（Home Assistant を通さずに直接つなぐ）") }
+        item { EchonetSettings(vm) }
+
         // ---- カレンダー（TimeTree） ----
         item { SectionTitle("カレンダー（TimeTree）") }
         item { CalendarSettings(vm) }

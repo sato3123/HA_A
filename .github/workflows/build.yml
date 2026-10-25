@@ -61,7 +61,7 @@ jobs:
           chmod +x gradlew
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           set -o pipefail
-          ./gradlew assembleRelease --no-daemon 2>&1 | tee build.log || {
+          ./gradlew testReleaseUnitTest assembleRelease --no-daemon 2>&1 | tee build.log || {
             # コンパイルエラーを注釈として出す（ログを開かなくても確認できるように）
             { grep -E "^e: " build.log; grep -A6 "What went wrong" build.log; } | head -40 | while IFS= read -r line; do
               echo "::error::$line"
