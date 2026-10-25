@@ -147,49 +147,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var forecastFor: String? = null
     private val tokenMutex = Mutex()
 
-    init {
-        start()
-        startEchonet()
-        // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）
-        viewModelScope.launch {
-            delay(1_000)
-            while (isActive) {
-                checkTimers()
-                val idle = System.currentTimeMillis() - lastInteraction
-                if (ssEnabled.value && !screensaver.value && foreground && screen.value == Screen.Home &&
-                    ringing.value.isEmpty() && !manualBusy && idle > ssMinutes.value * 60_000L &&
-                    voice.value !is VoiceState.Listening
-                ) {
-                    screensaver.value = true
-                }
-                delay(500)
-            }
-        }
-        viewModelScope.launch {
-            delay(5_000)
-            while (isActive) {
-                loadEvents()
-                loadEnergy()
-                delay(5 * 60 * 1000L)
-            }
-        }
-        viewModelScope.launch {
-            delay(3_000)
-            while (isActive) {
-                loadPhotos()
-                delay(6 * 60 * 60 * 1000L)
-            }
-        }
-        // 起動して少し後と、その後6時間ごとに新しいバージョンを確認
-        viewModelScope.launch {
-            delay(15_000)
-            while (isActive) {
-                checkUpdate(silent = true)
-                delay(6 * 60 * 60 * 1000L)
-            }
-        }
-    }
-
     // ================= アップデート =================
 
     fun checkUpdate(silent: Boolean = false) {
@@ -1077,8 +1034,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startEchonet() {
         if (!elEnabled.value) return
-        echonet.restore(EchonetClient.fromJson(prefs.elDevicesJson))
-        echonet.start()
+        try {
+            echonet.restore(EchonetClient.fromJson(prefs.elDevicesJson))
+        } catch (e: Exception) {
+            addLog("ECHONET：保存した機器を読めませんでした ${e.message}")
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                echonet.start()
+            } catch (e: Exception) {
+                elStatus.value = "ECHONET Lite を開始できませんでした：${e.message}"
+            }
+        }
         viewModelScope.launch {
             echonet.devices.collect { map ->
                 elDevices.value = map.values.sortedWith(compareBy({ it.cls.kind.ordinal }, { it.name }))
@@ -1593,6 +1560,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 photoStatus.value = "アルバムを読み込めませんでした：${e.message}"
+            }
+        }
+    }
+
+    /*
+     * 起動処理。Kotlin は上から順に準備するので、すべての値の準備が終わった
+     * このクラスの最後で動かす（途中に置くと、まだ準備できていない値を読んで止まる）
+     */
+    init {
+        start()
+        startEchonet()
+        // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）
+        viewModelScope.launch {
+            delay(1_000)
+            while (isActive) {
+                checkTimers()
+                val idle = System.currentTimeMillis() - lastInteraction
+                if (ssEnabled.value && !screensaver.value && foreground && screen.value == Screen.Home &&
+                    ringing.value.isEmpty() && !manualBusy && idle > ssMinutes.value * 60_000L &&
+                    voice.value !is VoiceState.Listening
+                ) {
+                    screensaver.value = true
+                }
+                delay(500)
+            }
+        }
+        viewModelScope.launch {
+            delay(5_000)
+            while (isActive) {
+                loadEvents()
+                loadEnergy()
+                delay(5 * 60 * 1000L)
+            }
+        }
+        viewModelScope.launch {
+            delay(3_000)
+            while (isActive) {
+                loadPhotos()
+                delay(6 * 60 * 60 * 1000L)
+            }
+        }
+        // 起動して少し後と、その後6時間ごとに新しいバージョンを確認
+        viewModelScope.launch {
+            delay(15_000)
+            while (isActive) {
+                checkUpdate(silent = true)
+                delay(6 * 60 * 60 * 1000L)
             }
         }
     }

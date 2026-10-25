@@ -16,7 +16,11 @@ import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -70,6 +74,7 @@ class MainActivity : ComponentActivity() {
                     onMic = { withMic { vm.onMicPressed() } },
                     onEnableWake = { withMic { vm.setWakeEnabled(true) } },
                 )
+                CrashReportDialog()
             }
         }
     }
@@ -130,3 +135,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+/** 前回アプリが止まっていたら、その原因を表示する（コピーして送れるように） */
+@androidx.compose.runtime.Composable
+private fun CrashReportDialog() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var text by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(CrashLog.read(ctx)) }
+    val t = text ?: return
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { CrashLog.clear(ctx); text = null },
+        title = { androidx.compose.material3.Text("前回アプリが止まりました") },
+        text = {
+            androidx.compose.foundation.layout.Column(
+                androidx.compose.ui.Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+            ) {
+                androidx.compose.material3.Text("原因の調査に使います。「コピー」を押して、内容を送ってください。")
+                androidx.compose.material3.Text(t, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                clip.setText(androidx.compose.ui.text.AnnotatedString(t))
+            }) { androidx.compose.material3.Text("コピー") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { CrashLog.clear(ctx); text = null }) {
+                androidx.compose.material3.Text("閉じる")
+            }
+        },
+    )
+}
+

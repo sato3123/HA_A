@@ -154,7 +154,8 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         val id = tid.getAndIncrement() and 0xFFFF
         val d = CompletableDeferred<ElFrame>()
         waiting[id] = d
-        send(ip, ElFrame(id, EOJ_CONTROLLER, deoj, esv, props))
+        // 送信は画面の処理とは別の所で行う（画面の処理中に通信すると Android に止められる）
+        withContext(Dispatchers.IO) { send(ip, ElFrame(id, EOJ_CONTROLLER, deoj, esv, props)) }
         val r = withTimeoutOrNull(timeoutMs) { d.await() }
         waiting.remove(id)
         return r
@@ -268,8 +269,8 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         applyProps(d.ip, d.eoj, r.props)
     }
 
-    suspend fun refreshAll() {
-        devices.value.keys.toList().forEach { refresh(it) }
+    suspend fun refreshAll() = withContext(Dispatchers.IO) {
+        devices.value.keys.toList().forEach { runCatching { refresh(it) } }
     }
 
     // ---------------- 操作 ----------------

@@ -13,6 +13,7 @@
     <!-- Home Assistant は家の中で http://IP:8123 のまま使うため平文通信を許可。
          接続先は RestrictedDns で「家の中のアドレス」と「登録した外出先用URL」に限定している。 -->
     <application
+        android:name=".HomePanelApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
