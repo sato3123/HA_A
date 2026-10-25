@@ -32,6 +32,12 @@ class TokenStore(context: Context) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
 
+    /** そのほかの秘密の値（直接つなぐカメラのパスワードなど） */
+    fun secret(key: String): String? = prefs.getString("s_$key", null)
+    fun setSecret(key: String, v: String?) {
+        prefs.edit().apply { if (v.isNullOrEmpty()) remove("s_$key") else putString("s_$key", v) }.apply()
+    }
+
     var baseUrl: String?
         get() = prefs.getString("base_url", null)
         set(v) = prefs.edit().putString("base_url", v).apply()

@@ -869,6 +869,103 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ================= カメラ =================
 
+    // ---- 直接つなぐカメラ（RTSP） ----
+    val ipCameras = MutableStateFlow(IpCamera.listFrom(prefs.ipCamerasJson))
+
+    fun ipCamera(entityId: String): IpCamera? = ipCameras.value.firstOrNull { it.entityId == entityId }
+    fun ipCameraPassword(id: String): String = store.secret("ipcam_$id").orEmpty()
+
+    fun saveIpCamera(c: IpCamera, password: String) {
+        val isNew = ipCameras.value.none { it.id == c.id }
+        val next = if (isNew) ipCameras.value + c else ipCameras.value.map { if (it.id == c.id) c else it }
+        prefs.ipCamerasJson = IpCamera.listJson(next)
+        store.setSecret("ipcam_${c.id}", password)
+        ipCameras.value = next
+        // 表示する機器を選んでいる場合も、追加したカメラは表示する
+        if (isNew) selection.value?.let { sel -> (sel + c.entityId).also { prefs.selected = it; selection.value = it } }
+        mergeEntities()
+    }
+
+    fun deleteIpCamera(id: String) {
+        val next = ipCameras.value.filter { it.id != id }
+        prefs.ipCamerasJson = IpCamera.listJson(next)
+        store.setSecret("ipcam_$id", null)
+        ipCameras.value = next
+        mergeEntities()
+    }
+
+    /** RTSP の再生アドレス（ユーザー名・パスワード入り）。light = 軽量（サブストリーム） */
+    fun ipCameraUrl(c: IpCamera, light: Boolean): String =
+        withCredentials(if (light && c.subUrl.isNotBlank()) c.subUrl else c.mainUrl, c.user, ipCameraPassword(c.id))
+
+    // ---- 画質 ----
+    val cameraModes = MutableStateFlow(prefs.cameraModes)
+
+    fun cameraMode(entityId: String): String =
+        cameraModes.value[entityId] ?: if (isDirectCamera(entityId)) "main" else "auto"
+
+    fun setCameraMode(entityId: String, mode: String) {
+        val next = cameraModes.value + (entityId to mode)
+        prefs.cameraModes = next
+        cameraModes.value = next
+    }
+
+    // ---- リアルタイム（WebRTC） ----
+
+    /** Home Assistant のカメラが WebRTC に対応しているか */
+    suspend fun cameraWebRtcSupported(entityId: String): Boolean {
+        if (isDemo || isDirectCamera(entityId)) return false
+        val c = client ?: return false
+        return try {
+            val a = c.request(JSONObject().put("type", "camera/capabilities").put("entity_id", entityId))
+                .optJSONObject("result")?.optJSONArray("frontend_stream_types") ?: return false
+            (0 until a.length()).any { a.optString(it) == "web_rtc" }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 古い Home Assistant
+            allStates.value[entityId]?.attributes?.optString("frontend_stream_type") == "web_rtc"
+        }
+    }
+
+    suspend fun cameraIceServers(entityId: String): List<IceServerInfo> {
+        val c = client ?: return emptyList()
+        return try {
+            val arr = c.request(JSONObject().put("type", "camera/webrtc/get_client_config").put("entity_id", entityId))
+                .optJSONObject("result")?.optJSONObject("configuration")?.optJSONArray("iceServers") ?: return emptyList()
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { j ->
+                val u = j.opt("urls")
+                val urls = if (u is JSONArray) (0 until u.length()).map { u.optString(it) } else listOf(u.toString())
+                IceServerInfo(urls, j.optString("username").ifBlank { null }, j.optString("credential").ifBlank { null })
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptyList() // 家の中なら STUN が無くてもつながる
+        }
+    }
+
+    suspend fun cameraWebRtcOffer(entityId: String, sdp: String, onEvent: (JSONObject) -> Unit): Int {
+        val c = client ?: throw HaException("接続していません")
+        return c.subscribe(JSONObject().put("type", "camera/webrtc/offer").put("entity_id", entityId).put("offer", sdp), onEvent)
+    }
+
+    fun cameraWebRtcCandidate(entityId: String, session: String, candidate: JSONObject) {
+        val c = client ?: return
+        viewModelScope.launch {
+            runCatching {
+                c.request(JSONObject().put("type", "camera/webrtc/candidate").put("entity_id", entityId)
+                    .put("session_id", session).put("candidate", candidate))
+            }
+        }
+    }
+
+    fun cameraWebRtcClose(sub: Int) {
+        val c = client ?: return
+        c.removeHandler(sub)
+        viewModelScope.launch { runCatching { c.request(JSONObject().put("type", "unsubscribe_events").put("subscription", sub)) } }
+    }
+
     /** 映像を開いているカメラ（null = 閉じている） */
     val cameraFor = MutableStateFlow<String?>(null)
 
@@ -897,6 +994,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return if (path.startsWith("http")) path else base + path
     }
 
+    /** 直接つなぐカメラの静止画（静止画の URL があるときだけ） */
+    private suspend fun directSnapshot(c: IpCamera, maxWidth: Int): androidx.compose.ui.graphics.ImageBitmap? {
+        if (c.snapshotUrl.isBlank()) return null
+        return try {
+            val client = photoHttp.newBuilder().authenticator(CameraAuthenticator(c.user, ipCameraPassword(c.id))).build()
+            withContext(Dispatchers.IO) {
+                client.newCall(Request.Builder().url(c.snapshotUrl).build()).execute().use { resp ->
+                    if (!resp.isSuccessful) null else resp.body?.bytes()?.let { decodeJpeg(it, maxWidth) }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** 動画の再生に使う通信（家のネットワークだけに制限した設定をそのまま使う） */
     val playerHttp: OkHttpClient get() = streamHttp
 
@@ -914,7 +1028,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** カメラの静止画（Home Assistant の camera_proxy）。maxWidth に合わせて縮めて読む */
     suspend fun cameraSnapshot(entityId: String, maxWidth: Int): androidx.compose.ui.graphics.ImageBitmap? {
-        if (isDemo) return Demo.cameraFrame(entityId)
+        if (isDemo && !isDirectCamera(entityId)) return Demo.cameraFrame(entityId)
+        ipCamera(entityId)?.let { cam -> return directSnapshot(cam, maxWidth) }
         return try {
             val req = cameraRequest("/api/camera_proxy/$entityId")
             withContext(Dispatchers.IO) {
@@ -1289,7 +1404,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Home Assistant の機器と ECHONET Lite の機器を1つの一覧にする */
     private fun mergeEntities() {
         val el = if (elEnabled.value) elDevices.value.filter { it.haDomain in SUPPORTED_DOMAINS }.map { it.toEntity() } else emptyList()
-        allEntities.value = (haEntityList + el)
+        val cams = ipCameras.value.map { it.toEntity() }
+        allEntities.value = (haEntityList + el + cams)
             .sortedWith(compareBy({ SUPPORTED_DOMAINS.indexOf(it.domain) }, { it.name }))
     }
 
@@ -1493,6 +1609,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         onUserInteraction()
         infoFor.value = entityId
         history.value = null
+        if (isDirectCamera(entityId)) {
+            historyStatus.value = "直接つないでいるカメラは、履歴を記録していません"
+            return
+        }
         if (isEchonetEntity(entityId)) {
             historyStatus.value = "ECHONET Lite で直接つないでいる機器は、履歴を記録していません"
             return

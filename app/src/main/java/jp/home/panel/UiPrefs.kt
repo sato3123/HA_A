@@ -93,6 +93,16 @@ class UiPrefs(context: Context) {
         get() = p.getStringSet("el_ips", emptySet())!!.toSet()
         set(v) = p.edit().putStringSet("el_ips", v).apply()
 
+    /** 直接つなぐカメラ（JSON。パスワードは含まない） */
+    var ipCamerasJson: String?
+        get() = p.getString("ip_cameras", null)
+        set(v) = p.edit().putString("ip_cameras", v).apply()
+
+    /** カメラごとの画質（entity_id → auto / realtime / hls / mjpeg / main / sub） */
+    var cameraModes: Map<String, String>
+        get() = readMap("camera_modes")
+        set(v) = writeMap("camera_modes", v)
+
     /** 部屋の並び順（部屋の key の並び） */
     var roomOrder: List<String>
         get() = (p.getString("room_order", "") ?: "").split("\n").filter { it.isNotBlank() }

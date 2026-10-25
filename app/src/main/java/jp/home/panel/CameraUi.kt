@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package jp.home.panel
 
 import androidx.compose.foundation.Image
@@ -25,7 +27,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import org.webrtc.EglBase
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,10 +50,11 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.CancellationException
@@ -93,6 +104,8 @@ fun CameraTile(e: Entity, vm: MainViewModel) {
                                 .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
                         )
                     }
+                    failed && vm.ipCamera(e.entityId)?.snapshotUrl?.isBlank() == true ->
+                        Text("📷 タップで映像を表示", color = Color.White)
                     failed -> Text("映像を読めませんでした", color = Color.White)
                     else -> CircularProgressIndicator()
                 }
@@ -101,49 +114,114 @@ fun CameraTile(e: Entity, vm: MainViewModel) {
     }
 }
 
-/** カメラの動画（全画面）。高画質（HLS）で再生し、だめなら簡易表示（MJPEG） */
+/** 画質の選択肢（key, 表示名, 説明） */
+private val HA_MODES = listOf(
+    Triple("auto", "自動", "使える中でいちばん遅れの少ない方式"),
+    Triple("realtime", "リアルタイム", "遅れ1秒未満（WebRTC）"),
+    Triple("hls", "高画質", "なめらか・数秒の遅れ（HLS）"),
+    Triple("mjpeg", "簡易", "どのカメラでも・コマ数少なめ"),
+)
+private val DIRECT_MODES = listOf(
+    Triple("main", "高画質", "メインの映像"),
+    Triple("sub", "軽量", "解像度を下げた映像（通信が少ない）"),
+)
+
+/** 実際に再生している方式 */
+private enum class Play { WEBRTC, HLS, MJPEG, RTSP }
+
+/** カメラの動画（全画面）。画質を選べる。だめなら遅れの少ない順にほかの方式へ切り替える */
 @Composable
 fun CameraViewer(vm: MainViewModel) {
     val id by vm.cameraFor.collectAsState()
     val entityId = id ?: return
     val states by vm.allStates.collectAsState()
-    val name = states[entityId]?.name ?: entityId
-    // null = 確認中、"" = 簡易表示、それ以外 = 高画質の再生アドレス
-    var hls by remember(entityId) { mutableStateOf<String?>(null) }
-    var note by remember(entityId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(entityId) {
-        hls = try {
-            vm.cameraHlsUrl(entityId) ?: ""
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            note = "高画質の動画を使えないため、簡易表示にしています（${e.message}）"
-            ""
+    val modes by vm.cameraModes.collectAsState()
+    val direct = vm.ipCamera(entityId)
+    val name = direct?.name ?: states[entityId]?.name ?: entityId
+    val mode = modes[entityId] ?: vm.cameraMode(entityId)
+    // 再生する方式と、その再生アドレス（null = 確認中）
+    var play by remember(entityId, mode) { mutableStateOf<Pair<Play, String>?>(null) }
+    var note by remember(entityId, mode) { mutableStateOf<String?>(null) }
+    var showModes by remember(entityId) { mutableStateOf(false) }
+    // 失敗した方式（次はとばす）
+    val failed = remember(entityId, mode) { mutableSetOf<Play>() }
+    var retry by remember(entityId, mode) { mutableStateOf(0) }
+
+    LaunchedEffect(entityId, mode, retry) {
+        play = null
+        if (direct != null) {
+            play = Play.RTSP to vm.ipCameraUrl(direct, light = mode == "sub")
+            return@LaunchedEffect
         }
+        val order = when (mode) {
+            "realtime" -> listOf(Play.WEBRTC, Play.HLS, Play.MJPEG)
+            "hls" -> listOf(Play.HLS, Play.MJPEG)
+            "mjpeg" -> listOf(Play.MJPEG)
+            else -> listOf(Play.WEBRTC, Play.HLS, Play.MJPEG)
+        }.filter { it !in failed }
+        for (p in order) {
+            when (p) {
+                Play.WEBRTC -> if (vm.cameraWebRtcSupported(entityId)) { play = p to ""; return@LaunchedEffect }
+                Play.HLS -> {
+                    val u = try { vm.cameraHlsUrl(entityId) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                    if (u != null) { play = p to u; return@LaunchedEffect }
+                }
+                else -> { play = p to ""; return@LaunchedEffect }
+            }
+        }
+        play = Play.MJPEG to ""
     }
+    val fallback: (Play, String) -> Unit = { p, why ->
+        failed.add(p)
+        note = "${label(p)}で再生できないため、ほかの方式に切り替えました（$why）"
+        retry++
+    }
+
     Dialog(onDismissRequest = { vm.closeCamera() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            when (val u = hls) {
+            when (val p = play) {
                 null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                "" -> MjpegView(vm, entityId, name) { if (note == null) note = it }
-                else -> HlsView(vm, u, onError = {
-                    note = "高画質の動画を再生できないため、簡易表示に切り替えました（$it）"
-                    hls = ""
-                })
-            }
-            Row(
-                Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("📷 $name", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                if (hls != null) {
-                    Text(
-                        if (hls == "") "簡易表示" else "高画質",
-                        color = Color.White, style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
-                    )
+                else -> when (p.first) {
+                    Play.WEBRTC -> WebRtcView(vm, entityId) { fallback(Play.WEBRTC, it) }
+                    Play.HLS -> PlayerView(vm, p.second, rtsp = false, tcp = false) { fallback(Play.HLS, it) }
+                    Play.RTSP -> PlayerView(vm, p.second, rtsp = true, tcp = direct?.tcp == true) {
+                        note = "映像を受け取れませんでした（$it）。URL・ユーザー名・パスワードを確認してください。" +
+                            if (direct?.tcp != true) "映像が乱れるときは「TCP で受け取る」をオンにしてください。" else ""
+                    }
+                    Play.MJPEG -> MjpegView(vm, entityId, name) { if (note == null) note = it }
                 }
-                TextButton(onClick = { vm.closeCamera() }) { Text("✕ 閉じる", color = Color.White) }
+            }
+            Column(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("📷 $name", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    play?.let { p ->
+                        TextButton(onClick = { showModes = !showModes }) {
+                            Text("画質：" + (if (direct != null) DIRECT_MODES.first { it.first == mode }.second else label(p.first)) + " ▾", color = Color.White)
+                        }
+                    }
+                    TextButton(onClick = { vm.closeCamera() }) { Text("✕ 閉じる", color = Color.White) }
+                }
+                if (showModes) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        (if (direct != null) DIRECT_MODES else HA_MODES).forEach { (k, l, sub) ->
+                            FilterChip(
+                                selected = mode == k,
+                                onClick = { vm.setCameraMode(entityId, k); showModes = false },
+                                label = {
+                                    Column {
+                                        Text(l)
+                                        Text(sub, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    labelColor = Color.White,
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                ),
+                            )
+                        }
+                    }
+                }
             }
             note?.let {
                 Text(
@@ -156,21 +234,91 @@ fun CameraViewer(vm: MainViewModel) {
     }
 }
 
-/** 高画質（HLS）。Home Assistant がカメラの映像をそのまま配信するので、なめらかで音声も出る */
+private fun label(p: Play) = when (p) {
+    Play.WEBRTC -> "リアルタイム"
+    Play.HLS -> "高画質"
+    Play.MJPEG -> "簡易"
+    Play.RTSP -> "直接"
+}
+
+/** リアルタイム（WebRTC）。遅れが1秒未満 */
+@Composable
+private fun WebRtcView(vm: MainViewModel, entityId: String, onError: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val egl = remember { EglBase.create() }
+    val renderer = remember {
+        SurfaceViewRenderer(context).apply {
+            init(egl.eglBaseContext, null)
+            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            setEnableHardwareScaler(true)
+        }
+    }
+    var connecting by remember(entityId) { mutableStateOf(true) }
+    // 後に書いたものから先に片付けられるので、描画の片付けは接続より前に書く
+    DisposableEffect(Unit) {
+        onDispose {
+            renderer.release()
+            egl.release()
+        }
+    }
+    DisposableEffect(entityId) {
+        val s = WebRtcSession(context, egl, vm, entityId, renderer, scope, onConnected = { connecting = false }, onError = onError)
+        s.start()
+        onDispose { s.close() }
+    }
+    KeepAwake(vm)
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(factory = { renderer }, modifier = Modifier.fillMaxSize())
+        if (connecting) CircularProgressIndicator(Modifier.align(Alignment.Center))
+    }
+}
+
+/** 見ている間はスクリーンセーバーを出さない */
+@Composable
+private fun KeepAwake(vm: MainViewModel) {
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            vm.onUserInteraction()
+            delay(20_000)
+        }
+    }
+}
+
+/**
+ * HLS（Home Assistant の高画質）と RTSP（直接つなぐカメラ）の再生。
+ * 遅れを減らすため、ためる映像を最小限にする。
+ */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun HlsView(vm: MainViewModel, url: String, onError: (String) -> Unit) {
+private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boolean, onError: (String) -> Unit) {
     val context = LocalContext.current
     val player = remember(url) {
+        val load = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(if (rtsp) 500 else 1_000, if (rtsp) 2_000 else 4_000, 100, if (rtsp) 200 else 500)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
         ExoPlayer.Builder(context)
+            .setLoadControl(load)
             .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(vm.playerHttp)))
             .build().apply {
-                setMediaItem(
-                    MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8)
-                        // 遅れを小さく（ライブの先頭近くを再生）
-                        .setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(2_000).build())
-                        .build(),
-                )
+                if (rtsp) {
+                    setMediaSource(
+                        RtspMediaSource.Factory().setForceUseRtpTcp(tcp).setTimeoutMs(8_000)
+                            .createMediaSource(MediaItem.fromUri(url)),
+                    )
+                } else {
+                    setMediaItem(
+                        MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8)
+                            // ライブの先頭近くを再生し、遅れたら少し速めて追いつく
+                            .setLiveConfiguration(
+                                MediaItem.LiveConfiguration.Builder()
+                                    .setTargetOffsetMs(1_500).setMinOffsetMs(500)
+                                    .setMinPlaybackSpeed(0.97f).setMaxPlaybackSpeed(1.15f).build(),
+                            )
+                            .build(),
+                    )
+                }
                 playWhenReady = true
                 prepare()
             }
@@ -191,17 +339,11 @@ private fun HlsView(vm: MainViewModel, url: String, onError: (String) -> Unit) {
             player.release()
         }
     }
-    // 見ている間はスクリーンセーバーを出さない
-    LaunchedEffect(url) {
-        while (isActive) {
-            vm.onUserInteraction()
-            delay(20_000)
-        }
-    }
+    KeepAwake(vm)
     Box(Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
-                PlayerView(ctx).apply {
+                androidx.media3.ui.PlayerView(ctx).apply {
                     useController = false
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     setShutterBackgroundColor(android.graphics.Color.BLACK)

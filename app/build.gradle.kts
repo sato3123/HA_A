@@ -72,6 +72,10 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
+    // 直接つなぐネットワークカメラ（RTSP）
+    implementation("androidx.media3:media3-exoplayer-rtsp:1.4.1")
+    // Home Assistant のカメラをリアルタイム（WebRTC）で見る
+    implementation("io.getstream:stream-webrtc-android:1.1.3")
     // スクリーンセーバーの写真表示
     implementation("io.coil-kt:coil-compose:2.7.0")
     testImplementation("junit:junit:4.13.2")

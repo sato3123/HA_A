@@ -252,6 +252,11 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             item { CalendarSettings(vm) }
         }
 
+        if (page == "cameras") {
+            item { SectionTitle("カメラ（直接つなぐ）") }
+            item { DirectCameraSettings(vm) }
+        }
+
         if (page == "echonet") {
             // ---- ECHONET Lite ----
             item { SectionTitle("ECHONET Lite（Home Assistant を通さずに直接つなぐ）") }
@@ -566,6 +571,7 @@ val SETTINGS_MENU = listOf(
     MenuItem("voice", "🎤", "音声と AI", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"),
     MenuItem("screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間"),
     MenuItem("calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"),
+    MenuItem("cameras","📷","カメラ（直接つなぐ）","Home Assistant を通さずに見るネットワークカメラ"),
     MenuItem("echonet", "📡", "ECHONET Lite", "Home Assistant を通さずに直接つなぐ機器"),
     MenuItem("connection", "🌐", "外出先からの接続", "Home Assistant Cloud のリモートURL"),
     MenuItem("account", "👤", "アカウント", "管理者ログイン、ログアウト"),
