@@ -881,6 +881,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         cameraFor.value = null
     }
 
+    /**
+     * 高画質な動画（HLS）の再生用アドレス。Home Assistant がカメラの映像をそのまま配信する。
+     * カメラが対応していない（静止画だけのカメラなど）ときは null。
+     */
+    suspend fun cameraHlsUrl(entityId: String): String? {
+        if (isDemo) return null
+        val e = allStates.value[entityId] ?: return null
+        if ((e.attributes.optInt("supported_features") and 2) == 0) return null // 動画の配信に非対応
+        val c = client ?: return null
+        val base = route.value?.base ?: return null
+        val r = c.request(JSONObject().put("type", "camera/stream").put("entity_id", entityId).put("format", "hls"))
+        val path = r.optJSONObject("result")?.optString("url")?.takeIf { it.isNotBlank() } ?: return null
+        // アドレスに使い捨ての鍵が入っているので、ログインの情報を付けなくても再生できる
+        return if (path.startsWith("http")) path else base + path
+    }
+
+    /** 動画の再生に使う通信（家のネットワークだけに制限した設定をそのまま使う） */
+    val playerHttp: OkHttpClient get() = streamHttp
+
     /** 映像用（つなぎっぱなしにするので、読み込みの待ち時間を長めに） */
     private val streamHttp by lazy { http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build() }
 

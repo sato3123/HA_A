@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,7 +32,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.CancellationException
@@ -89,15 +101,123 @@ fun CameraTile(e: Entity, vm: MainViewModel) {
     }
 }
 
-/** カメラの動画（全画面） */
+/** カメラの動画（全画面）。高画質（HLS）で再生し、だめなら簡易表示（MJPEG） */
 @Composable
 fun CameraViewer(vm: MainViewModel) {
     val id by vm.cameraFor.collectAsState()
     val entityId = id ?: return
     val states by vm.allStates.collectAsState()
     val name = states[entityId]?.name ?: entityId
+    // null = 確認中、"" = 簡易表示、それ以外 = 高画質の再生アドレス
+    var hls by remember(entityId) { mutableStateOf<String?>(null) }
+    var note by remember(entityId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(entityId) {
+        hls = try {
+            vm.cameraHlsUrl(entityId) ?: ""
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            note = "高画質の動画を使えないため、簡易表示にしています（${e.message}）"
+            ""
+        }
+    }
+    Dialog(onDismissRequest = { vm.closeCamera() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            when (val u = hls) {
+                null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                "" -> MjpegView(vm, entityId, name) { if (note == null) note = it }
+                else -> HlsView(vm, u, onError = {
+                    note = "高画質の動画を再生できないため、簡易表示に切り替えました（$it）"
+                    hls = ""
+                })
+            }
+            Row(
+                Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("📷 $name", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (hls != null) {
+                    Text(
+                        if (hls == "") "簡易表示" else "高画質",
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+                TextButton(onClick = { vm.closeCamera() }) { Text("✕ 閉じる", color = Color.White) }
+            }
+            note?.let {
+                Text(
+                    it, color = Color.White, style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp)).padding(8.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 高画質（HLS）。Home Assistant がカメラの映像をそのまま配信するので、なめらかで音声も出る */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@Composable
+private fun HlsView(vm: MainViewModel, url: String, onError: (String) -> Unit) {
+    val context = LocalContext.current
+    val player = remember(url) {
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(vm.playerHttp)))
+            .build().apply {
+                setMediaItem(
+                    MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8)
+                        // 遅れを小さく（ライブの先頭近くを再生）
+                        .setLiveConfiguration(MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(2_000).build())
+                        .build(),
+                )
+                playWhenReady = true
+                prepare()
+            }
+    }
+    var buffering by remember(url) { mutableStateOf(true) }
+    DisposableEffect(player) {
+        val l = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                onError(error.errorCodeName)
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                buffering = state == Player.STATE_BUFFERING || state == Player.STATE_IDLE
+            }
+        }
+        player.addListener(l)
+        onDispose {
+            player.removeListener(l)
+            player.release()
+        }
+    }
+    // 見ている間はスクリーンセーバーを出さない
+    LaunchedEffect(url) {
+        while (isActive) {
+            vm.onUserInteraction()
+            delay(20_000)
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    useController = false
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    this.player = player
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center))
+    }
+}
+
+/** 簡易表示（MJPEG）。どのカメラでも見られるが、コマ数が少なく音声は出ない */
+@Composable
+private fun MjpegView(vm: MainViewModel, entityId: String, name: String, onNote: (String) -> Unit) {
     var frame by remember(entityId) { mutableStateOf<ImageBitmap?>(null) }
-    var status by remember(entityId) { mutableStateOf<String?>("映像を読み込んでいます…") }
     LaunchedEffect(entityId) {
         // 静止画ですぐに何か出してから、動画につなぐ
         vm.cameraSnapshot(entityId, 1920)?.let { if (frame == null) frame = it }
@@ -105,14 +225,13 @@ fun CameraViewer(vm: MainViewModel) {
             try {
                 vm.cameraStream(entityId).collect {
                     frame = it
-                    status = null
-                    vm.onUserInteraction() // 見ている間はスクリーンセーバーを出さない
+                    vm.onUserInteraction()
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // 動画がだめなら、しばらく静止画を1秒ごとに更新してから、もう一度つなぐ
-                status = "動画につなげないため、静止画を1秒ごとに更新しています（${e.message}）"
+                onNote("動画につなげないため、静止画を1秒ごとに更新しています（${e.message}）")
                 repeat(20) {
                     vm.cameraSnapshot(entityId, 1920)?.let { frame = it }
                     vm.onUserInteraction()
@@ -121,24 +240,8 @@ fun CameraViewer(vm: MainViewModel) {
             }
         }
     }
-    Dialog(onDismissRequest = { vm.closeCamera() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            frame?.let { Image(it, contentDescription = name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
-                ?: CircularProgressIndicator(Modifier.align(Alignment.Center))
-            Row(
-                Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("📷 $name", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = { vm.closeCamera() }) { Text("✕ 閉じる", color = Color.White) }
-            }
-            status?.let {
-                Text(
-                    it, color = Color.White, style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)
-                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp)).padding(8.dp),
-                )
-            }
-        }
+    Box(Modifier.fillMaxSize()) {
+        frame?.let { Image(it, contentDescription = name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
+            ?: CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
 }
