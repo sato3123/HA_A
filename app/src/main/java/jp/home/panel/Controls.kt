@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -113,30 +114,47 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
 
 @Composable
 private fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        // 機器の種類が分かるアイコン（大きさはすべて同じ）
-        DeviceIcon(e, 40.dp)
-        Column(Modifier.weight(1f)) {
-            Text(domainLabel(e.domain), style = MaterialTheme.typography.labelSmall)
-            Text(
-                e.name,
-                style = if (large) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(stateLabel(e), style = MaterialTheme.typography.bodyMedium)
-        }
+    val toggle = !e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean")
+    val info: @Composable () -> Unit = {
         // 動作の詳細（状態・最後に変わった時刻・履歴）
         androidx.compose.material3.TextButton(
             onClick = { vm.showInfo(e.entityId) },
             contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
             modifier = Modifier.size(36.dp),
         ) { Text("ⓘ", fontSize = 18.sp) }
-        if (!e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean")) {
-            Switch(
-                checked = e.state == "on",
-                onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") },
+    }
+    val names: @Composable (Modifier) -> Unit = { m ->
+        Column(m) {
+            Text(domainLabel(e.domain), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                e.name,
+                style = if (large) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
+            Text(stateLabel(e), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth >= 300.dp) {
+            // 広いとき：アイコン・名前・ⓘ・スイッチを1行に
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DeviceIcon(e, 40.dp)
+                names(Modifier.weight(1f))
+                info()
+                if (toggle) Switch(checked = e.state == "on", onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") })
+            }
+        } else {
+            // 狭いとき（小さいタイル）：上の段にアイコン・ⓘ・スイッチ、下の段に名前
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    DeviceIcon(e, 40.dp)
+                    Spacer(Modifier.weight(1f))
+                    info()
+                    if (toggle) Switch(checked = e.state == "on", onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") })
+                }
+                names(Modifier.fillMaxWidth())
+            }
         }
     }
 }
@@ -350,8 +368,8 @@ private fun TempStepper(label: String, value: Double, min: Double, max: Double, 
         onSet(p)
     }
     fun snap(v: Double) = (Math.round(v / step) * step).coerceIn(min, max)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+    Text(label, style = MaterialTheme.typography.labelLarge)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
         FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min) {
             Text("−", fontSize = 22.sp)
         }
@@ -376,7 +394,15 @@ private fun ChipGroup(
         title?.let { Text(it, style = MaterialTheme.typography.labelLarge) }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             options.forEach { o ->
-                FilterChip(selected = o == selected, onClick = { onSelect(o) }, label = { Text(label(o)) })
+                FilterChip(
+                    selected = o == selected,
+                    onClick = { onSelect(o) },
+                    label = { Text(label(o)) },
+                    colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                )
             }
         }
     }

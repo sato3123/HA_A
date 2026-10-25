@@ -452,7 +452,7 @@ fun WeatherBlock(weather: Entity?, forecast: List<JSONObject>, modifier: Modifie
         }
         if (showDays) {
             val upcoming = days.filter { it.first.isAfter(today) }.take(4)
-            Spacer(Modifier.size(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             upcoming.forEach { (date, f) ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(date.format(DOW_FMT), style = MaterialTheme.typography.labelSmall)
@@ -463,6 +463,7 @@ fun WeatherBlock(weather: Entity?, forecast: List<JSONObject>, modifier: Modifie
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
+            }
             }
         }
     }
