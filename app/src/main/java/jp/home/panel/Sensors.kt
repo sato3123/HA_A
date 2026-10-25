@@ -13,6 +13,7 @@ data class Thermo(
     val tempEntity: String?,
     val humEntity: String?,
     val unavailable: Boolean,
+    val original: String = name, // 名前を変える前の名前
 )
 
 private fun Entity.deviceClass() = attributes.optString("device_class")

@@ -37,6 +37,25 @@ restart_with_prefs() {
   adb shell am start -W -n $PKG/.MainActivity < /dev/null || fail "起動できませんでした"
 }
 
+# 画面の文字を探してタップする（見つからなければ 1 を返す）
+tap_text() {
+  adb shell uiautomator dump /sdcard/ui.xml < /dev/null >/dev/null 2>&1
+  adb shell cat /sdcard/ui.xml < /dev/null > ui-$FORM.xml
+  local xy
+  xy=$(python3 - "ui-$FORM.xml" "$1" <<'PY'
+import re, sys
+x = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
+for m in re.finditer(r'text="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', x):
+    if m.group(1).startswith(sys.argv[2]):
+        a, b, c, d = map(int, m.groups()[1:])
+        print((a + c) // 2, (b + d) // 2)
+        break
+PY
+)
+  [ -n "$xy" ] || return 1
+  adb shell input tap $xy < /dev/null
+}
+
 # 1. 初回起動（ログイン画面）
 adb shell am start -W -n $PKG/.MainActivity < /dev/null || fail "起動できませんでした"
 check "1-login" 12
@@ -63,6 +82,13 @@ restart_with_prefs <<'X'
 </map>
 X
 check "3-home" 10
+if tap_text "24.3℃"; then
+  check "3b-thermo-graph" 3
+  adb shell input keyevent 4 < /dev/null
+  sleep 2
+else
+  echo "::warning::[$FORM] 温度計が見つからず、グラフの写真は撮れませんでした"
+fi
 H=$(adb shell wm size < /dev/null | grep -o '[0-9]*x[0-9]*' | tail -1); W=${H%x*}; HH=${H#*x}
 adb shell input swipe $((W/2)) $((HH*8/10)) $((W/2)) $((HH*2/10)) 500 < /dev/null
 check "4-scrolled" 3
@@ -95,6 +121,9 @@ if [ -n "$B" ]; then
   check "7-settings" 4
   adb shell input swipe $((W/2)) $((HH*8/10)) $((W/2)) $((HH*2/10)) 500 < /dev/null
   check "8-settings2" 3
+  adb shell input swipe $((W/2)) $((HH*3/10)) $((W/2)) $((HH*9/10)) 300 < /dev/null; sleep 1
+  if tap_text "部屋と機器"; then check "9-settings-rooms" 3; adb shell input keyevent 4 < /dev/null; sleep 2; fi
+  if tap_text "温度計"; then check "10-settings-thermo" 3; fi
 else
   echo "::warning::[$FORM] ⚙ ボタンが見つからず、設定画面の写真は撮れませんでした"
 fi

@@ -93,6 +93,16 @@ class UiPrefs(context: Context) {
         get() = p.getStringSet("el_ips", emptySet())!!.toSet()
         set(v) = p.edit().putStringSet("el_ips", v).apply()
 
+    /** 部屋の並び順（部屋の key の並び） */
+    var roomOrder: List<String>
+        get() = (p.getString("room_order", "") ?: "").split("\n").filter { it.isNotBlank() }
+        set(v) = p.edit().putString("room_order", v.joinToString("\n")).apply()
+
+    /** 温度計の名前（温度計の key → 名前） */
+    var thermoNames: Map<String, String>
+        get() = readMap("thermo_names")
+        set(v) = writeMap("thermo_names", v)
+
     /** ホーム画面に出さない温度計 */
     var thermoHidden: Set<String>
         get() = p.getStringSet("thermo_hidden", emptySet())!!.toSet()

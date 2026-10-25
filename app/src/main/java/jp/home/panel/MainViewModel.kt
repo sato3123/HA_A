@@ -98,9 +98,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val roomOverrides = MutableStateFlow(prefs.roomOverrides)
     val groupRooms = MutableStateFlow(prefs.groupByRoom)
     val roomFilter = MutableStateFlow(prefs.roomFilter)
-    val rooms: StateFlow<List<Room>> = combine(haAreas, customRooms) { a, c ->
-        a + c.entries.sortedBy { it.key }.map { Room(it.key, it.value, false) }
+    val roomOrder = MutableStateFlow(prefs.roomOrder)
+    /** 部屋の一覧（並べ替えた順。新しい部屋は後ろに付く） */
+    val rooms: StateFlow<List<Room>> = combine(haAreas, customRooms, roomOrder) { a, c, order ->
+        val list = a + c.entries.sortedBy { it.key }.map { Room(it.key, it.value, false) }
+        list.sortedBy { r -> order.indexOf(r.key).let { if (it < 0) Int.MAX_VALUE else it } }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun moveRoom(key: String, delta: Int) {
+        val keys = rooms.value.map { it.key }.toMutableList()
+        val i = keys.indexOf(key)
+        val j = (i + delta).coerceIn(0, keys.size - 1)
+        if (i < 0 || i == j) return
+        keys.add(j, keys.removeAt(i))
+        prefs.roomOrder = keys
+        roomOrder.value = keys
+    }
 
     // ---- アカウント ----
     val userName = MutableStateFlow<String?>(null)
@@ -1028,9 +1041,112 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val deviceNames = MutableStateFlow<Map<String, String>>(emptyMap())
     val thermos = MutableStateFlow<List<Thermo>>(emptyList())
     val thermoHidden = MutableStateFlow(prefs.thermoHidden)
+    val thermoNames = MutableStateFlow(prefs.thermoNames)
 
     private fun updateThermos(m: Map<String, Entity>) {
+        val names = thermoNames.value
         thermos.value = buildThermos(m.values, entityDevice.value, deviceNames.value)
+            .map { t -> names[t.key]?.takeIf { it.isNotBlank() }?.let { t.copy(name = it, original = t.name) } ?: t }
+            .sortedBy { it.name }
+    }
+
+    /** 温度計の名前を変える（空なら元の名前に戻す） */
+    fun renameThermo(key: String, name: String) {
+        val next = if (name.isBlank()) thermoNames.value - key else thermoNames.value + (key to name.trim())
+        prefs.thermoNames = next
+        thermoNames.value = next
+        updateThermos(allStates.value)
+    }
+
+    // ---- 温度計のグラフ ----
+    data class Point(val t: Long, val v: Double)
+
+    val thermoFor = MutableStateFlow<String?>(null)
+    val thermoHours = MutableStateFlow(24)
+    val thermoTemp = MutableStateFlow<List<Point>?>(null)
+    val thermoHum = MutableStateFlow<List<Point>?>(null)
+    val thermoStatus = MutableStateFlow<String?>(null)
+
+    fun showThermo(key: String) {
+        onUserInteraction()
+        thermoFor.value = key
+        loadThermoHistory()
+    }
+
+    fun hideThermo() {
+        thermoFor.value = null
+    }
+
+    fun setThermoHours(h: Int) {
+        thermoHours.value = h
+        loadThermoHistory()
+    }
+
+    private fun loadThermoHistory() {
+        val key = thermoFor.value ?: return
+        val t = thermos.value.firstOrNull { it.key == key } ?: return
+        val hours = thermoHours.value
+        thermoTemp.value = null
+        thermoHum.value = null
+        thermoStatus.value = "グラフを読み込んでいます…"
+        if (BuildConfig.DEBUG && prefs.demoMode) {
+            thermoTemp.value = Demo.series(hours, t.temperature ?: 22.0, 3.0)
+            thermoHum.value = t.humidity?.let { Demo.series(hours, it, 8.0) }
+            thermoStatus.value = null
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val ids = listOfNotNull(t.tempEntity, t.humEntity)
+                val res = fetchHistory(ids, hours)
+                if (thermoFor.value != key) return@launch
+                thermoTemp.value = t.tempEntity?.let { res[it] }
+                thermoHum.value = t.humEntity?.let { res[it] }
+                thermoStatus.value = if (res.values.all { it.isEmpty() }) "この期間の記録がありません" else null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (thermoFor.value == key) thermoStatus.value = e.message ?: "記録を読めませんでした"
+            }
+        }
+    }
+
+    /** Home Assistant の履歴から、数値の変化を読み出す（通常のログインで読める） */
+    private suspend fun fetchHistory(ids: List<String>, hours: Int): Map<String, List<Point>> {
+        if (ids.isEmpty()) return emptyMap()
+        val r = route.value ?: throw HaException("接続していません")
+        val local = store.baseUrl ?: throw HaException("接続していません")
+        val zone = ZoneId.systemDefault()
+        val now = java.time.ZonedDateTime.now(zone)
+        val start = java.net.URLEncoder.encode(now.minusHours(hours.toLong()).toOffsetDateTime().toString(), "UTF-8")
+        val end = java.net.URLEncoder.encode(now.toOffsetDateTime().toString(), "UTF-8")
+        val token = validAccessToken(r.base, local)
+        val url = "${r.base}/api/history/period/$start?filter_entity_id=${ids.joinToString(",")}&end_time=$end&minimal_response&no_attributes"
+        val body = withContext(Dispatchers.IO) {
+            http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $token").build()).execute().use { resp ->
+                if (!resp.isSuccessful) throw HaException("記録を読めませんでした (HTTP ${resp.code})")
+                resp.body?.string().orEmpty()
+            }
+        }
+        val outer = JSONArray(body)
+        val out = HashMap<String, List<Point>>()
+        for (k in 0 until outer.length()) {
+            val arr = outer.optJSONArray(k) ?: continue
+            var id: String? = null
+            val pts = ArrayList<Point>()
+            for (i in 0 until arr.length()) {
+                val j = arr.optJSONObject(i) ?: continue
+                if (id == null) id = j.optString("entity_id").takeIf { it.isNotBlank() }
+                val v = j.optString("state").toDoubleOrNull() ?: continue
+                val ts = j.optString("last_changed").ifBlank { j.optString("last_updated") }
+                val ms = runCatching { java.time.OffsetDateTime.parse(ts).toInstant().toEpochMilli() }.getOrNull() ?: continue
+                pts.add(Point(ms, v))
+            }
+            // 1つめの記録にだけ entity_id が付く。付いていなければ順番で当てる
+            val key = id ?: ids.getOrNull(k) ?: continue
+            out[key] = pts
+        }
+        return out
     }
 
     fun toggleThermo(key: String) {

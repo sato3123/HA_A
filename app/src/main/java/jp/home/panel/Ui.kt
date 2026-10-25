@@ -81,6 +81,7 @@ fun App(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () -> Unit) {
         }
         // スクリーンセーバーとアラームは、設定画面などどの画面の上にも出す
         EntityInfoDialog(vm)
+        ThermoDetailDialog(vm)
         ScreensaverOverlay(vm)
         AlarmOverlay(vm)
     }

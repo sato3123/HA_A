@@ -72,6 +72,17 @@ object Demo {
             ev(1, 10, 0, "サッカー"), ev(3, 9, 0, "町内会"))
     }
 
+    /** 温度計のグラフの見本（1日の上がり下がり） */
+    fun series(hours: Int, center: Double, amp: Double): List<MainViewModel.Point> {
+        val now = System.currentTimeMillis()
+        val n = (hours * 4).coerceAtMost(400)
+        return (0..n).map { i ->
+            val t = now - (n - i) * hours * 3_600_000L / n
+            val hourOfDay = ((t / 3_600_000L + 9) % 24).toDouble()
+            MainViewModel.Point(t, center + amp * kotlin.math.sin((hourOfDay - 9) / 24 * 2 * Math.PI) + (i % 5) * 0.05)
+        }
+    }
+
     fun energy(): EnergyReport {
         fun t(gi: Double, go: Double, s: Double) = EnergyTotals(gi, go, s, 0.0, 0.0, gi * 31)
         return EnergyReport(
