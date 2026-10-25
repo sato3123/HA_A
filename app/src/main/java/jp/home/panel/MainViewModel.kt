@@ -1022,6 +1022,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val elManualIps = MutableStateFlow(prefs.elManualIps)
     val elBusy = MutableStateFlow(false)
     val elLive = MutableStateFlow(ElLive(null, null, null))
+    val elDiagnostics = MutableStateFlow<String?>(null)
 
     /** Home Assistant の機器と ECHONET Lite の機器を1つの一覧にする */
     private fun mergeEntities() {
@@ -1054,6 +1055,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch { echonet.status.collect { elStatus.value = it } }
+        viewModelScope.launch { echonet.diagnostics.collect { elDiagnostics.value = it } }
         // 30秒ごとに状態を読み直す（機器からの通知があればすぐ反映）
         viewModelScope.launch {
             while (isActive && elEnabled.value) {
@@ -1079,13 +1081,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun discoverEchonet() {
+    fun discoverEchonet(sweep: Boolean = false) {
         if (elBusy.value) return
         viewModelScope.launch {
             elBusy.value = true
             try {
                 val names = elDevices.value.associate { it.key to it.name }
-                echonet.discover(elManualIps.value.toList(), names)
+                if (!echonet.running) startEchonet()
+                echonet.discover(elManualIps.value.toList(), names, sweep)
                 saveElDevices()
             } catch (e: CancellationException) {
                 throw e

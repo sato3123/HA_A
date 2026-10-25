@@ -66,6 +66,15 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
     /** 機器探しの返事を集める */
     @Volatile private var discoverySink: ((String, ElFrame) -> Unit)? = null
 
+    // ---- 診断用 ----
+    @Volatile private var localIp: String? = null
+    @Volatile private var ifName: String? = null
+    @Volatile private var mcastJoined = false
+    private val rxFrom = ConcurrentHashMap<String, MutableSet<String>>()   // 返事をくれた IP → 送り主の種類
+    private val makers = ConcurrentHashMap<String, String>()               // IP → メーカー名
+    @Volatile private var rxCount = 0
+    val diagnostics = MutableStateFlow<String?>(null)
+
     val devices = MutableStateFlow<Map<String, ElDevice>>(emptyMap())
     val status = MutableStateFlow<String?>(null)
 
@@ -86,13 +95,24 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
                 log("ECHONET：3610番を使えないため別の番号で待ちます（${e.message}）")
                 MulticastSocket(0)
             }
-            runCatching { s.joinGroup(InetAddress.getByName(EL_MULTICAST)) }
-                .onFailure { log("ECHONET：マルチキャストに参加できません（${it.message}）") }
+            // Android では、どの通信経路（Wi-Fi など）で呼びかけを送るかを指定しないと届かないことがある
+            val (nif, ip) = findLanInterface()
+            localIp = ip
+            ifName = nif?.name
+            if (nif != null) {
+                runCatching { s.networkInterface = nif }
+                    .onFailure { log("ECHONET：送信に使う経路を設定できません（${it.message}）") }
+            }
+            mcastJoined = runCatching {
+                if (nif != null) s.joinGroup(InetSocketAddress(InetAddress.getByName(EL_MULTICAST), EL_PORT), nif)
+                else s.joinGroup(InetAddress.getByName(EL_MULTICAST))
+            }.onFailure { log("ECHONET：マルチキャストに参加できません（${it.message}）") }.isSuccess
             s.soTimeout = 1000
             s.timeToLive = 1
+            runCatching { s.broadcast = true }
             socket = s
             recvJob = scope.launch { receiveLoop(s) }
-            log("ECHONET：通信を開始（待ち受け番号 ${s.localPort}）")
+            log("ECHONET：通信を開始（${ifName ?: "経路不明"} / ${localIp ?: "IP不明"} / 待ち受け番号 ${s.localPort}）")
         } catch (e: Exception) {
             status.value = "ECHONET Lite の通信を開始できませんでした：${e.message}"
             stop()
@@ -129,7 +149,10 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
             // 家の中のアドレスからの電文だけ受け付ける
             if (!NetworkGuard.isLocal(p.address)) continue
             val f = ElFrame.decode(p.data, p.length) ?: continue
-            if (f.seoj == EOJ_CONTROLLER) continue // 自分（や他のコントローラー）が送ったもの
+            if (ip == localIp) continue // 自分が送ったもの
+            rxCount++
+            rxFrom.getOrPut(ip) { java.util.Collections.synchronizedSet(HashSet()) }.add(elClassOf(f.seoj.classCode).name)
+            if (f.seoj == EOJ_CONTROLLER) continue // 他のコントローラー（HEMS など）
             discoverySink?.invoke(ip, f)
             when (f.esv) {
                 Esv.GET_RES, Esv.SET_RES, Esv.GET_SNA, Esv.SETC_SNA -> waiting.remove(f.tid)?.complete(f)
@@ -175,7 +198,7 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
      * 家の中の機器を探す。マルチキャストで呼びかけ、返事をくれた機器の中身を調べる。
      * extraIps：手動で登録した IP（マルチキャストが届かないルーター向け）
      */
-    suspend fun discover(extraIps: List<String>, names: Map<String, String>): Int = withContext(Dispatchers.IO) {
+    suspend fun discover(extraIps: List<String>, names: Map<String, String>, sweep: Boolean = false): Int = withContext(Dispatchers.IO) {
         if (socket == null) start()
         if (socket == null) return@withContext 0
         status.value = "機器を探しています…"
@@ -187,17 +210,49 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
                 }
             }
         }
+        rxCount = 0
+        rxFrom.clear()
+        val sent = mutableListOf<String>()
         try {
             val get = ElFrame(tid.getAndIncrement() and 0xFFFF, EOJ_CONTROLLER, EOJ_NODE_PROFILE, Esv.GET, listOf(Prop(0xD6)))
+            val bcast = broadcastAddress()
             repeat(2) {
+                // 1. マルチキャスト（ECHONET Lite の決まった呼びかけ方）
                 send(EL_MULTICAST, get)
+                // 2. ブロードキャスト（マルチキャストを通さないルーター向け）
+                bcast?.let { send(it, get) }
+                // 3. 手動で登録した IP
                 extraIps.forEach { ip -> send(ip, get) }
                 delay(1500)
+            }
+            sent += listOfNotNull("マルチキャスト", bcast?.let { "ブロードキャスト（$it）" })
+            if (extraIps.isNotEmpty()) sent += "登録IP ${extraIps.size}件"
+            // 4. 同じネットワークのすべてのアドレスに1台ずつ問い合わせ（ルーターの設定に左右されない）
+            if (sweep) {
+                val prefix = localIp?.substringBeforeLast('.')
+                if (prefix != null) {
+                    status.value = "すべてのアドレス（$prefix.1〜254）に問い合わせています…"
+                    for (n in 1..254) {
+                        val ip = "$prefix.$n"
+                        if (ip != localIp) send(ip, get)
+                        if (n % 16 == 0) delay(40)
+                    }
+                    sent += "全アドレス（$prefix.1〜254）"
+                    delay(2500)
+                }
             }
             delay(1000)
         } finally {
             discoverySink = null
         }
+        // 返事をくれた機器のメーカーを調べる（ノードプロファイルの 0x8A）
+        for (ip in found.keys) {
+            if (makers.containsKey(ip)) continue
+            request(ip, EOJ_NODE_PROFILE, Esv.GET, listOf(Prop(0x8A)), 1500)?.props?.firstOrNull { it.epc == 0x8A }?.edt?.let {
+                makers[ip] = makerName(it)
+            }
+        }
+        writeDiagnostics(sent, found)
         var count = 0
         val next = devices.value.toMutableMap()
         for ((ip, eojs) in found) {
@@ -222,6 +277,41 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         refreshAll()
         count
     }
+
+    private fun writeDiagnostics(sent: List<String>, found: Map<String, Set<Eoj>>) {
+        val lines = mutableListOf<String>()
+        lines += "タブレット：${localIp ?: "IPアドレス不明（Wi-Fi につながっていない可能性）"}（${ifName ?: "経路不明"}）"
+        lines += "待ち受け番号：${socket?.localPort ?: "-"}" + if (socket?.localPort == EL_PORT) "（3610 正常）" else "（3610 を使えず。機器の返事が届かないことがあります）"
+        lines += "マルチキャスト参加：" + if (mcastJoined) "OK" else "できませんでした"
+        lines += "呼びかけ：" + sent.joinToString("・")
+        lines += "受け取った ECHONET Lite の電文：${rxCount} 件"
+        if (rxFrom.isEmpty()) {
+            lines += "→ どの機器からも返事がありません。"
+            lines += "　・機器側：ECHONET Lite（HEMS 連携）の設定がオフ、または機器が別の Wi-Fi（ゲスト用・別の周波数帯で分離）につながっている"
+            lines += "　・ルーター側：IGMP スヌーピング、端末どうしの通信を分ける機能（プライバシーセパレーター／ネットワーク分離／AP アイソレーション）"
+        } else {
+            rxFrom.toSortedMap(compareBy { it.substringAfterLast('.').toIntOrNull() ?: 0 }).forEach { (ip, kinds) ->
+                val n = found[ip]?.count { it.classCode != 0x0EF0 } ?: 0
+                lines += "・$ip　${makers[ip] ?: "メーカー不明"}　${kinds.joinToString("・")}" + if (n > 0) "（機能 $n 個）" else ""
+            }
+        }
+        diagnostics.value = lines.joinToString("\n")
+    }
+
+    /** 家の LAN につながっている経路（Wi-Fi / 有線）とそのIPアドレス */
+    private fun findLanInterface(): Pair<java.net.NetworkInterface?, String?> = runCatching {
+        val all = java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .filter { it.isUp && !it.isLoopback && !it.isVirtual && it.supportsMulticast() }
+        val pick = all.sortedBy { if (it.name.startsWith("wlan")) 0 else if (it.name.startsWith("eth")) 1 else 2 }
+            .firstOrNull { nif -> nif.inetAddresses.toList().any { it is java.net.Inet4Address && it.isSiteLocalAddress } }
+        pick to pick?.inetAddresses?.toList()?.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress
+    }.getOrDefault(null to null)
+
+    /** 同じネットワークのブロードキャストアドレス（例：192.168.1.255） */
+    private fun broadcastAddress(): String? = runCatching {
+        val nif = socket?.networkInterface ?: return null
+        nif.interfaceAddresses.firstOrNull { it.address is java.net.Inet4Address && it.broadcast != null }?.broadcast?.hostAddress
+    }.getOrNull()
 
     private fun defaultName(eoj: Eoj): String =
         elClassOf(eoj.classCode).name + if (eoj.instance > 1) " ${eoj.instance}" else ""
@@ -418,4 +508,19 @@ fun elLive(devices: Collection<ElDevice>): ElLive {
         solarW = solar.takeIf { it.isNotEmpty() }?.sum(),
         batteryPct = bat?.takeIf { it in 0..100 },
     )
+}
+
+/** メーカーコード（ノードプロファイル 0x8A、3バイト）→ 名前 */
+fun makerName(edt: ByteArray): String {
+    if (edt.size < 3) return "メーカー不明"
+    val code = ((edt[0].toInt() and 0xFF) shl 16) or ((edt[1].toInt() and 0xFF) shl 8) or (edt[2].toInt() and 0xFF)
+    return when (code) {
+        0x00000B -> "Panasonic"
+        0x000006 -> "三菱電機"
+        0x000005 -> "シャープ"
+        0x000001 -> "日立"
+        0x000008 -> "ダイキン"
+        0x000016 -> "東芝"
+        else -> String.format("メーカーコード %06X", code)
+    }
 }

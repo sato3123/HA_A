@@ -37,6 +37,7 @@ fun EchonetSettings(vm: MainViewModel) {
     val status by vm.elStatus.collectAsState()
     val ips by vm.elManualIps.collectAsState()
     val busy by vm.elBusy.collectAsState()
+    val diag by vm.elDiagnostics.collectAsState()
     var ipInput by rememberSaveable { mutableStateOf("") }
     var ipError by remember { mutableStateOf<String?>(null) }
     var rename by remember { mutableStateOf<ElDevice?>(null) }
@@ -51,10 +52,25 @@ fun EchonetSettings(vm: MainViewModel) {
 
         if (enabled) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = vm::discoverEchonet, enabled = !busy) { Text("🔍 機器を探す") }
+                Button(onClick = { vm.discoverEchonet(false) }, enabled = !busy) { Text("🔍 機器を探す") }
+                androidx.compose.material3.OutlinedButton(onClick = { vm.discoverEchonet(true) }, enabled = !busy) {
+                    Text("🔎 すべてのアドレスに問い合わせ")
+                }
                 if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             }
+            Text(
+                "見つからないときは「すべてのアドレスに問い合わせ」を試してください。ルーターが一斉の呼びかけ（マルチキャスト）を通さなくても、1台ずつ直接問い合わせて探します（20秒ほどかかります）。",
+                style = MaterialTheme.typography.bodySmall,
+            )
             status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            diag?.let { d ->
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Column(Modifier.padding(10.dp)) {
+                        Text("診断結果", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text(d, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
 
             if (devices.isNotEmpty()) {
                 Text("見つかった機器（${devices.size}）", style = MaterialTheme.typography.labelLarge)
