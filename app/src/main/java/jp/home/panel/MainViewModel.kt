@@ -1087,7 +1087,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             elBusy.value = true
             try {
                 val names = elDevices.value.associate { it.key to it.name }
-                if (!echonet.running) startEchonet()
                 echonet.discover(elManualIps.value.toList(), names, sweep)
                 saveElDevices()
             } catch (e: CancellationException) {
