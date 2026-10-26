@@ -205,6 +205,7 @@ curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/setup.sh 
    エコキュートとスマートメーターの IP アドレス、Home Assistant の自宅の位置、時間帯などの設定がサーバーに送られます。
 3. 状態は Android 版・iPad 版のホーム画面（電気のカードの下）に表示され、「もう一度設定」「今すぐ沸き増し」もそこから使えます。
 
+- 売電・買電は、AiSEG2（Panasonic の HEMS）の画面のデータから15秒ごとに読みます（Android 版の「おひさま沸き上げ」で AiSEG2 の IP アドレスとパスワードを登録。パスワードはサーバーにだけ保存）。AiSEG2 が無い場合は ECHONET Lite のスマートメーター・分電盤を使います。
 - 天気予報は Open-Meteo（無料・登録不要）から読みます。サーバーがインターネットにつながっている必要があります。
 - サーバーの記録を見るとき：コンテナのコンソールで `journalctl -u homepanel-solar -f`
 

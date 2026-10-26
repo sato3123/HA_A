@@ -152,6 +152,27 @@ fun SolarHeatSettings(vm: MainViewModel) {
             Button(onClick = { vm.pushSolarToServer() }) { Text("このタブレットの設定をサーバーに送る") }
             Text("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、下の時間帯などの設定をサーバーに送ります。最初に1回押してください。", style = MaterialTheme.typography.bodySmall)
             serverMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+            // AiSEG2 から売電・買電を読む（スマートメーターの代わり）
+            Text("AiSEG2 から売電・買電を読む", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Panasonic の AiSEG2 を使っている場合、サーバーが AiSEG2 から、いまの発電と消費を15秒ごとに読みます（スマートメーターより優先）。" +
+                    "パスワードは AiSEG2 の画面（ブラウザで AiSEG2 の IP アドレスを開いたとき）のログインパスワードです。サーバーにだけ保存し、このタブレットには残しません。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            val aisegSaved by vm.serverAisegUrl.collectAsState()
+            val aisegMsg by vm.serverAiseg.collectAsState()
+            var aisegUrl by remember(aisegSaved) { mutableStateOf(aisegSaved) }
+            var aisegPw by remember { mutableStateOf("") }
+            OutlinedTextField(aisegUrl, { aisegUrl = it.trim() }, singleLine = true, label = { Text("AiSEG2 の IP アドレス（例：192.168.1.10）") },
+                modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(aisegPw, { aisegPw = it }, singleLine = true, label = { Text(if (aisegSaved.isNotBlank()) "パスワード（変えるときだけ）" else "パスワード") },
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { vm.saveAisegToServer(aisegUrl, aisegPw); aisegPw = "" }, enabled = aisegUrl.isNotBlank()) { Text("サーバーに保存して試す") }
+                if (aisegSaved.isNotBlank()) OutlinedButton(onClick = { vm.testAiseg() }) { Text("読めるか試す") }
+            }
+            aisegMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             view?.serverError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
         if (!elOn && where != "server") {

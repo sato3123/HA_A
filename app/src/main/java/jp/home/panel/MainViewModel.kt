@@ -2072,6 +2072,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         updateSolarView()
     }
 
+    /** サーバーに登録した AiSEG2 の状態（画面用） */
+    val serverAiseg = MutableStateFlow<String?>(null)
+    val serverAisegUrl = MutableStateFlow("")
+
+    /** AiSEG2 の住所とパスワードをサーバーに登録する（パスワードはサーバーにだけ保存し、このタブレットには残さない） */
+    fun saveAisegToServer(url: String, password: String) = viewModelScope.launch {
+        val c = JSONObject().put("aiseg_url", url.trim())
+        if (password.isNotEmpty()) c.put("aiseg_password", password)
+        serverPost("/config", c)
+        testAiseg()
+    }
+
+    fun testAiseg() = viewModelScope.launch {
+        serverAiseg.value = "AiSEG2 を読んでいます…"
+        serverAiseg.value = try {
+            val j = serverCall("/aiseg-test", JSONObject())
+            if (j.optBoolean("ok")) {
+                val p = j.optJSONObject("power")
+                val w = j.optDouble("surplus_w")
+                "✓ AiSEG2 から読めました：発電 ${kw1(p?.optDouble("generation_w"))}kW・消費 ${kw1(p?.optDouble("consumption_w"))}kW（" +
+                    (if (w >= 0) "売電 ${kw1(w)}kW" else "買電 ${kw1(-w)}kW") + "）"
+            } else "✕ " + j.optString("error").ifBlank { "読めませんでした" }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            "✕ サーバーに届きません：${e.message}"
+        }
+    }
+
+    private fun kw1(w: Double?) = if (w == null || w.isNaN()) "－" else String.format("%.1f", w / 1000)
+
     /** このタブレットで見つけたエコキュート・スマートメーターと、Home Assistant の自宅の位置をサーバーに送る */
     fun pushSolarToServer() = viewModelScope.launch {
         val c = JSONObject()
@@ -2112,7 +2143,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             heating = optBool(eco, "heating"), manual = optBool(eco, "manual"),
             shift = optBool(eco, "shift"), shiftHour = optInt(eco, "shift_hour")?.takeIf { it in 1..23 },
             surplusW = if (j.isNull("surplus_w")) null else j.optDouble("surplus_w"),
-            sensorName = conf.optString("meter_ip").takeIf { it.isNotBlank() }?.let { "スマートメーター（$it）" },
+            sensorName = j.optString("surplus_from").takeIf { it.isNotBlank() && it != "null" }
+                ?: conf.optString("meter_ip").takeIf { it.isNotBlank() }?.let { "スマートメーター（$it）" },
             canManual = eco.optBoolean("can_manual", false), canShift = eco.optBoolean("can_shift", false),
             status = j.optString("status"),
             plan = plan?.let { SolarPlan(it.optString("date"), it.optBoolean("ok"), it.optString("message"), (it.optDouble("at") * 1000).toLong(), optBool(it, "sunny")) },
@@ -2121,6 +2153,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             online = eco.optBoolean("online", false),
             server = true,
         )
+        serverAisegUrl.value = conf.optString("aiseg_url")
         // 画面の設定もサーバーの値に合わせる
         shEnabled.value = conf.optBoolean("enabled", shEnabled.value)
         shStart.value = conf.optInt("start_hour", shStart.value)

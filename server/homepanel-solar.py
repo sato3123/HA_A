@@ -20,6 +20,7 @@ import socket
 import struct
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, date
@@ -42,7 +43,10 @@ DEFAULT_CONF = {
     "plan_hour": 20,                        # 毎日の設定をする時刻
     "shift": True,                          # 晴れの日は夜の沸き上げを昼にずらす
     "lat": None, "lon": None,               # 天気予報の場所（Home Assistant の自宅の位置を画面から送る）
+    # AiSEG2（Panasonic の HEMS）から、いまの発電・消費を読む（スマートメーターの代わり。こちらが優先）
+    "aiseg_url": "", "aiseg_user": "aiseg", "aiseg_password": "",
 }
+SECRET_CONF = {"aiseg_password"}
 
 EPC_NAME = {0xB0: "沸き上げ自動設定", 0xC0: "昼間沸き増し許可", 0xC7: "エネルギーシフト参加", 0xC9: "エネルギーシフト回数", 0xCA: "昼間沸き上げシフト時刻"}
 SAFE_SET = set(EPC_NAME)
@@ -310,6 +314,64 @@ def meter_surplus_w():
     return -float(w)  # 買電がプラス・売電がマイナス → 余剰（売電）をプラスに
 
 
+def aiseg_surplus_w():
+    """AiSEG2 の「エネルギーの流れ」画面のデータ（/data/electricflow/111/update）から、
+    いまの発電（g_capacity kW）と消費（u_capacity kW）を読み、余剰（発電－消費。プラス＝売電）を返す"""
+    base = str(conf.get("aiseg_url") or "").strip().rstrip("/")
+    if not base:
+        return None
+    if not base.startswith("http"):
+        base = "http://" + base
+    pm = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    pm.add_password(None, base, conf.get("aiseg_user") or "aiseg", conf.get("aiseg_password") or "")
+    opener = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(pm), urllib.request.HTTPBasicAuthHandler(pm))
+    body = urllib.parse.urlencode({"data": "{}"}).encode()
+    try:
+        with opener.open(urllib.request.Request(base + "/data/electricflow/111/update", data=body, method="POST"), timeout=8) as r:
+            j = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        state["aiseg_error"] = "AiSEG2 のパスワードが違います" if e.code == 401 else f"AiSEG2 でエラーになりました（HTTP {e.code}）"
+        return None
+    except Exception as e:
+        state["aiseg_error"] = f"AiSEG2（{base}）に届きません：{e}"
+        return None
+
+    def num(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        t = str(v).translate(str.maketrans("０１２３４５６７８９．，", "0123456789.,")).replace(",", "").strip()
+        try:
+            return float("".join(ch for ch in t if ch in "0123456789."))
+        except ValueError:
+            return None
+    if j.get("measReg") == 0:
+        state["aiseg_error"] = "AiSEG2 に計測ユニットが登録されていません"
+        return None
+    g, u = num(j.get("g_capacity")), num(j.get("u_capacity"))
+    if g is None or u is None:
+        state["aiseg_error"] = "AiSEG2 の発電・消費の値を読めませんでした"
+        return None
+    state["aiseg_error"] = None
+    state["power"] = {"generation_w": g * 1000, "consumption_w": u * 1000,
+                      "buy_sell": {0: "buy", 1: "sell", 2: "none"}.get(j.get("lo_buy_sell"), "unknown"), "from": "AiSEG2"}
+    return (g - u) * 1000
+
+
+def read_surplus():
+    """余剰（W）。AiSEG2 が設定されていればそれを、なければスマートメーター（ECHONET Lite）を使う"""
+    if conf.get("aiseg_url"):
+        v = aiseg_surplus_w()
+        if v is not None:
+            return v, "AiSEG2"
+    if conf.get("meter_ip"):
+        v = meter_surplus_w()
+        if v is not None:
+            return v, "スマートメーター"
+    return None, None
+
+
 def set_each(props):
     out = {}
     s = eco_caps["set"]
@@ -416,7 +478,8 @@ def tick():
     now = datetime.now()
     in_window = conf["start_hour"] <= now.hour < conf["end_hour"]
     eco = eco_read() if conf["eco_ip"] else None
-    surplus = meter_surplus_w() if conf["meter_ip"] else None
+    surplus, source = read_surplus()
+    state["surplus_from"] = source
     if surplus is not None:
         with lock:
             state["history"].append([time.time(), surplus])
@@ -454,11 +517,11 @@ def tick():
             eco_auto("昼の時間帯が終わったため")
         state["status"] = f"待機中（{conf['start_hour']}時〜{conf['end_hour']}時に、余った電気で沸かします）"
         return
-    if not conf["meter_ip"]:
-        state["status"] = "スマートメーターの IP アドレスが設定されていません（昼の沸き増しは行いません）"
+    if not conf["meter_ip"] and not conf.get("aiseg_url"):
+        state["status"] = "売電を読む機器（AiSEG2 またはスマートメーター）が設定されていません（昼の沸き増しは行いません）"
         return
     if surplus is None:
-        state["status"] = f"スマートメーター（{conf['meter_ip']}）から返事がありません"
+        state["status"] = state.get("aiseg_error") or f"スマートメーター（{conf['meter_ip']}）から返事がありません"
         return
     full = eco and eco.get("remain") and eco.get("tank") and eco["remain"] * 100 // eco["tank"] >= 95
     th = conf["threshold_w"]
@@ -496,8 +559,9 @@ def loop():
 
 def public_state():
     with lock:
-        c = dict(conf)
-        return {"config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
+        c = {k: v for k, v in conf.items() if k not in SECRET_CONF}
+        c["aiseg_password_set"] = bool(conf.get("aiseg_password"))
+        return {"power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}
 
@@ -560,6 +624,9 @@ class Api(BaseHTTPRequestHandler):
                 eco_auto("手動の操作")
             eco_read()
             return self._ok(public_state())
+        if p == "/aiseg-test":
+            v = aiseg_surplus_w()
+            return self._ok({"ok": v is not None, "surplus_w": v, "power": state.get("power"), "error": state.get("aiseg_error")})
         if p == "/discover":
             return self._ok({"devices": el.discover()})
         self._ok({"error": "not found"}, 404)
