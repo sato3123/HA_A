@@ -1461,7 +1461,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 対応付けの候補（同じ種類の Home Assistant の機器。名前が似ている順） */
     fun linkCandidates(d: ElDevice): List<Entity> {
         val list = allStates.value.values.filter { it.domain == d.haDomain && !isEchonetEntity(it.entityId) }
-        return list.sortedByDescending { nameScore(d.name, it.name) }
+        return list.sortedByDescending { linkScore(d, it) }
+    }
+
+    /** 名前の似かた＋設置場所と部屋が同じなら加点 */
+    private fun linkScore(d: ElDevice, e: Entity): Int {
+        val loc = elLocationFull(d.props[0x81]?.u8())?.replace(Regex("\\d"), "")
+        val room = roomNameOf(e.entityId)
+        val roomHit = loc != null && room != null && (room.contains(loc) || loc.contains(room) || e.name.contains(loc))
+        return nameScore(d.name, e.name) + if (roomHit) 3 else 0
     }
 
     private fun nameScore(a: String, b: String): Int {
@@ -1478,8 +1486,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val pick = when {
                 cands.size == 1 -> cands[0]
                 cands.size > 1 -> {
-                    val s0 = nameScore(d.name, cands[0].name)
-                    val s1 = nameScore(d.name, cands[1].name)
+                    val s0 = linkScore(d, cands[0])
+                    val s1 = linkScore(d, cands[1])
                     if (s0 >= 1 && s0 > s1) cands[0] else null
                 }
                 else -> null
@@ -1891,6 +1899,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         updateSolarView()
     }
 
+    val ecoDiag = MutableStateFlow<String?>(null)
+
+    /** エコキュートが何に対応しているか調べる（画面のボタン） */
+    fun diagnoseEco() = viewModelScope.launch {
+        val d = ecoDevice() ?: run { ecoDiag.value = "エコキュートが見つかりません"; return@launch }
+        ecoDiag.value = "調べています…"
+        ecoDiag.value = echonet.diagnoseWaterHeater(d.key)
+        updateSolarView()
+    }
+
+    /** 部屋の名前（Home Assistant の機器） */
+    fun roomNameOf(entityId: String): String? {
+        val k = roomKey(entityId)
+        return rooms.value.firstOrNull { it.key == k }?.name
+    }
+
     /** 毎日の設定を今すぐやり直す（画面のボタン） */
     fun retrySolarPlan() = viewModelScope.launch {
         shAddLog("手動で設定をやり直します")
@@ -1928,8 +1952,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             props += Prop(0xC7, bytesOf(0x42))
             if (d.canSet(0xCA)) props += Prop(0xCA, bytesOf(0x00))
         }
-        val err = echonet.setWaterHeater(d.key, props)
-        if (err != null) return result(false, "設定できませんでした：$err" + if (!manual) "（10分後にもう一度試します）" else "", sunny)
+        // 1項目ずつ設定する。必須は「エネルギーシフト参加」だけ。回数・時刻は断られても、機種の決まった時刻で動く
+        val res = echonet.setWaterHeaterEach(d.key, props)
+        val mainErr = res[0xC7]
+        if (mainErr != null) return result(false, "設定できませんでした（${waterHeaterEpcName(0xC7)}：$mainErr）" + if (!manual) "（10分後にもう一度試します）" else "", sunny)
+        val sub = res.filter { it.key != 0xC7 && it.value != null }
+        if (sub.isNotEmpty()) shAddLog("補足：" + sub.entries.joinToString("、") { "${waterHeaterEpcName(it.key)}は${it.value}" } + "（エコキュートの決まった時刻で沸かします）")
         // 読み直して、本当に設定されたか確かめる
         delay(1500)
         echonet.refresh(d.key)

@@ -408,8 +408,10 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
             ElKind.WATER_HEATER -> listOf(0x80, 0xB0, 0xB2, 0xE1, 0xE2, 0xC0, 0xC7, 0xC9, 0xCA, 0xB3)
             ElKind.READONLY -> listOf(0x80)
         }
+        // 設置場所（0x81）は、どの機器でも読む（連携の画面で部屋の名前として出す）
+        val withLoc = if (d.props.containsKey(0x81)) base else base + 0x81
         // 機器が「読める」と言っているものだけ（一覧が取れなかったときは全部試す）
-        return if (d.getMap.isEmpty()) base else base.filter { it in d.getMap }
+        return if (d.getMap.isEmpty()) withLoc else withLoc.filter { it in d.getMap }
     }
 
     suspend fun refresh(key: String) {
@@ -441,11 +443,54 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
     }
 
     /** 決まったプロパティを直接設定する（おひさま沸き上げ用。エコキュートの沸き上げに関する項目だけ） */
-    suspend fun setWaterHeater(key: String, props: List<Prop>): String? = withContext(Dispatchers.IO) {
-        val d = devices.value[key] ?: return@withContext "エコキュートが見つかりません"
-        if (d.cls.kind != ElKind.WATER_HEATER) return@withContext "エコキュートではありません"
+    suspend fun setWaterHeater(key: String, props: List<Prop>): String? {
+        val r = setWaterHeaterEach(key, props)
+        val failed = r.filterValues { it != null }
+        return if (failed.isEmpty()) null else failed.entries.joinToString("、") { "${waterHeaterEpcName(it.key)}：${it.value}" }
+    }
+
+    /**
+     * 1項目ずつ設定する（まとめて送ると、1つでも受け付けられない項目があると全部断られ、どれが原因か分からないため）。
+     * 戻り値：項目ごとの結果（成功は null、失敗は理由）
+     */
+    suspend fun setWaterHeaterEach(key: String, props: List<Prop>): Map<Int, String?> = withContext(Dispatchers.IO) {
+        val d = devices.value[key] ?: return@withContext props.associate { it.epc to "エコキュートが見つかりません" }
+        if (d.cls.kind != ElKind.WATER_HEATER) return@withContext props.associate { it.epc to "エコキュートではありません" }
         val safe = setOf(0xB0, 0xC0, 0xC7, 0xC9, 0xCA)
-        set(d, props.filter { it.epc in safe })
+        val out = LinkedHashMap<Int, String?>()
+        for (p in props.filter { it.epc in safe }) {
+            if (d.setMap.isNotEmpty() && p.epc !in d.setMap) { out[p.epc] = "この機種は設定に対応していません"; continue }
+            val r = request(d.ip, d.eoj, Esv.SETC, listOf(p))
+            out[p.epc] = when {
+                r == null -> "返事がありません（${d.ip}）"
+                r.esv == Esv.SETC_SNA -> "値（${p.edt.joinToString("") { "%02X".format(it) }}）を受け付けませんでした"
+                else -> null
+            }
+        }
+        refresh(d.key)
+        out
+    }
+
+    /** エコキュートの対応状況を調べる（設定できる項目・読める項目と、いまの値） */
+    suspend fun diagnoseWaterHeater(key: String): String = withContext(Dispatchers.IO) {
+        val d = devices.value[key] ?: return@withContext "エコキュートが見つかりません"
+        val lines = mutableListOf("【${d.name}（${d.ip}・${d.eoj.hex()}）】")
+        val maps = request(d.ip, d.eoj, Esv.GET, listOf(Prop(0x9E), Prop(0x9F)), 3000)
+        val setMap = maps?.props?.firstOrNull { it.epc == 0x9E }?.edt?.let(::parsePropertyMap)
+        val getMap = maps?.props?.firstOrNull { it.epc == 0x9F }?.edt?.let(::parsePropertyMap)
+        if (setMap == null) lines += "設定できる項目の一覧を読めませんでした" + if (maps == null) "（返事がありません）" else ""
+        if (setMap != null || getMap != null) {
+            devices.value[key]?.let { cur -> devices.value = devices.value + (key to cur.copy(setMap = setMap ?: cur.setMap, getMap = getMap ?: cur.getMap)) }
+        }
+        for (epc in listOf(0xB0, 0xC0, 0xC7, 0xC9, 0xCA)) {
+            val v = request(d.ip, d.eoj, Esv.GET, listOf(Prop(epc)), 2000)?.props?.firstOrNull()?.takeIf { it.edt.isNotEmpty() }?.edt
+            lines += "・${waterHeaterEpcName(epc)}：" + when {
+                setMap == null -> "（不明）"
+                epc in setMap -> "設定できる"
+                else -> "設定できない"
+            } + "・値 " + (v?.joinToString("") { "%02X".format(it) } ?: "読めない")
+        }
+        lines.joinToString("\n")
     }
 
     /**

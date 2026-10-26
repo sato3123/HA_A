@@ -178,6 +178,23 @@ fun elLocationName(v: Int?): String? = when (v?.let { (it shr 3) and 0x0F }) {
     else -> null
 }
 
+/** 設置場所（0x81）を「部屋2」「リビング」のような名前に（番号があれば付ける） */
+fun elLocationFull(v: Int?): String? {
+    val base = elLocationName(v) ?: return null
+    val n = v!! and 0x07
+    return if (n > 0 && v != 0x08) "$base$n" else base
+}
+
+/** エコキュートの項目の名前（エラーの表示用） */
+fun waterHeaterEpcName(epc: Int): String = when (epc) {
+    0xB0 -> "沸き上げ自動設定"
+    0xC0 -> "昼間沸き増し許可"
+    0xC7 -> "エネルギーシフト参加"
+    0xC9 -> "エネルギーシフト回数"
+    0xCA -> "昼間沸き上げシフト時刻"
+    else -> String.format("0x%02X", epc)
+}
+
 // エアコンの運転モード（0xB0）
 val AC_MODE_TO_HA = mapOf(0x41 to "auto", 0x42 to "cool", 0x43 to "heat", 0x44 to "dry", 0x45 to "fan_only")
 val AC_MODE_FROM_HA = AC_MODE_TO_HA.entries.associate { it.value to it.key } + ("heat_cool" to 0x41)

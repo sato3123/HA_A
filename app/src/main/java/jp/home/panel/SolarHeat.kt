@@ -249,6 +249,12 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 if (view?.canShift == false) "。このエコキュートは対応していないため、昼の沸き増しだけ行います" else "",
         ) { vm.setSolarHeat(shift = it) }
 
+        Text("エコキュートの対応状況", style = MaterialTheme.typography.labelLarge)
+        val diag by vm.ecoDiag.collectAsState()
+        OutlinedButton(onClick = { vm.diagnoseEco() }) { Text("🩺 対応状況を調べる") }
+        Text("「設定できませんでした」と出るときは、ここでエコキュートが設定を受け付ける項目を確かめられます。", style = MaterialTheme.typography.bodySmall)
+        diag?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
         Text("動作の記録", style = MaterialTheme.typography.labelLarge)
         if (log.isEmpty()) Text("まだありません", style = MaterialTheme.typography.bodySmall)
         log.take(25).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }

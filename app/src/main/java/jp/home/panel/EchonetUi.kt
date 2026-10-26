@@ -94,6 +94,17 @@ fun EchonetSettings(vm: MainViewModel) {
                             DeviceIcon(d.toEntity(), 36.dp)
                             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                                 Text(d.name, style = MaterialTheme.typography.bodyLarge)
+                                val loc = elLocationFull(d.props[0x81]?.u8())
+                                val linked = links[d.entityId]?.let { id -> states[id] }
+                                if (loc != null || linked != null) {
+                                    Text(
+                                        listOfNotNull(
+                                            loc?.let { "設置場所：$it" },
+                                            linked?.let { "🔗 ${it.name}" + (vm.roomNameOf(it.entityId)?.let { r -> "（$r）" } ?: "") },
+                                        ).joinToString("　"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                                 Text(
                                     "${d.cls.name}・${d.ip}・" + (if (d.online) "応答あり" else "応答なし") +
                                         when (d.cls.kind) {
@@ -189,14 +200,19 @@ fun EchonetSettings(vm: MainViewModel) {
             text = {
                 androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 420.dp)) {
                     item {
-                        Text("Home Assistant の同じ機器を選んでください（名前が似ている順）。", style = MaterialTheme.typography.bodySmall)
+                        val loc = elLocationFull(d.props[0x81]?.u8())
+                        Text(
+                            "ECHONET Lite の機器：${d.name}（${d.ip}）" + (loc?.let { "\n機器に登録された設置場所：$it" } ?: "") +
+                                "\nHome Assistant の同じ機器を選んでください（名前が似ている順。（ ）は部屋）。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     items(cands.size) { i ->
                         val e = cands[i]
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { vm.linkEl(d.entityId, e.entityId); linking = null }) {
                             androidx.compose.material3.RadioButton(selected = links[d.entityId] == e.entityId, onClick = { vm.linkEl(d.entityId, e.entityId); linking = null })
                             Column {
-                                Text(e.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(e.name + (vm.roomNameOf(e.entityId)?.let { "（$it）" } ?: ""), style = MaterialTheme.typography.bodyLarge)
                                 Text(e.entityId, style = MaterialTheme.typography.bodySmall)
                             }
                         }
