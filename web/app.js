@@ -10,7 +10,8 @@
   const UPDATE_SERVICE = { domain: "shell_command", service: "update_homepanel" };
   // Home Assistant の /local/ に置いた場合と、専用サーバー（Proxmox の LXC）から配信する場合がある
   const SERVER_MODE = !location.pathname.startsWith("/local/");
-  const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script"];
+  const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script", "camera"];
+  const ACTION_DOMAINS = SUPPORTED.filter((d) => d !== "camera");
   const SIMPLE = ["switch", "input_boolean", "scene", "script"];
   const TOGGLEABLE = ["light", "fan", "switch", "input_boolean"];
 
@@ -42,10 +43,10 @@
   const hasPct = (e) => dom(e) === "fan" && e.attributes && "percentage" in e.attributes;
   const hasPos = (e) => dom(e) === "cover" && num(e.attributes, "current_position") !== null;
   const canStop = (e) => ((e.attributes && e.attributes.supported_features) & 8) !== 0;
-  const isWide = (e) => ({ climate: true, light: dimmable(e), fan: hasPct(e), cover: hasPos(e) }[dom(e)] || false);
+  const isWide = (e) => ({ climate: true, light: dimmable(e), fan: hasPct(e), cover: hasPos(e), camera: true }[dom(e)] || false);
 
   // ================= 表示名 =================
-  const DOMAIN_LABEL = { light: "照明", switch: "スイッチ", fan: "ファン", cover: "カーテン・シャッター", climate: "エアコン", input_boolean: "切り替え", scene: "シーン", script: "スクリプト" };
+  const DOMAIN_LABEL = { light: "照明", switch: "スイッチ", fan: "ファン", cover: "カーテン・シャッター", climate: "エアコン", input_boolean: "切り替え", scene: "シーン", script: "スクリプト", camera: "カメラ" };
   const HVAC = { off: "停止", heat: "暖房", cool: "冷房", auto: "自動", heat_cool: "冷暖自動", dry: "除湿", fan_only: "送風" };
   const FANM = { auto: "自動", low: "弱", medium: "中", middle: "中", mid: "中", high: "強", quiet: "静音", silent: "静音", turbo: "パワフル", strong: "パワフル", powerful: "パワフル", on: "オン", off: "オフ" };
   const SWING = { off: "固定", on: "スイング", vertical: "上下", horizontal: "左右", both: "上下左右" };
@@ -66,6 +67,7 @@
     const a = e.attributes || {};
     switch (dom(e)) {
       case "scene": case "script": return "タップで実行";
+      case "camera": return { idle: "待機中", streaming: "配信中", recording: "録画中" }[e.state] || e.state;
       case "cover": return { open: "開", closed: "閉", opening: "開いています…", closing: "閉じています…" }[e.state] || e.state;
       case "climate": {
         const cur = num(a, "current_temperature");
@@ -124,6 +126,15 @@
     ssOn: false,
     photos: [],
     photoStatus: null,
+    info: null,
+    thermo: null,
+    events: [],
+    energy: null,
+    entityDevice: {},
+    deviceNames: {},
+    cam: null,
+    settingsPage: null,
+    popupHidden: null,
   };
   const pendingTemp = new Map();
 
@@ -283,6 +294,7 @@
           if (d.new_state) ha.states[d.entity_id] = d.new_state; else delete ha.states[d.entity_id];
           if (d.entity_id && d.entity_id.startsWith("weather.")) renderWeather();
           if (d.entity_id && d.entity_id.startsWith("automation.") && S.page === "auto" && !S.edit) scheduleAuto();
+          if (d.entity_id && d.entity_id.startsWith("sensor.")) scheduleThermos();
           scheduleRender();
         });
         setConn("connected");
@@ -290,6 +302,10 @@
         backoff = 2000;
         renderEntities();
         renderWeather();
+        renderThermos();
+        renderQuick();
+        loadEnergy();
+        loadEvents();
         loadPipelines();
         loadRegistries();
         loadUser().then(() => { if (S.page === "auto") loadRules(); });
@@ -371,9 +387,11 @@
     const sw = !unav && TOGGLEABLE.includes(dom(e))
       ? `<label class="sw"><input type="checkbox" data-act="toggle" ${e.state === "on" ? "checked" : ""}><span></span></label>`
       : "";
-    return `<div class="head" data-act="${SIMPLE.includes(dom(e)) ? "primary" : "detail"}">
+    const act = dom(e) === "camera" ? "none" : SIMPLE.includes(dom(e)) ? "primary" : "detail";
+    return `<div class="head" data-act="${act}">${iconHTML(e)}
       <div class="ht"><div class="dom">${esc(DOMAIN_LABEL[dom(e)] || dom(e))}</div>
-      <div class="name${large ? " large" : ""}">${esc(nameOf(e))}</div><div class="st">${esc(stateLabel(e))}</div></div>${sw}</div>`;
+      <div class="name${large ? " large" : ""}">${esc(nameOf(e))}</div><div class="st">${esc(stateLabel(e))}</div></div>
+      <button class="ibtn" data-set="info" data-id="${esc(e.entity_id)}" aria-label="詳細">ⓘ</button>${sw}</div>`;
   }
 
   const RANGE_LABEL = {
@@ -436,6 +454,7 @@
   }
 
   function tileHTML(e) {
+    if (dom(e) === "camera") return cameraTileHTML(e);
     const d = dom(e), unav = isUnav(e);
     let body = "";
     if (!unav) {
@@ -523,7 +542,10 @@
       }
     }
     const same = els.length === grid.children.length && els.every((el, i) => grid.children[i] === el);
-    if (!same) grid.replaceChildren(...els);
+    if (!same) {
+      grid.replaceChildren(...els);
+      grid.querySelectorAll("img[data-snap]").forEach((img) => { if (!img.getAttribute("src")) refreshSnapshot(img.dataset.snap); });
+    }
     renderRoomBar();
     $("#empty").classList.toggle("hidden", list.length > 0);
     $("#empty").textContent = S.conn === "connected" ? "表示する機器がありません（⚙ 設定 から選べます）" : "接続しています…";
@@ -579,6 +601,7 @@
     const e = entityFor(el);
     if (!e) return;
     switch (el.dataset.act) {
+      case "none": break;
       case "primary": primary(e); break;
       case "detail": S.detail = e.entity_id; renderSheet(); break;
       case "toggle": call(e, el.checked ? "turn_on" : "turn_off"); break;
@@ -609,13 +632,15 @@
   function bindControls(root) {
     root.addEventListener("click", (ev) => {
       if (ev.target.closest("label.sw, input")) return; // スイッチは change で処理
+      if (ev.target.closest("[data-set]")) return; // ⓘ やカメラは別の処理
       const el = ev.target.closest("[data-act]");
       if (el) { handleAction(el); return; }
       const tile = ev.target.closest(".tile");
       if (tile) {
         const e = entityFor(tile);
         if (!e || isUnav(e)) return;
-        if (SIMPLE.includes(dom(e))) primary(e); else { S.detail = e.entity_id; renderSheet(); }
+        if (dom(e) === "camera") openCamera(e.entity_id);
+        else if (SIMPLE.includes(dom(e))) primary(e); else { S.detail = e.entity_id; renderSheet(); }
       }
     });
     root.addEventListener("change", (ev) => {
@@ -938,8 +963,17 @@
 
   /** 聞き取った文字を処理：タイマーなどアプリの命令はここで、それ以外は AI へ */
   async function handleHeard(text) {
+    if (/予定/.test(text) && calendarEntities().length) {
+      const off = /明日|あした|あす/.test(text) ? 1 : /今日|きょう|本日/.test(text) ? 0 : null;
+      if (off !== null) {
+        addLog("アプリの命令として処理：予定");
+        if (!S.events.length) await loadEvents();
+        const reply = speakDay(off);
+        return runToTts("tts", { text: reply }, text, reply);
+      }
+    }
     const cmd = parseTimerCommand(text);
-    if (!cmd) return runToTts("intent", { text }, text);
+    if (!cmd) return runToTts("intent", { text: withHomeLocation(text) }, text);
     addLog("アプリの命令として処理：" + cmd.type);
     let reply;
     if (cmd.type === "start") {
@@ -1078,7 +1112,7 @@
     micBtn.textContent = v.type === "listen" ? "■" : v.type === "speak" ? "🔇" : "🎤";
     micBtn.disabled = S.conn !== "connected" || !window.isSecureContext;
     st.textContent = {
-      idle: S.wake ? "呼びかけの準備をしています…" : "マイクを押して話しかけてください\n例：「リビングの電気をつけて」「近くのスーパーの営業時間は？」",
+      idle: S.wake ? "呼びかけの準備をしています…" : "マイクを押して話しかけてください",
       wait: "呼びかけを待っています（マイクボタンでもすぐに話せます）",
       listen: "聞いています…（話し終わったら■で終了）",
       proc: `「${v.heard || ""}」を処理しています…${v.queued ? "（終わったら続けて聞きます）" : ""}`,
@@ -1086,11 +1120,8 @@
       done: `「${v.heard || ""}」`,
       fail: v.msg || "",
     }[v.type];
-    let reply = "";
-    if (v.type === "done" || v.type === "speak") reply = v.reply || "完了しました";
-    else if ((v.type === "wait" || v.type === "idle") && S.lastDone) reply = `前回：「${S.lastDone.heard}」→ ${S.lastDone.reply}`;
-    $("#vreply").textContent = reply;
-    $("#vnote").textContent = window.isSecureContext ? "" : "※ http のアドレスでは音声入力が使えません（文字入力は使えます）。https のアドレスで開いてください。";
+    $("#vnote").textContent = window.isSecureContext ? "" : "※ http のアドレスでは音声入力が使えません。https のアドレスで開いてください。";
+    renderPopup();
   }
 
   // ================= アップデート =================
@@ -1176,52 +1207,16 @@
 
   // ================= 設定・使い方ページ =================
   function settingsHTML() {
-    const pid = S.pipelineId || S.preferred;
-    const ws = S.ha ? Object.values(S.ha.states).filter((e) => e.entity_id.startsWith("weather.")) : [];
-    const w = weatherEntity();
+    if (S.settingsPage) {
+      const m = SETTINGS_MENU.find((x) => x[0] === S.settingsPage) || ["", "", "設定"];
+      return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="menuBack">← 設定</button><h2>${esc(m[2])}</h2></div>
+        ${settingsPageHTML(S.settingsPage)}<div style="height:40px"></div></div>`;
+    }
     return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>設定</h2></div>
-      <div class="sec">配色</div>${themesHTML()}
-
-      <div class="sec">部屋</div>
-      <label class="row"><span class="rt">部屋ごとに分けて表示する<div class="sub">Home Assistant のエリアを部屋として使います。アプリで部屋を追加したり、機器の部屋を変えたりもできます（下の「表示する機器」で機器ごとに選べます）。</div></span>
-        <input type="checkbox" data-set="groupRooms" ${S.groupRooms ? "checked" : ""}></label>
-      ${rooms().map((r) => `<div class="row" style="cursor:default"><span class="rt">${esc(r.name)}<div class="sub">${r.ha ? "Home Assistant のエリア" : "アプリで追加した部屋"}</div></span>
-        ${r.ha ? "" : `<button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn" data-set="roomDel" data-id="${esc(r.key)}">削除</button>`}</div>`).join("")}
-      <div class="brow" style="align-items:center;margin-top:6px"><input class="search" id="newRoom" type="text" placeholder="部屋を追加（例：子ども部屋）" style="max-width:320px;margin:0">
-        <button class="tbtn" data-set="roomAdd">追加</button></div>
-
-      <div class="sec">接続</div>
-      <div class="note">このアプリのアドレス：${esc(location.origin + location.pathname)}<br>
-      ${SERVER_MODE
-        ? "家の中の専用サーバー（Proxmox のコンテナ）から https で配信し、Home Assistant に中継しています。家の中だけで使え、音声入力も使えます。"
-        : location.protocol === "https:" ? "家の外からもこのアドレスで使えます。" : "http のアドレスです。音声入力と外出先での利用には https のアドレス（Home Assistant Cloud のリモートURL）で開いてください。"}</div>
-
-      <div class="sec">音声</div>
-      <label class="row"><span class="rt">呼びかけで反応する<div class="sub">Home Assistant の音声アシスタントに設定したウェイクワードで反応します。この画面を表示している間だけ待ち受けます。</div></span>
-        <input type="checkbox" data-set="wake" ${S.wake ? "checked" : ""}></label>
-      ${S.pipelines.length ? `<div class="note" style="margin-top:8px">使うアシスタント（AI の会話エージェントはここで選んだものが答えます）</div>` + S.pipelines.map((p) => `
-        <label class="row"><input type="radio" name="pl" data-set="pipeline" data-id="${esc(p.id)}" ${p.id === pid ? "checked" : ""}>
-        <span class="rt">${esc(p.name)}<div class="sub">${esc([p.id === S.preferred ? "優先" : null, p.wake ? "呼びかけ対応" : "呼びかけ未設定", p.agent || null].filter(Boolean).join("・"))}</div></span></label>`).join("") : ""}
-
-      ${voiceDiagHTML()}
-
-      <div class="sec">スクリーンセーバー</div>${screensaverSettingsHTML()}
-
-      ${ws.length > 1 ? `<div class="sec">天気</div>` + ws.map((x) => `
-        <label class="row"><input type="radio" name="wx" data-set="weather" data-id="${esc(x.entity_id)}" ${w && x.entity_id === w.entity_id ? "checked" : ""}>
-        <span class="rt">${esc(nameOf(x))}<div class="sub">${esc(x.entity_id)}</div></span></label>`).join("") : ""}
-
-      <div class="sec" id="selTitle"></div>
-      <input class="search" type="search" placeholder="名前で絞り込み" data-set="query">
-      <div><button class="tbtn" data-set="all">すべて選択</button><button class="tbtn" data-set="none">すべて解除</button></div>
-      <div id="selList"></div>
-
-      <div class="sec">アプリの更新</div><div data-update-slot></div>
-      <div class="sec">アカウント</div>
-      ${accountHTML()}
+      ${SETTINGS_MENU.map(([k, icon, title, sub]) => `<button class="menurow" data-set="menu" data-id="${k}"><span class="mi">${icon}</span>
+        <span class="rt"><b>${esc(title)}</b><div class="sub">${esc(sub)}</div></span><span class="chev">›</span></button>`).join("")}
       <div style="height:40px"></div></div>`;
   }
-
   function renderSelList() {
     const list = $("#selList");
     if (!list) return;
@@ -1259,16 +1254,37 @@
     ["🎤 音声で操作・質問", [
       "マイクボタンを押して話しかけます。話し終わると自動で止まります（■ボタンでも止められます）。",
       "例：「リビングの電気をつけて」「エアコンを26度にして」「近くのスーパーの営業時間は？」",
-      "質問には AI が答えて読み上げます。5分以内なら続けて質問できます。",
-      "下の入力欄に文字で書いて送信しても同じように使えます。",
+      "質問には AI が答えて読み上げ、答えは画面の下にポップアップで出ます（「✕ 閉じる」で閉じられます）。5分以内なら続けて質問できます。",
+      "「近くの〜」「営業時間」など場所に関わる質問は、⚙ 設定 →「音声と AI」の「自宅の位置」を基準に答えます。",
+      "「今日の予定は？」「明日の予定」と聞くと、カレンダーの予定を読み上げます。",
       SERVER_MODE ? "音声入力を使うには、iPad に専用サーバーの証明書を入れておく必要があります（README 参照）。" : "音声入力は https のアドレス（Home Assistant Cloud のリモートURL）で開いたときに使えます。",
     ]],
     ["🗣️ 呼びかけで反応", [
-      "⚙ 設定 →「呼びかけで反応する」をオンにすると、呼びかけるだけで聞き取りを始めます（ピッと鳴ります）。",
+      "⚙ 設定 →「音声と AI」の「呼びかけで反応する」をオンにすると、呼びかけるだけで聞き取りを始めます（ピッと鳴ります）。",
       "この画面を表示している間だけ待ち受けます。iPad の「設定 → 画面表示と明るさ → 自動ロック」を「しない」にすると便利です。",
     ]],
     ["⚙ 表示する機器を選ぶ", [
-      "⚙ 設定 →「表示する機器」で、チェックを付けた機器だけを表示します。名前で絞り込めます。",
+      "⚙ 設定 →「部屋と機器」の「表示する機器」で、チェックを付けた機器だけを表示します。名前で絞り込めます。",
+      "機器の右上の ⓘ で、いまの状態・最後に変わった時刻・直近24時間の動きを確認できます。",
+    ]],
+    ["👪 家族ごとの表示", [
+      "⚙ 設定 →「ホーム画面の表示」で、家族それぞれのホーム画面（出す項目と並び順・配色）を作れます。",
+      "2人以上作ると、上部に名前のボタンが出て、タップで切り替えられます。",
+    ]],
+    ["🌡 温度計", [
+      "Home Assistant に取り込んだ温度計（SwitchBot 温湿度計など）の温度と湿度を表示します。タップすると温度と湿度の変化のグラフ（24時間／3日／7日）が出ます。",
+      "⚙ 設定 →「温度計」の「✎ 名前」で、部屋の名前などに変えられます。",
+    ]],
+    ["📅 予定（TimeTree）", [
+      "Home Assistant に取り込んだカレンダー（TimeTree など）の今日と明日の予定を表示します。表示するカレンダーは ⚙ 設定 →「カレンダー」で選びます。",
+      "TimeTree のログイン情報は Home Assistant にだけ登録し、このアプリには保存しません。",
+    ]],
+    ["⚡ 今日の電気", [
+      "Home Assistant の「エネルギー」の設定から、今日の使用量・買電・売電・発電・電気代を表示します。",
+    ]],
+    ["📷 カメラ", [
+      "Home Assistant のカメラを、静止画（10秒ごとに更新）で表示します。タップすると全画面の動画になります。",
+      "全画面の右上の「画質」で、自動／リアルタイム（WebRTC）／高画質（HLS）／簡易 を選べます。再生できないときは自動でほかの方式に切り替わります。",
     ]],
     ["⏱ タイマー", [
       "トップの「⏱ タイマー」から、いくつでも同時に設定できます。残り時間はホーム画面の上に表示されます。",
@@ -1281,7 +1297,7 @@
     ]],
     ["🚪 部屋ごとに分ける", [
       "機器は Home Assistant のエリアごとに分けて表示されます。上の「すべて／リビング／寝室…」で部屋を絞り込めます。",
-      "⚙ 設定 →「部屋」で、アプリだけの部屋を追加できます。「表示する機器」の各機器の「🏠」で部屋を変えられます。",
+      "⚙ 設定 →「部屋と機器」で、アプリだけの部屋を追加したり、▲▼ で部屋の並び順を変えたりできます。「表示する機器」の各機器の「🏠」で部屋を変えられます。",
     ]],
     ["⏰ スケジュール・オートメーション", [
       "トップの「⏰ 自動化」を開きます。",
@@ -1295,7 +1311,8 @@
       "自動化を作成・編集するときだけ、⚙ 設定 →「アカウント」→「管理者ログインを追加」で管理者としてもログインします。",
       "使い終わったら「管理者ログインを解除」できます。",
     ]],
-    ["🎨 配色", ["⚙ 設定 →「配色」で、11種類の色の組み合わせから選べます。"]],
+    ["🎨 配色", ["⚙ 設定 →「ホーム画面の表示」の「配色」で、11種類の色の組み合わせから選べます。"]],
+    ["💾 設定の保存", ["⚙ 設定 →「アプリの更新・設定の保存」で、設定をファイルに書き出し・読み込みできます（ログインの情報は含めません）。"]],
     ["📱 ホーム画面に追加", [
       "Safari でこのページを開き、共有ボタン（□↑）→「ホーム画面に追加」を選ぶと、アプリのように使えます。",
     ]],
@@ -1311,9 +1328,9 @@
       "「呼びかけ検知が設定されていません」：Home Assistant の音声アシスタントでウェイクワードを設定してください。",
       "マイクが使えない：iPad の「設定 → アプリ → Safari → マイク」が許可になっているか確認してください。",
       "「この接続ではプライバシーが保護されません」と出る：iPad に専用サーバーの証明書（http://192.168.1.46/ca.crt）を入れ、「証明書信頼設定」でオンにしてください。",
-      "呼びかけに反応しない：⚙ 設定 →「音声」の「マイクのテスト」と「音声の動作ログ」で、音が入っているか・どこで止まっているかを確認できます。",
+      "呼びかけに反応しない：⚙ 設定 →「音声と AI」の「マイクのテスト」と「音声の動作ログ」で、音が入っているか・どこで止まっているかを確認できます。",
       "回答の読み上げ中でも、マイクボタンを押すと読み上げを止めて次の質問を聞きます。",
-      "ログインし直したいとき：⚙ 設定 → ログアウト。",
+      "ログインし直したいとき：⚙ 設定 →「アカウント」→ ログアウト。",
     ]],
   ];
   function helpHTML() {
@@ -1333,6 +1350,7 @@
     page.innerHTML = name === "settings" ? settingsHTML() : helpHTML();
     if (name === "settings") renderSelList();
     renderUpdate();
+    if (name === "settings" && !S.settingsPage) page.scrollTop = 0;
   }
   /** 設定ページを開いたまま描き直す（スクロール位置は保つ） */
   function openPageKeep() {
@@ -1347,16 +1365,18 @@
   function closePage() {
     if (S.page === "help") store.set("helpShown", true);
     S.page = null;
+    S.settingsPage = null;
     S.edit = null;
     $("#page").classList.add("hidden");
     $("#page").innerHTML = "";
   }
 
   async function onSetting(el) {
+    if (await onNewSetting(el)) return;
     if (await onExtraSetting(el)) return;
     if (S.page === "auto" && el.dataset.set !== "close" && (await onAutoSetting(el))) return;
     switch (el.dataset.set) {
-      case "theme": S.theme = el.dataset.id; store.set("theme", S.theme); applyTheme(); openPageKeep(); break;
+      case "theme": S.theme = el.dataset.id; store.set("theme", S.theme); updateProfile(activeProfile().id, (p) => Object.assign(p, { theme: S.theme })); applyTheme(); openPageKeep(); break;
       case "roomFilter": S.roomFilter = el.dataset.id || null; store.set("roomFilter", S.roomFilter); renderEntities(); break;
       case "groupRooms": S.groupRooms = el.checked; store.set("groupRooms", S.groupRooms); renderEntities(); break;
       case "roomAdd": {
@@ -1455,7 +1475,10 @@
   // ================= 部屋 =================
   const NO_ROOM = "none";
   function rooms() {
-    return S.haAreas.concat(Object.entries(S.customRooms).sort((a, b) => a[0].localeCompare(b[0])).map(([key, name]) => ({ key, name, ha: false })));
+    const list = S.haAreas.concat(Object.entries(S.customRooms).sort((a, b) => a[0].localeCompare(b[0])).map(([key, name]) => ({ key, name, ha: false })));
+    const order = store.get("roomOrder", []);
+    const at = (k) => { const i = order.indexOf(k); return i < 0 ? 1e9 : i; };
+    return list.map((r, i) => [r, i]).sort((a, b) => at(a[0].key) - at(b[0].key) || a[1] - b[1]).map(([r]) => r);
   }
   function roomKey(id) {
     const rs = rooms();
@@ -1477,12 +1500,17 @@
       S.haAreas = areas.map((a) => ({ key: "area:" + a.area_id, name: a.name, ha: true })).sort((a, b) => a.name.localeCompare(b.name, "ja"));
       const devs = await ha.send({ type: "config/device_registry/list" });
       const devArea = {};
-      devs.forEach((d) => { if (d.area_id) devArea[d.id] = d.area_id; });
+      const devNames = {};
+      devs.forEach((d) => { if (d.area_id) devArea[d.id] = d.area_id; devNames[d.id] = d.name_by_user || d.name || ""; });
+      S.deviceNames = devNames;
       const ents = await ha.send({ type: "config/entity_registry/list" });
       const map = {};
-      ents.forEach((e) => { const a = e.area_id || (e.device_id && devArea[e.device_id]); if (a) map[e.entity_id] = a; });
+      const entDev = {};
+      ents.forEach((e) => { const a = e.area_id || (e.device_id && devArea[e.device_id]); if (a) map[e.entity_id] = a; if (e.device_id) entDev[e.entity_id] = e.device_id; });
       S.entityAreas = map;
+      S.entityDevice = entDev;
       renderEntities();
+      renderThermos();
     } catch (e) { /* エリアを読めなくても、アプリで追加した部屋は使える */ }
   }
   function saveRooms() {
@@ -1827,7 +1855,7 @@
       <div class="field"><div class="fl">曜日（選ばなければ毎日）</div>${days}</div>
       ${range}
       <div class="field"><div class="fl">実行すること</div>${acts}
-        <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(SUPPORTED, "")}</select></div>
+        <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(ACTION_DOMAINS, "")}</select></div>
       <div class="summary" id="ruleSummary">内容：${esc(ruleSummary(r))}</div>
       ${S.editError ? `<div class="warn">${esc(S.editError)}</div>` : ""}
       <div class="brow" style="margin:12px 0 40px"><button class="btn" data-set="ruleSave" ${S.saving ? "disabled" : ""}>${S.saving ? "保存しています…" : "保存"}</button>
@@ -2115,7 +2143,8 @@
   }
   function checkIdle() {
     const idle = Date.now() - lastInteraction;
-    if (S.ss.enabled && !S.ssOn && !S.page && !S.detail && !S.ringing.length && !S.busy && S.voice.type !== "listen" && idle > (S.ss.minutes || 5) * 60000) showScreensaver();
+    if (S.cam) lastInteraction = Date.now(); // カメラを見ている間は出さない
+    if (S.ss.enabled && !S.ssOn && !S.page && !S.detail && !S.info && !S.thermo && !S.cam && !S.ringing.length && !S.busy && S.voice.type !== "listen" && idle > (S.ss.minutes || 5) * 60000) showScreensaver();
     if (S.ssOn) renderSaverInfo();
   }
 
@@ -2185,6 +2214,754 @@
     }
   }
 
+  // ================= 機器のアイコン =================
+  // Android 版と同じく、すべて同じ大きさの丸いバッジ。オンのときは色付き
+  const ICON_PATHS = {
+    light: '<circle cx="12" cy="10" r="5.5" fill="currentColor"/><rect x="9.5" y="15.5" width="5" height="3" fill="currentColor"/><rect x="10" y="19.5" width="4" height="2" rx="1" fill="currentColor"/>',
+    switch: '<rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="8" y="8" width="2" height="5" rx="1" fill="currentColor"/><rect x="14" y="8" width="2" height="5" rx="1" fill="currentColor"/><circle cx="12" cy="16.5" r="1.3" fill="currentColor"/>',
+    fan: '<g fill="currentColor"><ellipse cx="12" cy="6" rx="2.6" ry="5"/><ellipse cx="12" cy="6" rx="2.6" ry="5" transform="rotate(120 12 12)"/><ellipse cx="12" cy="6" rx="2.6" ry="5" transform="rotate(240 12 12)"/><circle cx="12" cy="12" r="2.4"/></g>',
+    cover: '<rect x="3" y="3" width="18" height="2.5" rx="1" fill="currentColor"/><path d="M5 6v14M9 6v14M15 6v14M19 6v14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    climate: '<rect x="2.5" y="5" width="19" height="9" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 11h12M8 17l-1 3M12 17v3M16 17l1 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    input_boolean: '<rect x="2.5" y="7" width="19" height="10" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="12" r="3" fill="currentColor"/>',
+    scene: '<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z" fill="currentColor"/>',
+    script: '<path d="M8 5l11 7-11 7z" fill="currentColor"/>',
+    camera: '<rect x="2" y="7" width="20" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="8" y="3.5" width="8" height="4" rx="1.2" fill="currentColor"/><circle cx="12" cy="13.5" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>',
+  };
+  function iconHTML(e) {
+    const d = dom(e);
+    const active = isOn(e) && d !== "scene" && d !== "script" && !isUnav(e);
+    return `<span class="dicon${active ? " on" : ""}"><svg viewBox="0 0 24 24" width="22" height="22">${ICON_PATHS[d] || '<circle cx="12" cy="12" r="5" fill="currentColor"/>'}</svg></span>`;
+  }
+
+  // ================= 設定のメニュー =================
+  const SETTINGS_MENU = [
+    ["display", "🎨", "ホーム画面の表示", "家族ごとの表示・並び順、配色、天気"],
+    ["rooms", "🚪", "部屋と機器", "部屋の並び順・追加、表示する機器"],
+    ["thermo", "🌡", "温度計", "表示する温度計、名前"],
+    ["voice", "🎤", "音声と AI", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"],
+    ["screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間"],
+    ["calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"],
+    ["cameras", "📷", "カメラ", "画質の選び方"],
+    ["connection", "🌐", "接続", "このアプリのアドレス"],
+    ["account", "👤", "アカウント", "管理者ログイン、ログアウト"],
+    ["system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"],
+  ];
+
+  // ================= 表示のユーザー（家族ごとのホーム画面） =================
+  const SECTIONS = [
+    ["clock", "時計・天気（マイクボタン）", true],
+    ["thermo", "温度・湿度（SwitchBot などの温度計）", true],
+    ["calendar", "予定（TimeTree）", true],
+    ["timers", "タイマーの残り時間", true],
+    ["energy", "今日の電気（エネルギーの収支）", true],
+    ["automations", "オートメーション・シーンのすぐ実行ボタン", false],
+    ["devices", "機器", true],
+  ];
+  const defaultSections = () => SECTIONS.map(([key, , visible]) => ({ key, visible }));
+  function completeSections(list) {
+    const out = (list || []).filter((s) => SECTIONS.some(([k]) => k === s.key));
+    SECTIONS.forEach(([key, , visible], i) => {
+      if (out.some((s) => s.key === key)) return;
+      const prev = SECTIONS.slice(0, i).map(([k]) => k).reverse().find((k) => out.some((s) => s.key === k));
+      const at = prev ? out.findIndex((s) => s.key === prev) + 1 : 0;
+      out.splice(at, 0, { key, visible });
+    });
+    return out;
+  }
+  function profiles() {
+    let list = store.get("profiles");
+    if (!Array.isArray(list) || !list.length) list = [{ id: "p_default", name: "みんな", sections: defaultSections(), theme: S.theme }];
+    return list.map((p) => Object.assign({}, p, { sections: completeSections(p.sections) }));
+  }
+  function activeProfile() {
+    const list = profiles();
+    return list.find((p) => p.id === store.get("activeProfile")) || list[0];
+  }
+  function saveProfiles(list) { store.set("profiles", list); }
+  function updateProfile(id, fn) {
+    const list = profiles().map((p) => (p.id === id ? fn(Object.assign({}, p, { sections: p.sections.map((s) => Object.assign({}, s)) })) : p));
+    saveProfiles(list);
+    layoutHome();
+  }
+  function switchProfile(id) {
+    store.set("activeProfile", id);
+    const p = activeProfile();
+    if (p.theme) { S.theme = p.theme; store.set("theme", S.theme); applyTheme(); }
+    layoutHome();
+    renderProfileBar();
+  }
+  function renderProfileBar() {
+    const bar = $("#profileBar");
+    if (!bar) return;
+    const list = profiles();
+    if (list.length <= 1) { bar.innerHTML = ""; return; }
+    const cur = activeProfile();
+    bar.innerHTML = list.map((p) => `<button class="chip sm${p.id === cur.id ? " sel" : ""}" data-set="profile" data-id="${esc(p.id)}">👤 ${esc(p.name)}</button>`).join("");
+  }
+  /** ホーム画面の項目を、選んでいるユーザーの並び順・表示に合わせる */
+  function layoutHome() {
+    const home = $("#home");
+    if (!home) return;
+    const p = activeProfile();
+    p.sections.forEach((s) => {
+      const el = home.querySelector(`[data-sec="${s.key}"]`);
+      if (!el) return;
+      home.appendChild(el);
+      el.classList.toggle("off", !s.visible);
+    });
+    renderQuick();
+  }
+  function profilesHTML() {
+    const list = profiles(), cur = activeProfile();
+    return `<div class="note">家族それぞれで、ホーム画面に出す項目と並び順を変えられます。上部の名前のボタンで切り替えます（この端末の中だけの設定です）。</div>
+      <div class="chips" style="margin:8px 0">${list.map((p) => `<button class="chip${p.id === cur.id ? " sel" : ""}" data-set="profile" data-id="${esc(p.id)}">👤 ${esc(p.name)}</button>`).join("")}
+        <button class="tbtn" data-set="profileAdd">＋ 追加</button></div>
+      <div class="card" style="margin-bottom:8px"><div class="brow" style="align-items:center"><b style="flex:1">「${esc(cur.name)}」のホーム画面</b>
+        <button class="tbtn" data-set="profileRename">名前を変える</button>${list.length > 1 ? `<button class="tbtn" data-set="profileDel">削除</button>` : ""}</div>
+        ${cur.sections.map((s, i) => {
+          const label = (SECTIONS.find(([k]) => k === s.key) || [])[1] || s.key;
+          return `<div class="row" style="cursor:default"><button class="tbtn" data-set="secUp" data-id="${i}" ${i === 0 ? "disabled" : ""}>▲</button>
+            <button class="tbtn" data-set="secDown" data-id="${i}" ${i === cur.sections.length - 1 ? "disabled" : ""}>▼</button>
+            <span class="rt">${esc(label)}</span><input type="checkbox" data-set="secVis" data-id="${i}" ${s.visible ? "checked" : ""}></div>`;
+        }).join("")}
+        <div class="note">配色を選ぶと、このユーザーの配色として覚えます。</div></div>`;
+  }
+
+  // ================= すぐ実行ボタン（シーン・スクリプト・オートメーション） =================
+  function renderQuick() {
+    const box = $("#quick");
+    if (!box || !S.ha) return;
+    const list = Object.values(S.ha.states).filter((e) => ["scene", "script", "automation"].includes(dom(e)))
+      .sort((a, b) => ["scene", "script", "automation"].indexOf(dom(a)) - ["scene", "script", "automation"].indexOf(dom(b)) || nameOf(a).localeCompare(nameOf(b), "ja"));
+    box.innerHTML = list.length ? `<div class="chips">${list.slice(0, 30).map((e) => `<button class="chip" data-set="quickRun" data-id="${esc(e.entity_id)}">${dom(e) === "automation" ? "⚡" : dom(e) === "scene" ? "★" : "▶"} ${esc(nameOf(e))}</button>`).join("")}</div>` : "";
+  }
+
+  // ================= 機器の動作の詳細（ⓘ） =================
+  async function restGet(path) {
+    const token = await accessToken();
+    const r = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+    if (!r.ok) throw new Error("読み込めませんでした (HTTP " + r.status + ")");
+    return r.json();
+  }
+  async function fetchHistory(ids, hours) {
+    const now = new Date(), start = new Date(now.getTime() - hours * 3600000);
+    const q = `/api/history/period/${encodeURIComponent(start.toISOString())}?filter_entity_id=${ids.join(",")}&end_time=${encodeURIComponent(now.toISOString())}&minimal_response&no_attributes`;
+    const arr = await restGet(q);
+    const out = {};
+    (arr || []).forEach((list, k) => {
+      if (!Array.isArray(list) || !list.length) return;
+      const id = list[0].entity_id || ids[k];
+      out[id] = list.map((j) => ({ t: Date.parse(j.last_changed || j.last_updated), s: j.state })).filter((p) => !isNaN(p.t));
+    });
+    return out;
+  }
+  const ago = (ms) => {
+    const m = Math.floor((Date.now() - ms) / 60000);
+    return m < 1 ? "たった今" : m < 60 ? m + "分前" : m < 1440 ? Math.floor(m / 60) + "時間前" : Math.floor(m / 1440) + "日前";
+  };
+  const hm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${pad(d.getMinutes())}`; };
+  async function showInfo(id) {
+    const e = S.ha && S.ha.states[id];
+    if (!e) return;
+    S.info = { id, history: null, status: "履歴を読み込んでいます…" };
+    renderInfo();
+    try {
+      const h = await fetchHistory([id], 24);
+      const list = (h[id] || []).reduce((acc, p) => { if (!acc.length || acc[acc.length - 1].s !== p.s) acc.push(p); return acc; }, []).reverse();
+      if (S.info && S.info.id === id) { S.info.history = list; S.info.status = list.length ? null : "直近24時間の記録はありません"; }
+    } catch (err) { if (S.info && S.info.id === id) S.info.status = err.message; }
+    renderInfo();
+  }
+  const SKIP_ATTRS = ["friendly_name", "supported_features", "supported_color_modes", "icon", "entity_picture", "access_token", "hvac_modes", "fan_modes", "swing_modes", "preset_modes", "min_color_temp_kelvin", "max_color_temp_kelvin", "min_mireds", "max_mireds"];
+  function renderInfo() {
+    const box = $("#info");
+    if (!box) return;
+    const i = S.info, e = i && S.ha && S.ha.states[i.id];
+    box.classList.toggle("hidden", !e);
+    if (!e) { box.innerHTML = ""; return; }
+    const a = e.attributes || {};
+    const attrs = Object.keys(a).filter((k) => !SKIP_ATTRS.includes(k)).slice(0, 30)
+      .map((k) => `<div class="kv"><span>${esc(k)}</span><span>${esc(typeof a[k] === "object" ? JSON.stringify(a[k]) : a[k])}</span></div>`).join("");
+    box.innerHTML = `<div class="dlg-bg" data-set="infoClose"></div><div class="dlg"><div class="pagebar"><h3 style="flex:1;margin:0">${iconHTML(e)} ${esc(nameOf(e))}</h3><button class="tbtn" data-set="infoClose">閉じる</button></div>
+      <div class="kv"><span>いまの状態</span><b>${esc(stateLabel(e))}</b></div>
+      <div class="kv"><span>最後に変わった</span><span>${e.last_changed ? hm(Date.parse(e.last_changed)) + "（" + ago(Date.parse(e.last_changed)) + "）" : "－"}</span></div>
+      <div class="kv"><span>最後に更新</span><span>${e.last_updated ? hm(Date.parse(e.last_updated)) : "－"}</span></div>
+      <div class="kv"><span>ID</span><span>${esc(e.entity_id)}</span></div>
+      <div class="sec">直近24時間の動き</div>
+      ${i.status ? `<div class="note">${esc(i.status)}</div>` : (i.history || []).slice(0, 60).map((p) => `<div class="kv"><span>${hm(p.t)}</span><span>${esc(stateLabel(Object.assign({}, e, { state: p.s })))}</span></div>`).join("")}
+      ${attrs ? `<div class="sec">詳しい情報</div>${attrs}` : ""}</div>`;
+  }
+
+  // ================= 温度計（SwitchBot など） =================
+  const devClass = (e) => (e.attributes || {}).device_class || "";
+  const unitOf = (e) => (e.attributes || {}).unit_of_measurement || "";
+  const isTemp = (e) => dom(e) === "sensor" && (devClass(e) === "temperature" || ["°C", "℃", "°F"].includes(unitOf(e)));
+  const isHum = (e) => dom(e) === "sensor" && (devClass(e) === "humidity" || (unitOf(e) === "%" && /湿度|humidity/i.test(nameOf(e))));
+  const isBat = (e) => dom(e) === "sensor" && devClass(e) === "battery";
+  const baseName = (n) => n.replace(/[\s_]*(温度|湿度|気温|電池|バッテリー|Temperature|Humidity|Battery)$/i, "").trim() || n;
+  function thermos() {
+    if (!S.ha) return [];
+    const names = store.get("thermoNames", {});
+    const groups = {};
+    Object.values(S.ha.states).filter((e) => isTemp(e) || isHum(e) || isBat(e)).forEach((e) => {
+      const dev = S.entityDevice[e.entity_id];
+      const k = dev ? "dev:" + dev : "name:" + baseName(nameOf(e));
+      (groups[k] = groups[k] || []).push(e);
+    });
+    const out = [];
+    for (const [key, list] of Object.entries(groups)) {
+      const t = list.find(isTemp), h = list.find(isHum), b = list.find(isBat);
+      if (!t && !h) continue;
+      let temp = t ? Number(t.state) : NaN;
+      if (t && unitOf(t) === "°F" && !isNaN(temp)) temp = (temp - 32) * 5 / 9;
+      const dn = key.startsWith("dev:") ? S.deviceNames[key.slice(4)] : null;
+      const original = dn || baseName(nameOf(t || h));
+      out.push({ key, original, name: names[key] || original, temp: isNaN(temp) ? null : temp, hum: h && !isNaN(Number(h.state)) ? Number(h.state) : null,
+        bat: b && !isNaN(Number(b.state)) ? Number(b.state) : null, tId: t ? t.entity_id : null, hId: h ? h.entity_id : null,
+        unav: (!t || isUnav(t)) && (!h || isUnav(h)) });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+  }
+  const LEVEL = ["#64b5f6", "#4dd0e1", "#81c784", "#ffb74d", "#e57373"];
+  const tempLevel = (t) => (t === null ? 2 : t < 16 ? 0 : t < 20 ? 1 : t < 26 ? 2 : t < 29 ? 3 : 4);
+  function renderThermos() {
+    const box = $("#thermo");
+    if (!box) return;
+    const hidden = store.get("thermoHidden", []);
+    const list = thermos().filter((t) => !hidden.includes(t.key));
+    box.innerHTML = list.map((t) => `<button class="thermo" data-set="thermoOpen" data-id="${esc(t.key)}"><span class="lv" style="background:${LEVEL[tempLevel(t.temp)]}"></span>
+      <span><span class="tn">${esc(t.name)}</span><span class="tvv">${t.unav ? "－" : t.temp !== null ? fmt(Math.round(t.temp * 10) / 10) + "℃" : "－"}${t.hum !== null ? `<small>💧${fmt(Math.round(t.hum))}%</small>` : ""}</span>
+      ${t.bat !== null && t.bat < 20 ? `<span class="warn" style="font-size:11px">🔋 電池残り ${Math.round(t.bat)}%</span>` : ""}</span></button>`).join("");
+  }
+  async function openThermo(key, hours) {
+    S.thermo = { key, hours: hours || (S.thermo && S.thermo.key === key ? S.thermo.hours : 24), temp: null, hum: null, status: "グラフを読み込んでいます…" };
+    renderThermoDialog();
+    const t = thermos().find((x) => x.key === key);
+    if (!t) return;
+    try {
+      const ids = [t.tId, t.hId].filter(Boolean);
+      const h = await fetchHistory(ids, S.thermo.hours);
+      if (!S.thermo || S.thermo.key !== key) return;
+      const pts = (id) => (id && h[id] ? h[id].map((p) => ({ t: p.t, v: Number(p.s) })).filter((p) => !isNaN(p.v)) : null);
+      S.thermo.temp = pts(t.tId);
+      S.thermo.hum = pts(t.hId);
+      S.thermo.status = (S.thermo.temp || []).length + (S.thermo.hum || []).length ? null : "この期間の記録がありません";
+    } catch (e) { if (S.thermo) S.thermo.status = e.message; }
+    renderThermoDialog();
+  }
+  function chartSVG(pts, hours, color, unit) {
+    const W = 640, H = 200, L = 44, B = 22, T = 8;
+    const end = Date.now(), start = end - hours * 3600000;
+    let lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v));
+    if (hi - lo < 2) { const c = (hi + lo) / 2; lo = c - 1; hi = c + 1; }
+    lo = Math.floor(lo); hi = Math.ceil(hi);
+    const x = (t) => L + (W - L) * Math.max(0, (t - start) / (end - start));
+    const y = (v) => T + (H - B - T) * (1 - (v - lo) / (hi - lo));
+    let g = "";
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + (hi - lo) * i / 4, yy = y(v);
+      g += `<line x1="${L}" x2="${W}" y1="${yy}" y2="${yy}" class="grid"/><text x="2" y="${yy + 4}" class="lbl">${Math.round(v)}${unit}</text>`;
+    }
+    const step = hours <= 24 ? 6 : 24;
+    const tk = new Date(start); tk.setMinutes(0, 0, 0);
+    if (step === 24) { tk.setHours(0); tk.setDate(tk.getDate() + 1); } else tk.setHours(tk.getHours() + (step - tk.getHours() % step || step));
+    for (; tk.getTime() < end; tk.setHours(tk.getHours() + step)) {
+      const xx = x(tk.getTime());
+      g += `<line x1="${xx}" x2="${xx}" y1="${T}" y2="${H - B}" class="grid"/><text x="${xx}" y="${H - 6}" class="lbl" text-anchor="middle">${step === 24 ? `${tk.getMonth() + 1}/${tk.getDate()}` : tk.getHours() + "時"}</text>`;
+    }
+    const s = pts.slice().sort((a, b) => a.t - b.t);
+    let d = "";
+    s.forEach((p, i) => { d += i === 0 ? `M${x(p.t)} ${y(p.v)}` : `H${x(p.t)} V${y(p.v)}`; });
+    d += `H${W}`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="chart">${g}<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5"/></svg>`;
+  }
+  function summaryHTML(pts, unit) {
+    const lo = pts.reduce((a, b) => (b.v < a.v ? b : a)), hi = pts.reduce((a, b) => (b.v > a.v ? b : a));
+    const avg = pts.reduce((s, p) => s + p.v, 0) / pts.length;
+    const f = (v) => (Math.round(v * 10) / 10).toFixed(1);
+    return `<div class="note">最高 ${f(hi.v)}${unit}（${hm(hi.t)}）　最低 ${f(lo.v)}${unit}（${hm(lo.t)}）　平均 ${f(avg)}${unit}</div>`;
+  }
+  function renderThermoDialog() {
+    const box = $("#thermoDlg");
+    if (!box) return;
+    const st = S.thermo, t = st && thermos().find((x) => x.key === st.key);
+    box.classList.toggle("hidden", !t);
+    if (!t) { box.innerHTML = ""; return; }
+    const ch = (h, l) => `<button class="chip${st.hours === h ? " sel" : ""}" data-set="thermoHours" data-id="${h}">${l}</button>`;
+    box.innerHTML = `<div class="dlg-bg" data-set="thermoClose"></div><div class="dlg"><div class="pagebar"><h3 style="flex:1;margin:0">🌡 ${esc(t.name)}</h3><button class="tbtn" data-set="thermoClose">閉じる</button></div>
+      <div style="font-size:34px">${t.temp !== null ? fmt(Math.round(t.temp * 10) / 10) + "℃" : "－"} ${t.hum !== null ? `<span style="font-size:20px">💧${fmt(Math.round(t.hum))}%</span>` : ""}</div>
+      <div class="chips">${ch(24, "24時間")}${ch(72, "3日")}${ch(168, "7日")}</div>
+      ${st.status ? `<div class="note">${esc(st.status)}</div>` : ""}
+      ${st.temp && st.temp.length >= 2 ? `<div class="fl">温度</div>${summaryHTML(st.temp, "℃")}${chartSVG(st.temp, st.hours, "#ff8a65", "℃")}` : ""}
+      ${st.hum && st.hum.length >= 2 ? `<div class="fl">湿度</div>${summaryHTML(st.hum, "%")}${chartSVG(st.hum, st.hours, "#4fc3f7", "%")}` : ""}
+      ${t.bat !== null ? `<div class="note">🔋 電池残り ${Math.round(t.bat)}%</div>` : ""}</div>`;
+  }
+  function thermoSettingsHTML() {
+    const list = thermos(), hidden = store.get("thermoHidden", []), names = store.get("thermoNames", {});
+    return `<div class="note">Home Assistant に取り込んだ温度計（SwitchBot 温湿度計など）の温度と湿度をホーム画面に表示します。同じ機器の温度と湿度は1つにまとめます。「✎ 名前」で部屋の名前などに変えられます。</div>
+      ${list.length ? "" : `<div class="note">温度計が見つかりません。Home Assistant に SwitchBot の連携を追加すると、ここに表示されます。</div>`}
+      ${list.map((t) => `<div class="row" style="cursor:default"><input type="checkbox" data-set="thermoVis" data-id="${esc(t.key)}" ${hidden.includes(t.key) ? "" : "checked"}>
+        <span class="rt">${esc(t.name)}<div class="sub">${[t.temp !== null ? fmt(Math.round(t.temp * 10) / 10) + "℃" : null, t.hum !== null ? fmt(Math.round(t.hum)) + "%" : null, t.bat !== null ? "電池 " + Math.round(t.bat) + "%" : null].filter(Boolean).join("・") || "値なし"}${names[t.key] ? "・元の名前：" + esc(t.original) : ""}</div></span>
+        <button class="tbtn" data-set="thermoRename" data-id="${esc(t.key)}">✎ 名前</button></div>`).join("")}
+      <div id="thermoRenameBox"></div>`;
+  }
+  function thermoRenameHTML(key) {
+    const t = thermos().find((x) => x.key === key);
+    if (!t) return "";
+    return `<div class="card" style="margin-top:8px"><div class="fl">「${esc(t.original)}」の名前</div>
+      <input type="text" class="search" id="thermoName" value="${esc(t.name)}">
+      ${rooms().length ? `<div class="note">部屋の名前から選ぶ</div><div class="chips">${rooms().map((r) => `<button class="chip" data-set="thermoRoomName" data-id="${esc(r.name)}">${esc(r.name)}</button>`).join("")}</div>` : ""}
+      <div class="brow" style="margin-top:8px"><button class="btn" data-set="thermoNameSave" data-id="${esc(key)}">保存</button><button class="btn outline" data-set="thermoNameReset" data-id="${esc(key)}">元に戻す</button></div></div>`;
+  }
+
+  // ================= カレンダー（TimeTree など） =================
+  const calendarEntities = () => (S.ha ? Object.values(S.ha.states).filter((e) => dom(e) === "calendar").sort((a, b) => nameOf(a).localeCompare(nameOf(b), "ja")) : []);
+  const chosenCalendars = () => { const sel = store.get("calendars"); return calendarEntities().filter((c) => !sel || sel.includes(c.entity_id)); };
+  async function loadEvents() {
+    const cals = chosenCalendars();
+    if (!cals.length) { S.events = []; renderCalendar(); return; }
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const end = new Date(start.getTime() + 8 * 86400000);
+    const all = [];
+    for (const c of cals) {
+      try {
+        const arr = await restGet(`/api/calendars/${c.entity_id}?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`);
+        (arr || []).forEach((e) => {
+          const s = e.start || {}, en = e.end || {};
+          const allDay = !s.dateTime && !!s.date;
+          const st = allDay ? new Date(s.date + "T00:00:00") : new Date(s.dateTime);
+          const et = allDay ? new Date((en.date || s.date) + "T00:00:00") : new Date(en.dateTime || s.dateTime);
+          if (!isNaN(st)) all.push({ cal: nameOf(c), summary: e.summary || "（予定）", start: st, end: et, allDay });
+        });
+      } catch (e) { /* そのカレンダーは読めない */ }
+    }
+    S.events = all.sort((a, b) => a.start - b.start);
+    renderCalendar();
+  }
+  function eventsOn(offset) {
+    const day = new Date(); day.setHours(0, 0, 0, 0); day.setDate(day.getDate() + offset);
+    const next = new Date(day.getTime() + 86400000);
+    return (S.events || []).filter((e) => e.start < next && (e.allDay ? e.end > day : e.end > day || e.start >= day))
+      .sort((a, b) => (b.allDay - a.allDay) || a.start - b.start);
+  }
+  const evTime = (e) => (e.allDay ? "終日" : `${e.start.getHours()}:${pad(e.start.getMinutes())}`);
+  function renderCalendar() {
+    const box = $("#cal");
+    if (!box) return;
+    if (!calendarEntities().length) { box.innerHTML = ""; return; }
+    const col = (o, label) => {
+      const list = eventsOn(o);
+      return `<div class="calcol"><div class="fl">📅 ${label}</div>${list.length ? list.slice(0, 6).map((e) => `<div class="ev"><span>${evTime(e)}</span><span>${esc(e.summary)}</span></div>`).join("") : `<div class="note">予定はありません</div>`}</div>`;
+    };
+    box.innerHTML = `<div class="card calcard">${col(0, "今日")}${col(1, "明日")}</div>`;
+  }
+  function speakDay(offset) {
+    const list = eventsOn(offset), label = offset === 0 ? "今日" : "明日";
+    if (!list.length) return `${label}の予定はありません`;
+    return `${label}の予定は${list.length}件です。` + list.map((e) => (e.allDay ? "終日" : `${e.start.getHours()}時${e.start.getMinutes() ? e.start.getMinutes() + "分" : ""}から`) + e.summary).join("、") + "です";
+  }
+  function calendarSettingsHTML() {
+    const cals = calendarEntities(), sel = store.get("calendars");
+    return `<div class="note">TimeTree の予定は、Home Assistant に TimeTree のカレンダーを取り込んで表示します。<b>TimeTree のログイン情報は Home Assistant にだけ登録し、このアプリには保存しません。</b>このアプリが覚えるのは、どのカレンダーを表示するかだけです。</div>
+      <div class="note">取り込み方：Home Assistant の HACS で TimeTree 用の連携（例：「TimeTree」カスタム連携）を入れるか、TimeTree の予定を Google カレンダーなどに共有して、Home Assistant の「Google カレンダー」連携で取り込みます。</div>
+      ${cals.length ? cals.map((c) => `<label class="row"><input type="checkbox" data-set="calSel" data-id="${esc(c.entity_id)}" ${!sel || sel.includes(c.entity_id) ? "checked" : ""}><span class="rt">${esc(nameOf(c))}<div class="sub">${esc(c.entity_id)}</div></span></label>`).join("")
+        : `<div class="note">Home Assistant にカレンダーが見つかりません。</div>`}
+      <div class="note">音声で「今日の予定は？」「明日の予定」と聞くと読み上げます。</div>`;
+  }
+
+  // ================= 今日の電気（エネルギーの収支） =================
+  const unitFactor = (u) => ({ wh: 0.001, kwh: 1, mwh: 1000 }[String(u || "kwh").toLowerCase()] ?? 1);
+  function parseEnergyPrefs(r) {
+    const src = { gridIn: [], gridOut: [], solar: [], batOut: [], batIn: [], cost: [], devices: [] };
+    (r.energy_sources || []).forEach((s) => {
+      if (s.type === "grid") {
+        (s.flow_from || []).forEach((f) => { if (f.stat_energy_from) src.gridIn.push(f.stat_energy_from); if (f.stat_cost) src.cost.push(f.stat_cost); });
+        (s.flow_to || []).forEach((f) => { if (f.stat_energy_to) src.gridOut.push(f.stat_energy_to); });
+        if (s.stat_energy_from) src.gridIn.push(s.stat_energy_from);
+        if (s.stat_energy_to) src.gridOut.push(s.stat_energy_to);
+      } else if (s.type === "solar" && s.stat_energy_from) src.solar.push(s.stat_energy_from);
+      else if (s.type === "battery") { if (s.stat_energy_from) src.batOut.push(s.stat_energy_from); if (s.stat_energy_to) src.batIn.push(s.stat_energy_to); }
+    });
+    (r.device_consumption || []).forEach((d) => { if (d.stat_consumption) src.devices.push(d.stat_consumption); });
+    return src;
+  }
+  async function loadEnergy() {
+    if (!S.ha) return;
+    try {
+      const ha = S.ha;
+      const src = parseEnergyPrefs(await ha.send({ type: "energy/get_prefs" }));
+      if (!src.gridIn.length && !src.solar.length) { S.energy = null; renderEnergy(); return; }
+      const ids = [...new Set([].concat(src.gridIn, src.gridOut, src.solar, src.batOut, src.batIn, src.cost))];
+      const meta = await ha.send({ type: "recorder/get_statistics_metadata", statistic_ids: ids });
+      const units = {};
+      (meta || []).forEach((m) => { units[m.statistic_id] = m.statistics_unit_of_measurement; });
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const res = await ha.send({ type: "recorder/statistics_during_period", start_time: today.toISOString(), end_time: new Date(Date.now() + 3600000).toISOString(), statistic_ids: ids, period: "hour", types: ["change"] });
+      const sum = (list, costs) => list.reduce((s, id) => s + (res[id] || []).reduce((a, r) => a + (r.change || 0), 0) * (costs ? 1 : unitFactor(units[id])), 0);
+      const t = { gridIn: sum(src.gridIn), gridOut: sum(src.gridOut), solar: sum(src.solar), batOut: sum(src.batOut), batIn: sum(src.batIn), cost: sum(src.cost, true) };
+      t.used = Math.max(0, t.gridIn + t.solar + t.batOut - t.gridOut - t.batIn);
+      t.self = t.used > 0.01 ? Math.max(0, Math.min(100, (1 - t.gridIn / t.used) * 100)) : null;
+      S.energy = { t, hasSolar: src.solar.length > 0, hasExport: src.gridOut.length > 0 };
+    } catch (e) { S.energy = null; }
+    renderEnergy();
+  }
+  const kwh = (v) => (v >= 100 ? Math.round(v) : (Math.round(v * 10) / 10).toFixed(1)) + " kWh";
+  function renderEnergy() {
+    const box = $("#energy");
+    if (!box) return;
+    const en = S.energy;
+    if (!en) { box.innerHTML = ""; return; }
+    const t = en.t;
+    box.innerHTML = `<div class="card estrip"><b>⚡ 今日の電気</b><span>使用 <b>${kwh(t.used)}</b></span><span>買電 <b>${kwh(t.gridIn)}</b></span>
+      ${en.hasExport ? `<span>売電 <b>${kwh(t.gridOut)}</b></span>` : ""}${en.hasSolar ? `<span>発電 <b>${kwh(t.solar)}</b></span>` : ""}
+      ${t.self !== null && en.hasSolar ? `<span>自給率 <b>${Math.round(t.self)}%</b></span>` : ""}${t.cost > 0 ? `<span>電気代 <b>${Math.round(t.cost)}円</b></span>` : ""}</div>`;
+  }
+
+  // ================= カメラ =================
+  const camModes = () => store.get("camModes", {});
+  const CAM_MODES = [["auto", "自動", "いちばん遅れの少ない方式"], ["realtime", "リアルタイム", "遅れ1秒未満（WebRTC）"], ["hls", "高画質", "なめらか・数秒の遅れ（HLS）"], ["mjpeg", "簡易", "どのカメラでも・コマ数少なめ"]];
+  const camSnapUrls = new Map();
+  async function refreshSnapshot(id) {
+    const e = S.ha && S.ha.states[id];
+    if (!e || isUnav(e)) return;
+    try {
+      const token = await accessToken();
+      const r = await fetch(`/api/camera_proxy/${id}?t=${Date.now()}`, { headers: { Authorization: "Bearer " + token } });
+      if (!r.ok) return;
+      const url = URL.createObjectURL(await r.blob());
+      const old = camSnapUrls.get(id);
+      camSnapUrls.set(id, url);
+      document.querySelectorAll(`img[data-snap="${CSS.escape(id)}"]`).forEach((img) => { img.src = url; });
+      if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
+    } catch (e) { /* 次の更新で */ }
+  }
+  function refreshSnapshots() {
+    if (S.ssOn || S.cam || document.visibilityState !== "visible") return;
+    document.querySelectorAll("img[data-snap]").forEach((img) => refreshSnapshot(img.dataset.snap));
+  }
+  function cameraTileHTML(e) {
+    const url = camSnapUrls.get(e.entity_id);
+    return `<div class="tile wide cam${isUnav(e) ? " unav" : ""}" data-entity="${esc(e.entity_id)}">${headHTML(e, false)}
+      <div class="camimg" data-set="camOpen" data-id="${esc(e.entity_id)}"><img data-snap="${esc(e.entity_id)}" alt="" ${url ? `src="${url}"` : ""}>
+      <span class="camhint">${isUnav(e) ? "カメラにつながりません" : "▶ タップで動画"}</span></div></div>`;
+  }
+  let camPc = null, camSub = null;
+  function closeCameraStream() {
+    if (camPc) { try { camPc.close(); } catch (e) { /* noop */ } camPc = null; }
+    if (camSub !== null && S.ha) { S.ha.unsub(camSub); S.ha.send({ type: "unsubscribe_events", subscription: camSub }).catch(() => {}); }
+    camSub = null;
+    const v = $("#camVideo");
+    if (v) { v.pause(); v.removeAttribute("src"); v.srcObject = null; v.load(); }
+  }
+  function closeCamera() { closeCameraStream(); S.cam = null; renderCameraBox(); }
+  async function webrtcSupported(id) {
+    try {
+      const r = await S.ha.send({ type: "camera/capabilities", entity_id: id });
+      return (r.frontend_stream_types || []).includes("web_rtc");
+    } catch (e) { const st = S.ha.states[id]; return !!(st && st.attributes.frontend_stream_type === "web_rtc"); }
+  }
+  async function startWebRtc(id, video) {
+    let ice = [];
+    try { const c = await S.ha.send({ type: "camera/webrtc/get_client_config", entity_id: id }); ice = (c.configuration && c.configuration.iceServers) || []; } catch (e) { /* 家の中なら無くてもつながる */ }
+    const pc = (camPc = new RTCPeerConnection({ iceServers: ice }));
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.addTransceiver("audio", { direction: "recvonly" });
+    const stream = new MediaStream();
+    pc.ontrack = (ev) => { stream.addTrack(ev.track); video.srcObject = stream; video.play().catch(() => {}); };
+    let session = null;
+    const queued = [];
+    const sendCand = (c) => S.ha.send({ type: "camera/webrtc/candidate", entity_id: id, session_id: session, candidate: { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex } }).catch(() => {});
+    pc.onicecandidate = (ev) => { if (!ev.candidate) return; if (session) sendCand(ev.candidate); else queued.push(ev.candidate); };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("つながるまでに時間がかかっています")), 12000);
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "connected") { clearTimeout(timer); resolve(); }
+        if (pc.connectionState === "failed") { clearTimeout(timer); reject(new Error("映像の通信がつながりませんでした")); }
+      };
+      S.ha.subscribe({ type: "camera/webrtc/offer", entity_id: id, offer: offer.sdp }, (ev) => {
+        if (ev.type === "session") { session = ev.session_id; queued.splice(0).forEach(sendCand); }
+        else if (ev.type === "answer") pc.setRemoteDescription({ type: "answer", sdp: ev.answer }).catch((e) => reject(e));
+        else if (ev.type === "candidate") { const c = typeof ev.candidate === "string" ? { candidate: ev.candidate, sdpMLineIndex: 0 } : ev.candidate; pc.addIceCandidate(c).catch(() => {}); }
+        else if (ev.type === "error") { clearTimeout(timer); reject(new Error(ev.message || ev.code)); }
+      }).then((sid) => { camSub = sid; }).catch((e) => { clearTimeout(timer); reject(e); });
+    });
+  }
+  async function playCamera() {
+    const c = S.cam;
+    if (!c) return;
+    closeCameraStream();
+    const id = c.id, mode = camModes()[id] || "auto";
+    const order = mode === "realtime" ? ["webrtc", "hls", "mjpeg"] : mode === "hls" ? ["hls", "mjpeg"] : mode === "mjpeg" ? ["mjpeg"] : ["webrtc", "hls", "mjpeg"];
+    for (const p of order.filter((x) => !c.failed.includes(x))) {
+      if (!S.cam || S.cam.id !== id) return;
+      c.playing = p; c.status = "映像を読み込んでいます…"; renderCameraBox();
+      const video = $("#camVideo"), img = $("#camImg");
+      try {
+        if (p === "webrtc") {
+          if (!(await webrtcSupported(id))) continue;
+          await startWebRtc(id, video);
+        } else if (p === "hls") {
+          const e = S.ha.states[id];
+          if (!e || ((e.attributes.supported_features || 0) & 2) === 0) continue;
+          const r = await S.ha.send({ type: "camera/stream", entity_id: id, format: "hls" });
+          if (!video.canPlayType("application/vnd.apple.mpegurl")) throw new Error("このブラウザは HLS を再生できません");
+          video.src = r.url;
+          await video.play();
+        } else {
+          const e = S.ha.states[id];
+          img.src = `/api/camera_proxy_stream/${id}?token=${encodeURIComponent((e && e.attributes.access_token) || "")}`;
+        }
+        if (S.cam && S.cam.id === id) { c.status = null; renderCameraBox(); }
+        return;
+      } catch (e) {
+        closeCameraStream();
+        c.failed.push(p);
+        c.note = `${{ webrtc: "リアルタイム", hls: "高画質", mjpeg: "簡易" }[p]}で再生できないため、ほかの方式に切り替えました（${e.message}）`;
+      }
+    }
+  }
+  function openCamera(id) { S.cam = { id, failed: [], playing: null, status: null, note: null, menu: false }; renderCameraBox(); playCamera(); }
+  function renderCameraBox() {
+    const box = $("#camBox");
+    if (!box) return;
+    const c = S.cam;
+    box.classList.toggle("hidden", !c);
+    if (!c) return;
+    const e = S.ha && S.ha.states[c.id];
+    const mode = camModes()[c.id] || "auto";
+    $("#camName").textContent = "📷 " + (e ? nameOf(e) : c.id);
+    $("#camMode").textContent = "画質：" + ({ webrtc: "リアルタイム", hls: "高画質", mjpeg: "簡易" }[c.playing] || "…") + " ▾";
+    $("#camModes").classList.toggle("hidden", !c.menu);
+    $("#camModes").innerHTML = CAM_MODES.map(([k, l, s]) => `<button class="chip${mode === k ? " sel" : ""}" data-set="camModeSel" data-id="${k}">${l}<small style="display:block;opacity:.8">${s}</small></button>`).join("");
+    $("#camVideo").classList.toggle("hidden", c.playing === "mjpeg");
+    $("#camSound").classList.toggle("hidden", c.playing === "mjpeg");
+    $("#camImg").classList.toggle("hidden", c.playing !== "mjpeg");
+    $("#camNote").textContent = c.status || c.note || "";
+    $("#camNote").classList.toggle("hidden", !(c.status || c.note));
+  }
+
+  // ================= 自宅の位置 =================
+  const LOCATION_WORDS = /近く|近所|周辺|周り|この辺|このあたり|付近|最寄|徒歩|車で|ここから|家から|うちから|距離|何分|行き方|道順|営業時間|何時まで|何時から|休み|定休|店|スーパー|コンビニ|ドラッグ|薬局|病院|クリニック|歯医者|レストラン|ランチ|カフェ|ラーメン|居酒屋|駅|バス|電車|ガソリン|銀行|郵便局|役所|公園|イベント|祭り|映画館/;
+  function withHomeLocation(text) {
+    const loc = store.get("homeLocation", "");
+    if (!loc || !LOCATION_WORDS.test(text)) return text;
+    return `${text}（参考：自宅の場所は「${loc}」です。「近く」「この辺」などはここを基準に答えてください）`;
+  }
+  async function homeFromHa() {
+    const r = await S.ha.send({ type: "get_config" });
+    if (typeof r.latitude !== "number") throw new Error("Home Assistant に自宅の位置が登録されていません");
+    const name = r.location_name && r.location_name !== "Home" ? r.location_name : null;
+    return [name, `緯度${r.latitude.toFixed(5)}・経度${r.longitude.toFixed(5)}`].filter(Boolean).join("、");
+  }
+
+  // ================= 設定の書き出し・読み込み =================
+  // ログインの情報（tokens / admin_tokens）は書き出さない
+  const SECRET_KEYS = ["tokens", "admin_tokens", "admin_user", "state", "flash", "openPage"];
+  function exportSettings() {
+    const settings = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k.startsWith("hp_") || SECRET_KEYS.includes(k.slice(3))) continue;
+      try { settings[k.slice(3)] = JSON.parse(localStorage.getItem(k)); } catch (e) { /* noop */ }
+    }
+    const blob = new Blob([JSON.stringify({ app: "homepanel-web", format: 1, exportedAt: new Date().toISOString(), settings }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    const d = new Date();
+    a.href = URL.createObjectURL(blob);
+    a.download = `homepanel-settings-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  function importSettings(file) {
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const j = JSON.parse(rd.result);
+        if (j.app !== "homepanel-web") throw new Error("ホームパネル（iPad 版）の設定ファイルではありません");
+        if (!confirm("今の設定を、このファイルの内容に置き換えますか？（ログインはそのままです）")) return;
+        for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k.startsWith("hp_") && !SECRET_KEYS.includes(k.slice(3))) localStorage.removeItem(k); }
+        Object.entries(j.settings || {}).forEach(([k, v]) => { if (!SECRET_KEYS.includes(k)) store.set(k, v); });
+        store.set("helpShown", true);
+        location.reload();
+      } catch (e) { alert("読み込めませんでした：" + e.message); }
+    };
+    rd.readAsText(file);
+  }
+
+  // ================= 音声の回答（ポップアップ） =================
+  let popupTimer = null;
+  function renderPopup() {
+    const box = $("#vpop");
+    if (!box) return;
+    const v = S.voice;
+    const show = ["proc", "speak", "done", "fail"].includes(v.type) && S.popupHidden !== v;
+    box.classList.toggle("hidden", !show);
+    if (!show) return;
+    let h = "";
+    if (v.type === "proc") h = `<div class="note">「${esc(v.heard || "")}」</div><div>考えています…${v.queued ? "（終わったら続けて聞きます）" : ""}</div>`;
+    else if (v.type === "fail") h = `<div class="warn">${esc(v.msg || "")}</div>`;
+    else h = `<div class="note">「${esc(v.heard || "")}」${v.type === "speak" ? " 🔊" : ""}</div><div class="vtext">${esc(v.reply || "完了しました")}</div>`;
+    $("#vpopBody").innerHTML = h;
+    clearTimeout(popupTimer);
+    if (v.type === "done") popupTimer = setTimeout(() => { S.popupHidden = v; renderPopup(); }, Math.min(30000, 8000 + (v.reply || "").length * 120));
+    if (v.type === "fail") popupTimer = setTimeout(() => { S.popupHidden = v; renderPopup(); }, 7000);
+  }
+
+  // ================= 設定のページ（追加分） =================
+  function settingsPageHTML(p) {
+    switch (p) {
+      case "display": {
+        const ws = S.ha ? Object.values(S.ha.states).filter((e) => e.entity_id.startsWith("weather.")) : [];
+        const w = weatherEntity();
+        return `<div class="sec">表示のユーザー（家族ごとの表示）</div>${profilesHTML()}
+          <div class="sec">配色</div>${themesHTML()}
+          ${ws.length > 1 ? `<div class="sec">天気</div>` + ws.map((x) => `<label class="row"><input type="radio" name="wx" data-set="weather" data-id="${esc(x.entity_id)}" ${w && x.entity_id === w.entity_id ? "checked" : ""}>
+            <span class="rt">${esc(nameOf(x))}<div class="sub">${esc(x.entity_id)}</div></span></label>`).join("") : ""}`;
+      }
+      case "rooms": {
+        const rs = rooms();
+        return `<div class="sec">部屋</div>
+          <label class="row"><span class="rt">部屋ごとに分けて表示する<div class="sub">Home Assistant のエリアを部屋として使います。アプリで部屋を追加したり、機器の部屋を変えたりもできます（下の「表示する機器」で機器ごとに選べます）。</div></span>
+            <input type="checkbox" data-set="groupRooms" ${S.groupRooms ? "checked" : ""}></label>
+          <div class="note">▲▼ で、ホーム画面に並べる部屋の順番を変えられます。</div>
+          ${rs.map((r, i) => `<div class="row" style="cursor:default"><button class="tbtn" data-set="roomUp" data-id="${esc(r.key)}" ${i === 0 ? "disabled" : ""}>▲</button><button class="tbtn" data-set="roomDown" data-id="${esc(r.key)}" ${i === rs.length - 1 ? "disabled" : ""}>▼</button>
+            <span class="rt">${esc(r.name)}<div class="sub">${r.ha ? "Home Assistant のエリア" : "アプリで追加した部屋"}</div></span>
+            ${r.ha ? "" : `<button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn" data-set="roomDel" data-id="${esc(r.key)}">削除</button>`}</div>`).join("")}
+          <div class="brow" style="align-items:center;margin-top:6px"><input class="search" id="newRoom" type="text" placeholder="部屋を追加（例：子ども部屋）" style="max-width:320px;margin:0">
+            <button class="tbtn" data-set="roomAdd">追加</button></div>
+          <div class="sec" id="selTitle"></div>
+          <input class="search" type="search" placeholder="名前で絞り込み" data-set="query">
+          <div><button class="tbtn" data-set="all">すべて選択</button><button class="tbtn" data-set="none">すべて解除</button></div>
+          <div id="selList"></div>`;
+      }
+      case "thermo": return `<div class="sec">温度・湿度（SwitchBot などの温度計）</div>${thermoSettingsHTML()}`;
+      case "voice": {
+        const pid = S.pipelineId || S.preferred;
+        return `<div class="sec">音声</div>
+          <label class="row"><span class="rt">呼びかけで反応する<div class="sub">Home Assistant の音声アシスタントに設定したウェイクワードで反応します。この画面を表示している間だけ待ち受けます。</div></span>
+            <input type="checkbox" data-set="wake" ${S.wake ? "checked" : ""}></label>
+          ${S.pipelines.length ? `<div class="note" style="margin-top:8px">使うアシスタント（AI の会話エージェントはここで選んだものが答えます）</div>` + S.pipelines.map((p) => `
+            <label class="row"><input type="radio" name="pl" data-set="pipeline" data-id="${esc(p.id)}" ${p.id === pid ? "checked" : ""}>
+            <span class="rt">${esc(p.name)}<div class="sub">${esc([p.id === S.preferred ? "優先" : null, p.wake ? "呼びかけ対応" : "呼びかけ未設定", p.agent || null].filter(Boolean).join("・"))}</div></span></label>`).join("") : ""}
+          ${voiceDiagHTML()}
+          <div class="sec">自宅の位置</div>
+          <div class="note">「近くのスーパーの営業時間は？」のような場所に関わる質問のときだけ、ここに入れた場所を AI に伝えて、そこを基準に答えさせます。機器の操作には使いません。</div>
+          <input type="text" class="search" id="homeLoc" value="${esc(store.get("homeLocation", ""))}" placeholder="例：東京都世田谷区三軒茶屋（町名くらいまでで十分です）">
+          <div class="brow"><button class="btn" data-set="homeLocSave">保存</button><button class="btn outline" data-set="homeLocHa">Home Assistant の自宅の位置を使う</button></div>
+          <div class="note" id="homeLocMsg"></div>`;
+      }
+      case "screensaver": return `<div class="sec">スクリーンセーバー</div>${screensaverSettingsHTML()}`;
+      case "calendar": return `<div class="sec">カレンダー（TimeTree）</div>${calendarSettingsHTML()}`;
+      case "cameras": return `<div class="sec">カメラ</div>
+        <div class="note">Home Assistant に登録したカメラを、ホーム画面に静止画（10秒ごとに更新）で表示します。タップすると全画面の動画になり、右上の「画質」で方式を選べます（カメラごとに覚えます）。</div>
+        <div class="note">・自動：使える中でいちばん遅れの少ない方式<br>・リアルタイム：遅れ1秒未満（WebRTC。Home Assistant 2024.11 以降）<br>・高画質：なめらか・数秒の遅れ（HLS）<br>・簡易：どのカメラでも見られるがコマ数少なめ</div>
+        <div class="note">※ Home Assistant を通さずにネットワークカメラ（RTSP）へ直接つなぐ機能は、ブラウザでは使えないため Android 版だけです。iPad では、カメラを Home Assistant に登録してください。</div>`;
+      case "connection": return `<div class="sec">接続</div><div class="note">このアプリのアドレス：${esc(location.origin + location.pathname)}<br>
+        ${SERVER_MODE ? "家の中の専用サーバー（Proxmox のコンテナ）から https で配信し、Home Assistant に中継しています。家の中だけで使え、音声入力も使えます。"
+          : location.protocol === "https:" ? "家の外からもこのアドレスで使えます。" : "http のアドレスです。音声入力と外出先での利用には https のアドレス（Home Assistant Cloud のリモートURL）で開いてください。"}</div>
+        <div class="note">※ ECHONET Lite の機器を Home Assistant を通さずに操作する機能と、おひさま沸き上げ（エコキュート）は、ブラウザでは使えないため Android 版だけです。</div>`;
+      case "account": return `<div class="sec">アカウント</div>${accountHTML()}`;
+      case "system": return `<div class="sec">アプリの更新</div><div data-update-slot></div>
+        <div class="sec">設定の保存</div>
+        <div class="note">表示する機器・部屋・配色・家族ごとの表示などの設定をファイルに書き出し、別の iPad や作り直したときに読み込めます。ログインの情報は含めません。</div>
+        <div class="brow"><button class="btn" data-set="exportSettings">設定を書き出す</button><button class="btn outline" data-set="importSettings">設定を読み込む</button></div>
+        <input type="file" id="importFile" accept="application/json,.json" class="hidden">`;
+    }
+    return "";
+  }
+
+  async function onNewSetting(el) {
+    const id = el.dataset.id;
+    switch (el.dataset.set) {
+      case "menu": S.settingsPage = id; openPage("settings"); return true;
+      case "menuBack": S.settingsPage = null; openPage("settings"); return true;
+      case "profile": switchProfile(id); if (S.page === "settings") openPageKeep(); return true;
+      case "profileAdd": {
+        const n = prompt("ユーザーの名前（例：パパ、ママ、子ども）");
+        if (!n || !n.trim()) return true;
+        const p = { id: "p_" + Date.now(), name: n.trim(), sections: activeProfile().sections, theme: S.theme };
+        saveProfiles(profiles().concat([p]));
+        switchProfile(p.id); openPageKeep();
+        return true;
+      }
+      case "profileRename": { const cur = activeProfile(); const n = prompt("ユーザーの名前", cur.name); if (n && n.trim()) { updateProfile(cur.id, (p) => Object.assign(p, { name: n.trim() })); renderProfileBar(); openPageKeep(); } return true; }
+      case "profileDel": {
+        const cur = activeProfile();
+        if (!confirm(`「${cur.name}」を削除しますか？`)) return true;
+        saveProfiles(profiles().filter((p) => p.id !== cur.id));
+        switchProfile(profiles()[0].id); openPageKeep();
+        return true;
+      }
+      case "secUp": case "secDown": {
+        const i = Number(id), j = el.dataset.set === "secUp" ? i - 1 : i + 1;
+        updateProfile(activeProfile().id, (p) => { const s = p.sections; if (j >= 0 && j < s.length) [s[i], s[j]] = [s[j], s[i]]; return p; });
+        openPageKeep();
+        return true;
+      }
+      case "secVis": updateProfile(activeProfile().id, (p) => { p.sections[Number(id)].visible = el.checked; return p; }); return true;
+      case "quickRun": { const e = S.ha && S.ha.states[id]; if (e) call(e, dom(e) === "automation" ? "trigger" : "turn_on"); return true; }
+      case "info": showInfo(id); return true;
+      case "infoClose": S.info = null; renderInfo(); return true;
+      case "thermoOpen": openThermo(id, 24); return true;
+      case "thermoHours": openThermo(S.thermo.key, Number(id)); return true;
+      case "thermoClose": S.thermo = null; renderThermoDialog(); return true;
+      case "thermoVis": {
+        const h = new Set(store.get("thermoHidden", []));
+        if (el.checked) h.delete(id); else h.add(id);
+        store.set("thermoHidden", [...h]); renderThermos();
+        return true;
+      }
+      case "thermoRename": $("#thermoRenameBox").innerHTML = thermoRenameHTML(id); $("#thermoName").focus(); return true;
+      case "thermoRoomName": $("#thermoName").value = id; return true;
+      case "thermoNameSave": case "thermoNameReset": {
+        const names = store.get("thermoNames", {});
+        const v = el.dataset.set === "thermoNameSave" ? $("#thermoName").value.trim() : "";
+        if (v) names[id] = v; else delete names[id];
+        store.set("thermoNames", names); renderThermos(); openPageKeep();
+        return true;
+      }
+      case "calSel": {
+        const all = calendarEntities().map((c) => c.entity_id);
+        const sel = new Set(store.get("calendars") || all);
+        if (el.checked) sel.add(id); else sel.delete(id);
+        store.set("calendars", [...sel]); loadEvents();
+        return true;
+      }
+      case "roomUp": case "roomDown": {
+        const keys = rooms().map((r) => r.key);
+        const i = keys.indexOf(id), j = el.dataset.set === "roomUp" ? i - 1 : i + 1;
+        if (i < 0 || j < 0 || j >= keys.length) return true;
+        [keys[i], keys[j]] = [keys[j], keys[i]];
+        store.set("roomOrder", keys); openPageKeep(); renderEntities();
+        return true;
+      }
+      case "homeLocSave": store.set("homeLocation", $("#homeLoc").value.trim()); $("#homeLocMsg").textContent = "保存しました"; return true;
+      case "homeLocHa":
+        try { const v = await homeFromHa(); $("#homeLoc").value = v; store.set("homeLocation", v); $("#homeLocMsg").textContent = "Home Assistant の自宅の位置を保存しました"; }
+        catch (e) { $("#homeLocMsg").textContent = e.message; }
+        return true;
+      case "camOpen": openCamera(id); return true;
+      case "camClose": closeCamera(); return true;
+      case "camMenu": if (S.cam) { S.cam.menu = !S.cam.menu; renderCameraBox(); } return true;
+      case "camSound": { const v = $("#camVideo"); v.muted = !v.muted; if (!v.muted) v.play().catch(() => {}); el.textContent = (v.muted ? "🔇" : "🔊") + " 音"; return true; }
+      case "camModeSel": { const m = camModes(); m[S.cam.id] = id; store.set("camModes", m); S.cam.failed = []; S.cam.note = null; S.cam.menu = false; playCamera(); return true; }
+      case "exportSettings": exportSettings(); return true;
+      case "importSettings": { const f = $("#importFile"); f.onchange = () => { if (f.files[0]) importSettings(f.files[0]); }; f.click(); return true; }
+      case "popClose": S.popupHidden = S.voice; renderPopup(); return true;
+      default: return false;
+    }
+  }
+
+
+  let thermoQueued = false;
+  function scheduleThermos() {
+    if (thermoQueued) return;
+    thermoQueued = true;
+    setTimeout(() => { thermoQueued = false; renderThermos(); if (S.thermo) renderThermoDialog(); }, 1000);
+  }
+
   // ================= 画面の組み立て =================
   function setConn(c) {
     S.conn = c;
@@ -2211,24 +2988,30 @@
 
   function buildMain() {
     $("#app").innerHTML = `<div class="wrap">
-      <div class="top"><span class="badge" id="badge"></span><span class="sp"></span>
-        <button class="tbtn" id="btnHelp">？ 使い方</button><button class="tbtn" id="btnTimers">⏱ タイマー</button><button class="tbtn" id="btnAuto">⏰ 自動化</button><button class="tbtn" id="btnSettings">⚙ 設定</button></div>
+      <div class="top"><span class="badge" id="badge"></span><span class="profbar" id="profileBar"></span><span class="sp"></span>
+        <button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
-      <section class="hero"><div><div class="time" id="time"></div><div class="date" id="date"></div></div><div id="weather"></div></section>
-      <section class="card voice">
-        <div class="vrow"><button class="mic" id="mic">🎤</button>
-          <div style="flex:1;min-width:0"><div class="vstatus" id="vstatus"></div><div class="vreply" id="vreply"></div><div class="vnote" id="vnote"></div></div></div>
-        <form class="tform" id="tform"><input type="text" id="tin" placeholder="文字で命令・質問する" enterkeyhint="send" autocomplete="off">
-          <button class="tbtn" type="submit">送信</button></form>
-      </section>
-      <div class="timerstrip hidden" id="timerStrip"></div>
       <div class="msg hidden" id="msg"></div>
-      <div class="roombar" id="roombar"></div>
-      <main class="grid" id="grid"></main>
-      <div class="note" id="empty" style="text-align:center;padding:32px"></div>
+      <div id="home">
+        <div data-sec="clock"><section class="hero"><div><div class="time" id="time"></div><div class="date" id="date"></div></div><div id="weather"></div>
+          <div class="vbox"><div class="vtexts"><div class="vstatus" id="vstatus"></div><div class="vnote" id="vnote"></div></div><button class="mic" id="mic">🎤</button></div></section></div>
+        <div data-sec="thermo"><div class="thermos" id="thermo"></div></div>
+        <div data-sec="calendar"><div id="cal"></div></div>
+        <div data-sec="timers"><div class="timerstrip hidden" id="timerStrip"></div></div>
+        <div data-sec="energy"><div id="energy"></div></div>
+        <div data-sec="automations"><div id="quick"></div></div>
+        <div data-sec="devices"><div class="roombar" id="roombar"></div><main class="grid" id="grid"></main>
+          <div class="note" id="empty" style="text-align:center;padding:32px"></div></div>
+      </div>
     </div>
+    <div class="vpop hidden" id="vpop"><div class="vpop-in"><button class="tbtn vpop-x" data-set="popClose">✕ 閉じる</button><div id="vpopBody"></div></div></div>
     <div class="sheet hidden" id="sheet"><div class="sheet-bg" id="sheetBg"></div>
       <div class="sheet-body"><button class="sheet-close" id="sheetClose" aria-label="閉じる">×</button><div id="sheetContent"></div></div></div>
+    <div class="dlgwrap hidden" id="info"></div>
+    <div class="dlgwrap hidden" id="thermoDlg"></div>
+    <div class="cambox hidden" id="camBox"><video id="camVideo" playsinline autoplay muted></video><img id="camImg" class="hidden" alt="">
+      <div class="cambar"><span id="camName" style="flex:1"></span><button class="tbtn" id="camSound" data-set="camSound">🔇 音</button><button class="tbtn" id="camMode" data-set="camMenu"></button><button class="tbtn" data-set="camClose">✕ 閉じる</button></div>
+      <div class="chips cammodes hidden" id="camModes"></div><div class="camnote hidden" id="camNote"></div></div>
     <div class="page hidden" id="page"></div>
     <div class="saver hidden" id="saver"><img class="ssimg" alt=""><img class="ssimg" alt="">
       <div class="ssinfo"><div id="ssTime" class="sst"></div><div id="ssDate"></div><div id="ssWeather"></div><div id="ssTimers"></div></div></div>
@@ -2244,7 +3027,6 @@
     $("#btnAuto").onclick = () => openPage("auto");
     $("#btnTimers").onclick = () => { unlockAlarm(); openPage("timers"); };
     $("#mic").onclick = onMicPressed;
-    $("#tform").onsubmit = (ev) => { ev.preventDefault(); const t = $("#tin"); sendText(t.value); t.value = ""; t.blur(); };
 
     // 設定・使い方・更新ボタン（data-set）
     document.addEventListener("click", (ev) => {
@@ -2284,8 +3066,13 @@
     }, true);
     document.addEventListener("keydown", onUserInteraction);
 
+    layoutHome();
+    renderProfileBar();
     renderClock();
     setInterval(renderClock, 1000);
+    setInterval(refreshSnapshots, 10000);
+    setInterval(loadEnergy, 10 * 60 * 1000);
+    setInterval(loadEvents, 15 * 60 * 1000);
     setInterval(checkTimers, 500);
     setInterval(checkIdle, 2000);
     renderTimers();

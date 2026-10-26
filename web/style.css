@@ -58,7 +58,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---- 音声 ---- */
 .voice { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; padding: 10px 12px; }
 .vrow { display: flex; align-items: center; gap: 14px; }
-.mic { width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--primary); font-size: 24px; flex: none; }
+.mic { width: 60px; height: 60px; border-radius: 50%; border: none; background: var(--primary); font-size: 24px; flex: none; }
 .mic.listen { background: #ef5350; animation: pulse 1.2s infinite; }
 .mic:disabled { opacity: .4; }
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239, 83, 80, .6); } 50% { box-shadow: 0 0 0 12px rgba(239, 83, 80, 0); } }
@@ -72,7 +72,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .tile { background: var(--surface2); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 6px; min-height: 92px; }
 .tile.wide { grid-column: span 2; }
-@media (max-width: 420px) { .tile.wide { grid-column: span 1; } }
+@media (max-width: 300px) { .tile.wide { grid-column: span 1; } }
 .tile.on { background: var(--pc); color: var(--on-pc); }
 .tile.unav { opacity: .45; }
 .head { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
@@ -187,3 +187,101 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .saver .ssimg.show { opacity: 1; }
 .ssinfo { position: absolute; left: 28px; bottom: calc(28px + env(safe-area-inset-bottom)); color: #fff; background: rgba(0, 0, 0, .4); border-radius: 18px; padding: 12px 20px; font-size: 20px; line-height: 1.5; }
 .ssinfo .sst { font-size: 76px; font-weight: 250; line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* ---- 音声（マイクボタンと状態だけ。答えはポップアップ） ---- */
+.hero .vbox { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.vtexts { max-width: 280px; text-align: right; }
+.vpop { position: fixed; left: 0; right: 0; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 25; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
+.vpop-in { pointer-events: auto; position: relative; background: var(--pc); color: var(--on-pc); border-radius: 20px; padding: 40px 20px 18px; width: 100%; max-width: 760px; max-height: 45vh; overflow: auto; box-shadow: 0 8px 30px rgba(0,0,0,.4); font-size: 17px; line-height: 1.6; display: flex; flex-direction: column; gap: 6px; }
+.vpop-in .note { color: inherit; opacity: .8; }
+.vpop-x { position: absolute; top: 4px; right: 6px; color: inherit; }
+.vtext { white-space: pre-line; }
+
+/* ---- 機器のアイコンと ⓘ ---- */
+.dicon { width: 38px; height: 38px; border-radius: 50%; flex: none; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--primary) 16%, transparent); color: var(--primary); }
+.dicon.on { background: var(--primary); color: var(--on-primary); }
+.ibtn { background: none; border: none; color: inherit; opacity: .75; font-size: 18px; width: 34px; height: 34px; flex: none; padding: 0; }
+.head { align-items: center; }
+
+/* ---- 上部（家族の切り替え） ---- */
+.profbar { display: flex; gap: 6px; flex-wrap: wrap; margin-left: 8px; }
+.chip.sm { padding: 4px 10px; font-size: 13px; }
+#home > div.off { display: none; }
+#home > div { margin-bottom: 8px; }
+
+/* ---- 設定のメニュー ---- */
+.menurow { width: 100%; display: flex; align-items: center; gap: 14px; text-align: left; background: var(--surface2); border: none; border-radius: var(--radius); padding: 14px 16px; margin: 0 0 8px; }
+.menurow .mi { font-size: 26px; width: 34px; text-align: center; }
+.menurow .rt { flex: 1; min-width: 0; }
+.menurow .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.menurow .chev { font-size: 24px; color: var(--muted); }
+.tbtn:disabled { opacity: .3; }
+
+/* ---- ダイアログ（ⓘ・温度計のグラフ） ---- */
+.dlgwrap { position: fixed; inset: 0; z-index: 35; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dlg-bg { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+.dlg { position: relative; background: var(--surface); border-radius: 22px; padding: 12px 20px 20px; width: 100%; max-width: 760px; max-height: 88vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.dlg .pagebar { background: var(--surface); }
+.dlg h3 { display: flex; align-items: center; gap: 8px; font-size: 20px; }
+.kv { display: flex; gap: 12px; justify-content: space-between; font-size: 14px; padding: 4px 0; border-bottom: 1px solid color-mix(in srgb, var(--outline) 50%, transparent); }
+.kv > :first-child { color: var(--muted); flex: none; }
+.kv > :last-child { text-align: right; overflow-wrap: anywhere; }
+.fl { color: var(--primary); font-weight: 600; }
+.chart { width: 100%; height: auto; }
+.chart .grid { stroke: var(--outline); stroke-width: 1; }
+.chart .lbl { fill: var(--muted); font-size: 12px; }
+
+/* ---- 温度計 ---- */
+.thermos { display: flex; flex-wrap: wrap; gap: 8px; }
+.thermo { display: flex; align-items: center; gap: 10px; background: var(--surface2); border: none; border-radius: var(--radius); padding: 10px 14px; min-width: 160px; text-align: left; }
+.thermo .lv { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.thermo .tn { display: block; font-size: 13px; color: var(--muted); }
+.thermo .tvv { display: block; font-size: 24px; font-weight: 500; }
+.thermo .tvv small { font-size: 14px; margin-left: 8px; font-weight: 400; }
+
+/* ---- 予定・電気・すぐ実行 ---- */
+.calcard { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 10px 14px; }
+.ev { display: flex; gap: 10px; font-size: 15px; }
+.ev > :first-child { color: var(--muted); min-width: 3.2em; font-variant-numeric: tabular-nums; }
+.estrip { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; padding: 10px 14px; font-size: 14px; }
+.estrip b { font-weight: 600; }
+
+/* ---- カメラ ---- */
+.tile.cam { gap: 8px; }
+.camimg { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; overflow: hidden; cursor: pointer; }
+.camimg img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camimg img:not([src]) { visibility: hidden; }
+.camhint { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 6px; }
+.cambox { position: fixed; inset: 0; z-index: 45; background: #000; }
+.cambox video, .cambox > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.cambar { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 6px; padding: calc(6px + env(safe-area-inset-top)) 12px 6px; background: rgba(0,0,0,.45); color: #fff; font-size: 18px; }
+.cambar .tbtn { color: #fff; }
+.cammodes { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 12px; right: 12px; color: #fff; }
+.cammodes .chip { border-color: rgba(255,255,255,.5); text-align: left; }
+.camnote { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.65); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 13px; max-width: 90%; }
+
+/* ---- スマートフォン（幅の狭い画面） ---- */
+@media (max-width: 600px) {
+  .wrap { padding: 8px 10px 40px; }
+  .top .tl { display: none; }
+  .top .ti { font-size: 20px; }
+  .time { font-size: 40px; }
+  .hero { gap: 6px 14px; }
+  .hero .vbox { margin-left: 0; width: 100%; justify-content: space-between; }
+  .vtexts { text-align: left; max-width: none; flex: 1; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .calcard { grid-template-columns: 1fr; gap: 8px; }
+  .thermo { min-width: 0; flex: 1 1 140px; }
+  .roomsel { max-width: 46%; }
+}
+
+/* ---- 幅の狭いタイル：アイコン・ⓘ・スイッチを1行目、名前を2行目に（縦書きのようにならないように） ---- */
+.tile { container-type: inline-size; }
+@container (max-width: 290px) {
+  .head { flex-wrap: wrap; row-gap: 4px; }
+  .head .ibtn { margin-left: auto; }
+  .head .ht { order: 5; flex-basis: 100%; }
+  .stepper { flex-wrap: wrap; }
+  .stepper .sl { flex-basis: 100%; }
+}
+.thermo .tvv { white-space: nowrap; }
