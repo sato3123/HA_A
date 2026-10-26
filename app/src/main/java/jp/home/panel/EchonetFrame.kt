@@ -133,7 +133,7 @@ fun bytesOf(vararg v: Int) = ByteArray(v.size) { (v[it] and 0xFF).toByte() }
 // ---------------- 機器の種類 ----------------
 
 /** アプリでどう扱うか */
-enum class ElKind { AIRCON, LIGHT, COVER, ONOFF, METER, SOLAR, BATTERY, READONLY }
+enum class ElKind { AIRCON, LIGHT, COVER, ONOFF, METER, SOLAR, BATTERY, WATER_HEATER, READONLY }
 
 data class ElClass(val code: Int, val name: String, val kind: ElKind)
 
@@ -158,7 +158,7 @@ val EL_CLASSES = listOf(
     ElClass(0x0143, "扇風機", ElKind.ONOFF),
     ElClass(0x027B, "床暖房", ElKind.ONOFF),
     ElClass(0x0272, "給湯器", ElKind.READONLY),
-    ElClass(0x026B, "電気温水器", ElKind.READONLY),
+    ElClass(0x026B, "エコキュート", ElKind.WATER_HEATER), // 電気温水器。おひさま沸き上げの沸き上げ操作だけに使う
     ElClass(0x026F, "電気錠", ElKind.READONLY),       // 安全のため操作しない
     ElClass(0x0288, "スマートメーター", ElKind.METER),
     ElClass(0x0279, "太陽光発電", ElKind.SOLAR),

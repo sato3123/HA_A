@@ -90,6 +90,7 @@ fun EchonetSettings(vm: MainViewModel) {
                                         when (d.cls.kind) {
                                             ElKind.READONLY -> "・表示のみ（安全のため操作しません）"
                                             ElKind.METER, ElKind.SOLAR, ElKind.BATTERY -> "・電気のカードに表示"
+                                            ElKind.WATER_HEATER -> "・おひさま沸き上げで使います"
                                             else -> ""
                                         },
                                     style = MaterialTheme.typography.bodySmall,

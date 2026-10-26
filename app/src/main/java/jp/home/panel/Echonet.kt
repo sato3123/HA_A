@@ -404,6 +404,8 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
             ElKind.METER -> listOf(0x80, 0xE7, 0xE0, 0xE1, 0xD3, 0xE3)
             ElKind.SOLAR -> listOf(0x80, 0xE0, 0xE1)
             ElKind.BATTERY -> listOf(0x80, 0xE4, 0xDA, 0xD3)
+            // 沸き上げ自動設定・沸き上げ中・残湯量・タンク容量・昼間沸き増し許可・エネルギーシフト参加・昼間沸き上げシフト時刻・沸き上げ湯温
+            ElKind.WATER_HEATER -> listOf(0x80, 0xB0, 0xB2, 0xE1, 0xE2, 0xC0, 0xC7, 0xC9, 0xCA, 0xB3)
             ElKind.READONLY -> listOf(0x80)
         }
         // 機器が「読める」と言っているものだけ（一覧が取れなかったときは全部試す）
@@ -436,6 +438,14 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         if (r.esv == Esv.SETC_SNA) return "機器が操作を受け付けませんでした"
         refresh(d.key)
         return null
+    }
+
+    /** 決まったプロパティを直接設定する（おひさま沸き上げ用。エコキュートの沸き上げに関する項目だけ） */
+    suspend fun setWaterHeater(key: String, props: List<Prop>): String? = withContext(Dispatchers.IO) {
+        val d = devices.value[key] ?: return@withContext "エコキュートが見つかりません"
+        if (d.cls.kind != ElKind.WATER_HEATER) return@withContext "エコキュートではありません"
+        val safe = setOf(0xB0, 0xC0, 0xC7, 0xC9, 0xCA)
+        set(d, props.filter { it.epc in safe })
     }
 
     /**

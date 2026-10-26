@@ -274,7 +274,12 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 HomeSection.CALENDAR -> item(span = { full(this) }) { CalendarStrip(vm, onOpen = { showCalendar = true }) }
                 HomeSection.TIMERS -> item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
                 HomeSection.AUTOMATIONS -> item(span = { full(this) }) { AutomationQuick(vm) }
-                HomeSection.ENERGY -> item(span = { full(this) }) { EnergyStrip(vm, onOpen = { showEnergy = true }) }
+                HomeSection.ENERGY -> item(span = { full(this) }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EnergyStrip(vm, onOpen = { showEnergy = true })
+                        EcoCuteCard(vm)
+                    }
+                }
                 HomeSection.DEVICES -> {
                     if (entities.isEmpty()) {
                         item(span = { full(this) }) {

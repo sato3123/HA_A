@@ -1400,6 +1400,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val elBusy = MutableStateFlow(false)
     val elLive = MutableStateFlow(ElLive(null, null, null))
     val elDiagnostics = MutableStateFlow<String?>(null)
+    private var solarStarted = false
 
     /** Home Assistant の機器と ECHONET Lite の機器を1つの一覧にする */
     private fun mergeEntities() {
@@ -1434,6 +1435,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch { echonet.status.collect { elStatus.value = it } }
         viewModelScope.launch { echonet.diagnostics.collect { elDiagnostics.value = it } }
+        if (!solarStarted) {
+            solarStarted = true
+            startSolarHeat()
+        }
         // 30秒ごとに状態を読み直す（機器からの通知があればすぐ反映）
         viewModelScope.launch {
             while (isActive && elEnabled.value) {
@@ -1586,6 +1591,245 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 energyStatus.value = "エネルギーの記録を読めませんでした：${e.message}"
             }
         }
+    }
+
+    // ================= おひさま沸き上げ（エコキュート） =================
+    //
+    // ・前の日の夜（20時以降）に翌日の天気予報を見て、晴れならエコキュートの「エネルギーシフト」に参加させ、
+    //   夜の沸き上げを昼（設定した時刻）にずらす。晴れでなければ参加をやめ、ふつうに夜に沸かす。
+    // ・昼の時間帯に太陽光の電気が余っている（売電している）ときは、沸き増しを始める。
+    //   余らなくなったら、自動の沸き上げに戻す。
+    // ・お湯の残りが少ないときは止めない（自動に戻すだけで、沸き上げを止める操作はしない）。
+
+    data class SolarHeatView(
+        val device: ElDevice?,
+        val remainL: Int?, val tankL: Int?, val heating: Boolean?, val manual: Boolean?,
+        val shift: Boolean?, val shiftHour: Int?,
+        val surplusW: Double?, val sensorName: String?,
+        val canManual: Boolean, val canShift: Boolean,
+        val status: String,
+    )
+
+    val shEnabled = MutableStateFlow(prefs.shEnabled)
+    val shDevice = MutableStateFlow(prefs.shDevice)
+    val shStart = MutableStateFlow(prefs.shStartHour)
+    val shEnd = MutableStateFlow(prefs.shEndHour)
+    val shThreshold = MutableStateFlow(prefs.shThresholdW)
+    val shSensor = MutableStateFlow(prefs.shSensor)
+    val shInvert = MutableStateFlow(prefs.shInvert)
+    val shShift = MutableStateFlow(prefs.shShift)
+    val shLog = MutableStateFlow(prefs.shLog.split("\n").filter { it.isNotBlank() })
+    val solarHeat = MutableStateFlow<SolarHeatView?>(null)
+
+    private var shByUs = false            // いまの沸き増しはこのアプリが始めたもの
+    private var shOverMinutes = 0         // 余剰が続いている分数
+    private var shUnderMinutes = 0        // 余剰が無い分数
+    private var shStatus = "準備中"
+    private var gridOutIds: List<String>? = null
+    private val surplusSamples = ArrayDeque<Pair<Long, Double>>() // 電力量センサーから余剰電力を計算するための記録
+
+    fun setSolarHeat(
+        enabled: Boolean? = null, device: String? = null, start: Int? = null, end: Int? = null,
+        threshold: Int? = null, sensor: String? = null, invert: Boolean? = null, shift: Boolean? = null,
+    ) {
+        enabled?.let { prefs.shEnabled = it; shEnabled.value = it }
+        device?.let { prefs.shDevice = it; shDevice.value = it }
+        start?.let { prefs.shStartHour = it; shStart.value = it }
+        end?.let { prefs.shEndHour = it; shEnd.value = it }
+        threshold?.let { prefs.shThresholdW = it; shThreshold.value = it }
+        sensor?.let { prefs.shSensor = it; shSensor.value = it; surplusSamples.clear() }
+        invert?.let { prefs.shInvert = it; shInvert.value = it }
+        shift?.let { prefs.shShift = it; shShift.value = it; prefs.shPlanDate = "" } // 次の見直しで反映
+        if (enabled == false && shByUs) viewModelScope.launch { ecoAuto("おひさま沸き上げをオフにしたため") }
+        updateSolarView()
+    }
+
+    private fun shAddLog(msg: String) {
+        val t = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("M/d H:mm"))
+        val next = (listOf("$t　$msg") + shLog.value).take(40)
+        shLog.value = next
+        prefs.shLog = next.joinToString("\n")
+        addLog("おひさま：$msg")
+    }
+
+    /** 使うエコキュート（選んでいなければ最初に見つかったもの） */
+    private fun ecoDevice(): ElDevice? {
+        val list = elDevices.value.filter { it.cls.kind == ElKind.WATER_HEATER }
+        return list.firstOrNull { it.key == shDevice.value } ?: list.firstOrNull()
+    }
+
+    val waterHeaters: List<ElDevice> get() = elDevices.value.filter { it.cls.kind == ElKind.WATER_HEATER }
+
+    private fun ElDevice.canSet(epc: Int) = setMap.isEmpty() || epc in setMap
+
+    /** 余剰電力のセンサーの候補（電力 W/kW と、電力量 kWh） */
+    fun surplusSensorCandidates(): List<Entity> = allStates.value.values.filter { e ->
+        e.domain == "sensor" && e.attributes.optString("unit_of_measurement").lowercase() in setOf("w", "kw", "wh", "kwh")
+    }.sortedBy { it.name }
+
+    private fun surplusSensorId(): String? = shSensor.value.ifBlank { gridOutIds?.firstOrNull() }
+
+    /** いまの余剰電力（W）。売電していないときは 0 付近。分からなければ null */
+    private fun readSurplusW(): Double? {
+        val id = surplusSensorId() ?: return null
+        val e = allStates.value[id] ?: return null
+        val v = e.state.toDoubleOrNull() ?: return null
+        val sign = if (shInvert.value) -1.0 else 1.0
+        return when (e.attributes.optString("unit_of_measurement").lowercase()) {
+            "w" -> v * sign
+            "kw" -> v * 1000 * sign
+            "wh", "kwh" -> {
+                // 売電の電力量（増えていく値）から、最近の平均の電力を計算する
+                val kwh = if (e.attributes.optString("unit_of_measurement").lowercase() == "wh") v / 1000 else v
+                val now = System.currentTimeMillis()
+                if (surplusSamples.lastOrNull()?.second != kwh || surplusSamples.isEmpty()) surplusSamples.addLast(now to kwh)
+                while (surplusSamples.size > 2 && now - surplusSamples.first().first > 40 * 60_000L) surplusSamples.removeFirst()
+                val first = surplusSamples.first()
+                val hours = (now - first.first) / 3_600_000.0
+                // スマートメーターは30分ごとにしか増えないことがあるので、5分以上の記録で計算する
+                if (hours < 5.0 / 60) null else ((kwh - first.second) / hours * 1000).coerceAtLeast(0.0)
+            }
+            else -> null
+        }
+    }
+
+    private fun tomorrowSunny(): Boolean? {
+        val tomorrow = LocalDate.now().plusDays(1)
+        val f = forecast.value.firstOrNull { j ->
+            runCatching { java.time.OffsetDateTime.parse(j.optString("datetime")).atZoneSameInstant(ZoneId.systemDefault()).toLocalDate() }
+                .getOrNull() == tomorrow
+        } ?: return null
+        return f.optString("condition") in setOf("sunny", "partlycloudy", "clear-night")
+    }
+
+    private suspend fun ecoSet(d: ElDevice, props: List<Prop>, what: String): Boolean {
+        val err = echonet.setWaterHeater(d.key, props)
+        if (err != null) shAddLog("$what できませんでした（$err）") else shAddLog(what)
+        return err == null
+    }
+
+    /** 自動の沸き上げに戻す（このアプリが始めた沸き増しを終える） */
+    private suspend fun ecoAuto(reason: String) {
+        val d = ecoDevice() ?: return
+        if (d.canSet(0xB0)) ecoSet(d, listOf(Prop(0xB0, bytesOf(0x41))), "自動の沸き上げに戻しました（$reason）")
+        shByUs = false
+    }
+
+    fun ecoManualStart() = viewModelScope.launch {
+        val d = ecoDevice() ?: return@launch
+        if (d.canSet(0xC0)) echonet.setWaterHeater(d.key, listOf(Prop(0xC0, bytesOf(0x41))))
+        if (ecoSet(d, listOf(Prop(0xB0, bytesOf(0x42))), "手動で沸き増しを始めました")) shByUs = false
+        updateSolarView()
+    }
+
+    fun ecoBackToAuto() = viewModelScope.launch {
+        ecoAuto("手動の操作")
+        updateSolarView()
+    }
+
+    private fun startSolarHeat() {
+        viewModelScope.launch {
+            while (isActive) {
+                try {
+                    solarTick()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    shStatus = "エラー：${e.message}"
+                }
+                updateSolarView()
+                delay(60_000)
+            }
+        }
+    }
+
+    private suspend fun solarTick() {
+        if (!elEnabled.value) { shStatus = "ECHONET Lite がオフです（⚙ 設定 →「ECHONET Lite」）"; return }
+        val d0 = ecoDevice() ?: run { shStatus = "エコキュートが見つかりません（⚙ 設定 →「ECHONET Lite」で「機器を探す」）"; return }
+        echonet.refresh(d0.key)
+        if (gridOutIds == null) {
+            client?.let { c ->
+                runCatching {
+                    gridOutIds = parseEnergyPrefs(c.request(JSONObject().put("type", "energy/get_prefs")).optJSONObject("result") ?: JSONObject()).gridOut
+                }
+            }
+        }
+        val surplus = readSurplusW()
+        if (!shEnabled.value) { shStatus = "おひさま沸き上げはオフです"; return }
+        val d = ecoDevice() ?: return
+        val now = java.time.LocalTime.now()
+        val today = LocalDate.now().toString()
+
+        // 1. 前の日の夜：翌日の天気で、夜の沸き上げを昼にずらすか決める
+        if (shShift.value && now.hour >= 20 && prefs.shPlanDate != today && d.canSet(0xC7)) {
+            when (tomorrowSunny()) {
+                true -> {
+                    val props = mutableListOf(Prop(0xC7, bytesOf(0x41)))
+                    if (d.canSet(0xC9)) props += Prop(0xC9, bytesOf(0x01))
+                    if (d.canSet(0xCA)) props += Prop(0xCA, bytesOf(shStart.value.coerceIn(9, 17)))
+                    ecoSet(d, props, "明日は晴れの予報：夜の沸き上げを減らして、${shStart.value}時から昼に沸かします")
+                    prefs.shPlanDate = today
+                }
+                false -> {
+                    val props = mutableListOf(Prop(0xC7, bytesOf(0x42)))
+                    if (d.canSet(0xCA)) props += Prop(0xCA, bytesOf(0x00))
+                    ecoSet(d, props, "明日は晴れない予報：いつもどおり夜に沸かします")
+                    prefs.shPlanDate = today
+                }
+                null -> {} // 予報がまだ無い。次の分にもう一度
+            }
+        }
+
+        // 2. 昼：余った電気で沸き増し
+        val inWindow = now.hour >= shStart.value && now.hour < shEnd.value
+        val heating = d.props[0xB2]?.u8()?.let { it == 0x41 }
+        val remain = d.props[0xE1]?.u16()
+        val tank = d.props[0xE2]?.u16()
+        val full = remain != null && tank != null && tank > 0 && remain * 100 / tank >= 95
+        val th = shThreshold.value
+        if (!inWindow) {
+            shOverMinutes = 0; shUnderMinutes = 0
+            if (shByUs) ecoAuto("昼の時間帯が終わったため")
+            shStatus = "待機中（${shStart.value}時〜${shEnd.value}時に、余った電気で沸かします）"
+            return
+        }
+        if (surplus == null) {
+            shStatus = "余った電気の量が分かりません（⚙ 設定 →「おひさま沸き上げ」でセンサーを選んでください）"
+            return
+        }
+        if (!shByUs) {
+            shOverMinutes = if (surplus >= th) shOverMinutes + 1 else 0
+            shStatus = "昼の時間帯：余剰 ${(surplus / 100).toInt() / 10.0}kW（${th / 1000.0}kW 以上が3分続くと沸き増し）"
+            if (shOverMinutes >= 3 && heating != true && !full && d.canSet(0xB0)) {
+                if (d.canSet(0xC0)) echonet.setWaterHeater(d.key, listOf(Prop(0xC0, bytesOf(0x41))))
+                if (ecoSet(d, listOf(Prop(0xB0, bytesOf(0x42))), "余った電気（${(surplus / 100).toInt() / 10.0}kW）で沸き増しを始めました")) {
+                    shByUs = true; shUnderMinutes = 0
+                }
+            }
+        } else {
+            // 沸き増し中はエコキュートが電気を使うので、売電がほぼ無くなった状態が続いたら終える
+            shUnderMinutes = if (surplus < 100) shUnderMinutes + 1 else 0
+            shStatus = "余った電気で沸き増し中（余剰 ${(surplus / 100).toInt() / 10.0}kW）"
+            if (full) ecoAuto("お湯がいっぱいになったため")
+            else if (shUnderMinutes >= 15) ecoAuto("余った電気が無くなったため")
+        }
+    }
+
+    private fun updateSolarView() {
+        val d = ecoDevice()
+        val id = surplusSensorId()
+        solarHeat.value = SolarHeatView(
+            device = d,
+            remainL = d?.props?.get(0xE1)?.u16(), tankL = d?.props?.get(0xE2)?.u16(),
+            heating = d?.props?.get(0xB2)?.u8()?.let { it == 0x41 },
+            manual = d?.props?.get(0xB0)?.u8()?.let { it == 0x42 },
+            shift = d?.props?.get(0xC7)?.u8()?.let { it == 0x41 },
+            shiftHour = d?.props?.get(0xCA)?.u8()?.takeIf { it in 1..23 },
+            surplusW = runCatching { readSurplusW() }.getOrNull(),
+            sensorName = id?.let { allStates.value[it]?.name ?: it },
+            canManual = d?.canSet(0xB0) == true, canShift = d?.canSet(0xC7) == true,
+            status = shStatus,
+        )
     }
 
     // ================= 設定の書き出し・読み込み =================

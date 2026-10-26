@@ -103,6 +103,42 @@ class UiPrefs(context: Context) {
         get() = readMap("camera_modes")
         set(v) = writeMap("camera_modes", v)
 
+    // ---- おひさま沸き上げ（エコキュート） ----
+    var shEnabled: Boolean
+        get() = p.getBoolean("sh_enabled", false)
+        set(v) = p.edit().putBoolean("sh_enabled", v).apply()
+    var shDevice: String
+        get() = p.getString("sh_device", "") ?: ""
+        set(v) = p.edit().putString("sh_device", v).apply()
+    var shStartHour: Int
+        get() = p.getInt("sh_start", 10)
+        set(v) = p.edit().putInt("sh_start", v).apply()
+    var shEndHour: Int
+        get() = p.getInt("sh_end", 15)
+        set(v) = p.edit().putInt("sh_end", v).apply()
+    /** 沸き増しを始める余剰電力（W） */
+    var shThresholdW: Int
+        get() = p.getInt("sh_threshold", 1200)
+        set(v) = p.edit().putInt("sh_threshold", v).apply()
+    /** 余剰電力を読むセンサー（空 = Home Assistant のエネルギーの売電） */
+    var shSensor: String
+        get() = p.getString("sh_sensor", "") ?: ""
+        set(v) = p.edit().putString("sh_sensor", v).apply()
+    /** 電力センサーの向きを逆にする（買電がプラス・売電がマイナスのセンサー用） */
+    var shInvert: Boolean
+        get() = p.getBoolean("sh_invert", false)
+        set(v) = p.edit().putBoolean("sh_invert", v).apply()
+    /** 前の日の夜に天気予報を見て、晴れなら夜の沸き上げを昼にずらす */
+    var shShift: Boolean
+        get() = p.getBoolean("sh_shift", true)
+        set(v) = p.edit().putBoolean("sh_shift", v).apply()
+    var shPlanDate: String
+        get() = p.getString("sh_plan_date", "") ?: ""
+        set(v) = p.edit().putString("sh_plan_date", v).apply()
+    var shLog: String
+        get() = p.getString("sh_log", "") ?: ""
+        set(v) = p.edit().putString("sh_log", v).apply()
+
     /** 部屋の並び順（部屋の key の並び） */
     var roomOrder: List<String>
         get() = (p.getString("room_order", "") ?: "").split("\n").filter { it.isNotBlank() }
