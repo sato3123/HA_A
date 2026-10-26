@@ -2,6 +2,10 @@
 
 package jp.home.panel
 
+import androidx.compose.foundation.layout.heightIn
+
+import androidx.compose.foundation.clickable
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -43,6 +47,11 @@ fun EchonetSettings(vm: MainViewModel) {
     var ipInput by rememberSaveable { mutableStateOf("") }
     var ipError by remember { mutableStateOf<String?>(null) }
     var rename by remember { mutableStateOf<ElDevice?>(null) }
+    var linking by remember { mutableStateOf<ElDevice?>(null) }
+    val links by vm.elLinks.collectAsState()
+    val mode by vm.ctlMode.collectAsState()
+    val states by vm.allStates.collectAsState()
+    var linkMsg by remember { mutableStateOf<String?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SwitchRow(
@@ -96,6 +105,9 @@ fun EchonetSettings(vm: MainViewModel) {
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
+                            if (d.haDomain in SUPPORTED_DOMAINS) {
+                                TextButton(onClick = { linking = d }) { Text(if (links.containsKey(d.entityId)) "🔗 連携中" else "🔗 連携") }
+                            }
                             TextButton(onClick = { rename = d }) { Text("名前") }
                             TextButton(onClick = { vm.removeEl(d.key) }) { Text("削除") }
                         }
@@ -105,6 +117,34 @@ fun EchonetSettings(vm: MainViewModel) {
                     "操作できる機器は、ホーム画面の機器の一覧に一緒に並びます。「表示する機器」で表示・非表示や部屋を変えられます。",
                     style = MaterialTheme.typography.bodySmall,
                 )
+
+                // ---- Home Assistant の機器との連携（家の中は ECHONET Lite、外出先は Home Assistant） ----
+                Text("Home Assistant の機器との連携", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "ECHONET Lite の機器を Home Assistant の同じ機器と「🔗 連携」すると、ホーム画面では1つにまとまり、" +
+                        "家の中では ECHONET Lite で直接（速く、Home Assistant が止まっていても動く）、外出先では Home Assistant 経由で操作します。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.OutlinedButton(onClick = {
+                        val n = vm.autoLinkEl()
+                        linkMsg = if (n > 0) "${n}台を自動で連携しました。違っていれば「🔗」から直してください。" else "自動で連携できる機器はありませんでした。「🔗 連携」から選んでください。"
+                    }) { Text("自動で連携") }
+                    Text("連携中：${links.size}台", style = MaterialTheme.typography.bodySmall)
+                }
+                linkMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                Text("操作のしかた", style = MaterialTheme.typography.labelMedium)
+                listOf(
+                    "auto" to "自動：家の中は ECHONET Lite、外出先は Home Assistant（おすすめ）",
+                    "echonet" to "いつも ECHONET Lite（家の中だけ）",
+                    "ha" to "いつも Home Assistant（つながらないときだけ ECHONET Lite）",
+                ).forEach { (k, t) ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { vm.setCtlMode(k) }) {
+                        androidx.compose.material3.RadioButton(selected = mode == k, onClick = { vm.setCtlMode(k) })
+                        Text(t, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Text("ホーム画面の上部の「操作：…」でも切り替えられます。", style = MaterialTheme.typography.bodySmall)
             }
 
             Text("見つからない機器を IP アドレスで追加", style = MaterialTheme.typography.labelLarge)
@@ -139,6 +179,36 @@ fun EchonetSettings(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+    }
+
+    linking?.let { d ->
+        val cands = remember(d.key) { vm.linkCandidates(d) }
+        AlertDialog(
+            onDismissRequest = { linking = null },
+            title = { Text("「${d.name}」と連携する機器") },
+            text = {
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    item {
+                        Text("Home Assistant の同じ機器を選んでください（名前が似ている順）。", style = MaterialTheme.typography.bodySmall)
+                    }
+                    items(cands.size) { i ->
+                        val e = cands[i]
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { vm.linkEl(d.entityId, e.entityId); linking = null }) {
+                            androidx.compose.material3.RadioButton(selected = links[d.entityId] == e.entityId, onClick = { vm.linkEl(d.entityId, e.entityId); linking = null })
+                            Column {
+                                Text(e.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(e.entityId, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    if (cands.isEmpty()) item { Text("同じ種類の機器が Home Assistant にありません。", style = MaterialTheme.typography.bodyMedium) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { linking = null }) { Text("閉じる") } },
+            dismissButton = {
+                if (links.containsKey(d.entityId)) TextButton(onClick = { vm.linkEl(d.entityId, null); linking = null }) { Text("連携を解除") }
+            },
+        )
     }
 
     rename?.let { d ->

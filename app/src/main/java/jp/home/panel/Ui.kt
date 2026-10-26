@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -252,6 +253,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 ConnectionBadge(conn, route, showLabel = !compact)
                 if (profiles.size > 1) ProfileSwitcher(profiles, profile) { vm.switchProfile(it) }
                 Spacer(Modifier.weight(1f))
+                CtlModeButton(vm, compact)
                 if (!clockShown) mic()
                 TopButton("？", "使い方", compact) { showHelp = true }
                 TopButton("⏱", "タイマー", compact) { showTimers = true }
@@ -363,6 +365,48 @@ private fun TopButton(icon: String, label: String, compact: Boolean, onClick: ()
         }
     } else {
         TextButton(onClick = onClick) { Text("$icon $label") }
+    }
+}
+
+/** 操作の経路の切り替え（対応付けた機器があるときだけ出す） */
+@Composable
+private fun CtlModeButton(vm: MainViewModel, compact: Boolean) {
+    val links by vm.elLinks.collectAsState()
+    val mode by vm.ctlMode.collectAsState()
+    val el by vm.elEnabled.collectAsState()
+    val route by vm.route.collectAsState()
+    val all by vm.allEntities.collectAsState()
+    if (!el || links.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    val now = if (all.any { it.attributes.optString("via") == "echonet" }) "🏠 ECHONET" else "☁ HA"
+    TextButton(onClick = { open = true }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+        Text(if (compact) now.take(2) else "操作：" + when (mode) { "ha" -> "HA"; "echonet" -> "ECHONET"; else -> "自動" } + "（$now）",
+            style = MaterialTheme.typography.labelLarge)
+    }
+    if (open) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("機器の操作のしかた") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("いまは" + (if (route?.remote == true) "外出先" else "家の中") + "です。対応付けた機器（${links.size}台）の操作のしかたを選びます。", style = MaterialTheme.typography.bodySmall)
+                    listOf(
+                        Triple("auto", "自動（おすすめ）", "家の中は ECHONET Lite で直接、外出先は Home Assistant 経由"),
+                        Triple("echonet", "いつも ECHONET Lite", "家の中で、Home Assistant を通さずに操作（外出先では操作できません）"),
+                        Triple("ha", "いつも Home Assistant", "Home Assistant につながらないときだけ ECHONET Lite"),
+                    ).forEach { (k, t, sub) ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { vm.setCtlMode(k); open = false }) {
+                            androidx.compose.material3.RadioButton(selected = mode == k, onClick = { vm.setCtlMode(k); open = false })
+                            Column {
+                                Text(t, style = MaterialTheme.typography.bodyLarge)
+                                Text(sub, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { open = false }) { Text("閉じる") } },
+        )
     }
 }
 

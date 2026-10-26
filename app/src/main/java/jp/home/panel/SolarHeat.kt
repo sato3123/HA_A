@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -71,6 +72,18 @@ fun EcoCuteCard(vm: MainViewModel) {
                 "☀ おひさま沸き上げ：" + if (enabled) s.status else "オフ",
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (enabled) s.plan?.let { p ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        (if (p.ok) "✓ " else "✕ ") + "毎日の設定（${planTime(p.at)}）：" + p.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (p.ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (!p.ok) TextButton(onClick = { vm.retrySolarPlan() }) { Text("もう一度設定") }
+                }
+            }
+            if (enabled && s.history.size >= 2) SurplusChart(s.history, Modifier.fillMaxWidth().height(48.dp))
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
@@ -96,6 +109,8 @@ fun SolarHeatSettings(vm: MainViewModel) {
     val invert by vm.shInvert.collectAsState()
     val shift by vm.shShift.collectAsState()
     val log by vm.shLog.collectAsState()
+    val planHour by vm.shPlanHour.collectAsState()
+    val source by vm.shSource.collectAsState()
     val view by vm.solarHeat.collectAsState()
     val elOn by vm.elEnabled.collectAsState()
     var pickSensor by remember { mutableStateOf(false) }
@@ -116,6 +131,28 @@ fun SolarHeatSettings(vm: MainViewModel) {
             Text("先に ⚙ 設定 →「ECHONET Lite」をオンにして、「機器を探す」でエコキュートを見つけてください。", color = MaterialTheme.colorScheme.error)
         }
         SwitchRow("おひさま沸き上げを使う", enabled, sub = view?.status) { vm.setSolarHeat(enabled = it) }
+
+        // 毎日の設定の結果と、手動でのやり直し
+        Text("毎日の設定", style = MaterialTheme.typography.labelLarge)
+        val plan = view?.plan
+        Text(
+            if (plan == null) "まだ設定していません（毎日 ${planHour}時に、翌日の天気予報を見て設定します）"
+            else (if (plan.ok) "✓ " else "✕ ") + planTime(plan.at) + "　" + plan.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (plan != null && !plan.ok) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        )
+        Text("毎日 ${planHour}時に設定して、読み直して確かめます。うまくいかなければ10分ごとに自動でやり直し、朝7時にも設定が残っているか確かめます。", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { vm.retrySolarPlan() }, enabled = enabled) { Text(if (plan != null && !plan.ok) "もう一度設定する" else "今すぐ設定する") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("設定する時刻", modifier = Modifier.padding(end = 8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(18, 19, 20, 21, 22).forEach { h ->
+                    FilterChip(selected = planHour == h, onClick = { vm.setSolarHeat(planHour = h) }, label = { Text("${h}時") }, colors = chipColors)
+                }
+            }
+        }
 
         // エコキュート
         Text("エコキュート", style = MaterialTheme.typography.labelLarge)
@@ -169,8 +206,27 @@ fun SolarHeatSettings(vm: MainViewModel) {
         }
         Text("エコキュートが沸かすときの電力（多くの機種で 1〜1.5kW）より少し多めにすると、電気を買わずに沸かせます。", style = MaterialTheme.typography.bodySmall)
 
-        // 余剰電力のセンサー
-        Text("余った電気（売電）を読むセンサー", style = MaterialTheme.typography.labelLarge)
+        // 余剰電力の読み取り先
+        Text("売電の量の読み取り先", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("auto" to "自動", "meter" to "スマートメーター（ECHONET Lite）", "ha" to "Home Assistant のセンサー").forEach { (k, l) ->
+                FilterChip(selected = source == k, onClick = { vm.setSolarHeat(source = k) }, label = { Text(l) }, colors = chipColors)
+            }
+        }
+        Text(
+            (if (vm.hasMeter) "スマートメーターが見つかりました。15秒ごとに売電・買電をリアルタイムに読み、沸き増し中に電気を買い始めたら3分で自動に戻します。"
+            else "スマートメーター（ECHONET Lite の低圧スマート電力量メータ）は見つかっていません。HEMS（AiSEG2 など）がスマートメーターとつながっていれば、「機器を探す」で見つかります。") +
+                "「自動」は、スマートメーターがあればそれを、なければ Home Assistant のセンサーを使います。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "いま：" + (view?.surplusW?.let { if (it >= 0) "売電 ${(it / 100).toInt() / 10.0}kW" else "買電 ${(-it / 100).toInt() / 10.0}kW" } ?: "－") +
+                (view?.sensorName?.let { "（$it）" } ?: ""),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        view?.history?.takeIf { it.size >= 2 }?.let { SurplusChart(it, Modifier.fillMaxWidth().height(80.dp)) }
+
+        Text("Home Assistant のセンサー（読み取り先が Home Assistant のとき）", style = MaterialTheme.typography.labelLarge)
         Text(
             (if (sensor.isBlank()) "自動（Home Assistant のエネルギーの売電）：" else "") + (view?.sensorName ?: "見つかりません") +
                 (view?.surplusW?.let { "　いま ${(it / 100).toInt() / 10.0}kW" } ?: ""),
@@ -195,7 +251,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
 
         Text("動作の記録", style = MaterialTheme.typography.labelLarge)
         if (log.isEmpty()) Text("まだありません", style = MaterialTheme.typography.bodySmall)
-        log.take(15).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+        log.take(25).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 
     if (pickSensor) {
@@ -223,3 +279,26 @@ fun SolarHeatSettings(vm: MainViewModel) {
     }
 }
 
+
+private fun planTime(ms: Long): String =
+    java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("M/d H:mm"))
+
+/** 直近1時間の売電（上・緑）と買電（下・赤）の変化 */
+@Composable
+private fun SurplusChart(pts: List<Pair<Long, Double>>, modifier: Modifier) {
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    androidx.compose.foundation.Canvas(modifier) {
+        val end = System.currentTimeMillis()
+        val start = end - 3_600_000L
+        val maxAbs = (pts.maxOf { kotlin.math.abs(it.second) }).coerceAtLeast(1000.0)
+        val mid = size.height / 2
+        fun x(t: Long) = size.width * ((t - start).toFloat() / (end - start)).coerceIn(0f, 1f)
+        fun y(v: Double) = mid - (v / maxAbs).toFloat() * (mid - 2)
+        drawLine(grid, androidx.compose.ui.geometry.Offset(0f, mid), androidx.compose.ui.geometry.Offset(size.width, mid), 1f)
+        for (i in 1 until pts.size) {
+            val a = pts[i - 1]; val b = pts[i]
+            val c = if (b.second >= 0) androidx.compose.ui.graphics.Color(0xFF66BB6A) else androidx.compose.ui.graphics.Color(0xFFEF5350)
+            drawLine(c, androidx.compose.ui.geometry.Offset(x(a.first), y(a.second)), androidx.compose.ui.geometry.Offset(x(b.first), y(b.second)), 3f)
+        }
+    }
+}

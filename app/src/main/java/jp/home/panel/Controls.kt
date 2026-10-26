@@ -130,7 +130,14 @@ fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
     }
     val names: @Composable (Modifier) -> Unit = { m ->
         Column(m) {
-            Text(domainLabel(e.domain), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                domainLabel(e.domain) + when {
+                    e.attributes.optString("via") == "echonet" -> "・🏠 直接"
+                    e.attributes.optBoolean("echonet") -> "・ECHONET"
+                    else -> ""
+                },
+                style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 e.name,
                 style = if (large) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleMedium,

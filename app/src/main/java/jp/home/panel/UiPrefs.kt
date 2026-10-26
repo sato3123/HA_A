@@ -132,12 +132,30 @@ class UiPrefs(context: Context) {
     var shShift: Boolean
         get() = p.getBoolean("sh_shift", true)
         set(v) = p.edit().putBoolean("sh_shift", v).apply()
-    var shPlanDate: String
-        get() = p.getString("sh_plan_date", "") ?: ""
-        set(v) = p.edit().putString("sh_plan_date", v).apply()
+    /** 毎日の設定をする時刻（時） */
+    var shPlanHour: Int
+        get() = p.getInt("sh_plan_hour", 20)
+        set(v) = p.edit().putInt("sh_plan_hour", v).apply()
+    /** 余剰電力の読み取り先：auto / meter / ha */
+    var shSource: String
+        get() = p.getString("sh_source", "auto") ?: "auto"
+        set(v) = p.edit().putString("sh_source", v).apply()
+    /** 毎日の設定の結果（JSON） */
+    var shPlanJson: String?
+        get() = p.getString("sh_plan", null)
+        set(v) = p.edit().putString("sh_plan", v).apply()
     var shLog: String
         get() = p.getString("sh_log", "") ?: ""
         set(v) = p.edit().putString("sh_log", v).apply()
+
+    /** ECHONET Lite の機器と Home Assistant の機器の対応（ECHONET の entity_id → Home Assistant の entity_id） */
+    var elLinks: Map<String, String>
+        get() = readMap("el_links")
+        set(v) = writeMap("el_links", v)
+    /** 操作の経路：auto（家の中は ECHONET Lite、外出先は Home Assistant）/ ha / echonet */
+    var ctlMode: String
+        get() = p.getString("ctl_mode", "auto") ?: "auto"
+        set(v) = p.edit().putString("ctl_mode", v).apply()
 
     /** 部屋の並び順（部屋の key の並び） */
     var roomOrder: List<String>
