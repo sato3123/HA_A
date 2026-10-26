@@ -1748,7 +1748,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val shLog = MutableStateFlow(prefs.shLog.split("\n").filter { it.isNotBlank() })
     val solarHeat = MutableStateFlow<SolarHeatView?>(null)
     val shWhere = MutableStateFlow(prefs.shWhere)
-    val shServer = MutableStateFlow(prefs.shServer)
+    val shServer = MutableStateFlow(prefs.shServer.replace("https://", "http://"))
     val shServerMsg = MutableStateFlow<String?>(null)
     private val isServerMode get() = shWhere.value == "server"
     private var serverView: SolarHeatView? = null
@@ -2018,7 +2018,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSolarWhere(where: String, server: String? = null) {
         server?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }?.let {
-            val url = if (it.startsWith("http")) it else "http://$it"
+            // 家の中の通信なので http で（https は家の中専用の証明書になり、アプリが信頼できないため）
+            val host = it.removePrefix("https://").removePrefix("http://")
+            val url = "http://$host"
             prefs.shServer = url; shServer.value = url
         }
         prefs.shWhere = where; shWhere.value = where
@@ -2026,13 +2028,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         solarWake.trySend(Unit)
     }
 
+    /** サーバー用（https への転送はたどらない） */
+    private val serverHttp by lazy { photoHttp.newBuilder().followRedirects(false).followSslRedirects(false).build() }
+
     private suspend fun serverCall(path: String, body: JSONObject?): JSONObject = withContext(Dispatchers.IO) {
         val url = shServer.value + "/solar-api" + path
         val req = Request.Builder().url(url).apply {
             if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
         }.build()
-        photoHttp.newCall(req).execute().use { r ->
+        serverHttp.newCall(req).execute().use { r ->
+            if (r.code in 300..399) throw HaException("サーバーが古い版です。コンテナでセットアップ（setup.sh）を新しい版でやり直してください")
             if (r.code == 404) throw HaException("サーバーにおひさま沸き上げのサービスがありません（サーバーのセットアップをやり直してください）")
+            if (r.code == 502) throw HaException("サーバーのおひさま沸き上げのサービスが止まっています（コンテナで systemctl status homepanel-solar を確認してください）")
             if (!r.isSuccessful) throw HaException("サーバーでエラーになりました (HTTP ${r.code})")
             JSONObject(r.body?.string().orEmpty())
         }
