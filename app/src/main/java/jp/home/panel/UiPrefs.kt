@@ -132,6 +132,14 @@ class UiPrefs(context: Context) {
     var shShift: Boolean
         get() = p.getBoolean("sh_shift", true)
         set(v) = p.edit().putBoolean("sh_shift", v).apply()
+    /** おひさま沸き上げを動かす場所：local（このタブレット）/ server（ホームパネルのサーバー） */
+    var shWhere: String
+        get() = p.getString("sh_where", "local") ?: "local"
+        set(v) = p.edit().putString("sh_where", v).apply()
+    var shServer: String
+        get() = p.getString("sh_server", "http://192.168.1.46") ?: "http://192.168.1.46"
+        set(v) = p.edit().putString("sh_server", v).apply()
+
     /** 毎日の設定をする時刻（時） */
     var shPlanHour: Int
         get() = p.getInt("sh_plan_hour", 20)

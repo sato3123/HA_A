@@ -2617,6 +2617,37 @@
       ${t.self !== null && en.hasSolar ? `<span>自給率 <b>${Math.round(t.self)}%</b></span>` : ""}${t.cost > 0 ? `<span>電気代 <b>${Math.round(t.cost)}円</b></span>` : ""}</div>`;
   }
 
+  // ================= おひさま沸き上げ（サーバーで動いているものを表示） =================
+  async function solarApi(path, body) {
+    const r = await fetch("/solar-api" + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+  async function loadSolar(path, body) {
+    if (!SERVER_MODE) return;
+    try { S.solar = await solarApi(path || "/status", body); S.solarErr = null; }
+    catch (e) { if (path) S.solarErr = "サーバーに送れませんでした：" + e.message; else S.solar = null; }
+    renderSolar();
+  }
+  function renderSolar() {
+    const box = $("#solar");
+    if (!box) return;
+    const j = S.solar;
+    if (!j || !j.config || !j.config.eco_ip) { box.innerHTML = ""; return; }
+    const e = j.eco || {}, p = j.plan;
+    const pct = e.remain && e.tank ? Math.min(100, Math.round(e.remain * 100 / e.tank)) : null;
+    const t = (sec) => { const d = new Date(sec * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${pad(d.getMinutes())}`; };
+    const w = j.surplus_w;
+    box.innerHTML = `<div class="card solar"><div class="brow" style="align-items:center"><b style="flex:1">🛁 エコキュート（サーバーで管理）</b>
+        <span class="${e.heating ? "fl" : "note"}">${!e.online ? "応答なし" : e.heating ? "♨ 沸き上げ中" : "沸き上げ停止中"}</span></div>
+      ${e.remain != null ? `<div>残りのお湯 <b style="font-size:22px">${e.remain}L</b>${e.tank ? ` ／ ${e.tank}L（${pct}%）` : ""}</div>${pct !== null ? `<div class="bar"><div style="height:100%;width:${pct}%;background:var(--primary)"></div></div>` : ""}` : ""}
+      <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
+      ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
+      ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
+      <div class="brow">${p && !p.ok ? `<button class="btn" data-set="solarRetry">もう一度設定</button>` : `<button class="tbtn" data-set="solarRetry">設定し直す</button>`}
+        ${e.can_manual ? `<button class="btn outline" data-set="solarHeat" data-id="start">今すぐ沸き増し</button>${e.manual ? `<button class="tbtn" data-set="solarHeat" data-id="auto">自動に戻す</button>` : ""}` : ""}</div></div>`;
+  }
+
   // ================= カメラ =================
   const camModes = () => store.get("camModes", {});
   const CAM_MODES = [["auto", "自動", "いちばん遅れの少ない方式"], ["realtime", "リアルタイム", "遅れ1秒未満（WebRTC）"], ["hls", "高画質", "なめらか・数秒の遅れ（HLS）"], ["mjpeg", "簡易", "どのカメラでも・コマ数少なめ"]];
@@ -2950,6 +2981,8 @@
       case "exportSettings": exportSettings(); return true;
       case "importSettings": { const f = $("#importFile"); f.onchange = () => { if (f.files[0]) importSettings(f.files[0]); }; f.click(); return true; }
       case "popClose": S.popupHidden = S.voice; renderPopup(); return true;
+      case "solarRetry": loadSolar("/retry", {}); return true;
+      case "solarHeat": loadSolar("/heat", { action: id }); return true;
       default: return false;
     }
   }
@@ -2998,7 +3031,7 @@
         <div data-sec="thermo"><div class="thermos" id="thermo"></div></div>
         <div data-sec="calendar"><div id="cal"></div></div>
         <div data-sec="timers"><div class="timerstrip hidden" id="timerStrip"></div></div>
-        <div data-sec="energy"><div id="energy"></div></div>
+        <div data-sec="energy"><div id="energy"></div><div id="solar"></div></div>
         <div data-sec="automations"><div id="quick"></div></div>
         <div data-sec="devices"><div class="roombar" id="roombar"></div><main class="grid" id="grid"></main>
           <div class="note" id="empty" style="text-align:center;padding:32px"></div></div>
@@ -3072,6 +3105,8 @@
     setInterval(renderClock, 1000);
     setInterval(refreshSnapshots, 10000);
     setInterval(loadEnergy, 10 * 60 * 1000);
+    loadSolar();
+    setInterval(() => loadSolar(), 30000);
     setInterval(loadEvents, 15 * 60 * 1000);
     setInterval(checkTimers, 500);
     setInterval(checkIdle, 2000);

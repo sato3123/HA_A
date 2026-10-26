@@ -1725,6 +1725,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val status: String,
         val plan: SolarPlan?,
         val history: List<Pair<Long, Double>>,
+        val deviceName: String? = device?.name,
+        val online: Boolean = device?.online == true,
+        val server: Boolean = false,
+        val serverError: String? = null,
     )
 
     /** 毎日の設定の結果 */
@@ -1743,6 +1747,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val shSource = MutableStateFlow(prefs.shSource)
     val shLog = MutableStateFlow(prefs.shLog.split("\n").filter { it.isNotBlank() })
     val solarHeat = MutableStateFlow<SolarHeatView?>(null)
+    val shWhere = MutableStateFlow(prefs.shWhere)
+    val shServer = MutableStateFlow(prefs.shServer)
+    val shServerMsg = MutableStateFlow<String?>(null)
+    private val isServerMode get() = shWhere.value == "server"
+    private var serverView: SolarHeatView? = null
+    private var serverError: String? = null
 
     private var shByUs = false            // いまの沸き増しはこのアプリが始めたもの
     private var shOverSec = 0             // 余剰が続いている秒数
@@ -1783,7 +1793,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         shift?.let { prefs.shShift = it; shShift.value = it }
         planHour?.let { prefs.shPlanHour = it; shPlanHour.value = it }
         source?.let { prefs.shSource = it; shSource.value = it; surplusSamples.clear(); surplusHistory.clear() }
-        if (enabled == false && shByUs) viewModelScope.launch { ecoAuto("おひさま沸き上げをオフにしたため") }
+        if (enabled == false && shByUs && !isServerMode) viewModelScope.launch { ecoAuto("おひさま沸き上げをオフにしたため") }
+        if (isServerMode) {
+            val c = JSONObject()
+            enabled?.let { c.put("enabled", it) }
+            start?.let { c.put("start_hour", it) }
+            end?.let { c.put("end_hour", it) }
+            threshold?.let { c.put("threshold_w", it) }
+            shift?.let { c.put("shift", it) }
+            planHour?.let { c.put("plan_hour", it) }
+            if (c.length() > 0) viewModelScope.launch { serverPost("/config", c) }
+        }
         solarWake.trySend(Unit)
         updateSolarView()
     }
@@ -1888,6 +1908,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun ecoManualStart() = viewModelScope.launch {
+        if (isServerMode) { serverPost("/heat", JSONObject().put("action", "start")); return@launch }
         val d = ecoDevice() ?: return@launch
         if (d.canSet(0xC0)) echonet.setWaterHeater(d.key, listOf(Prop(0xC0, bytesOf(0x41))))
         if (ecoSet(d, listOf(Prop(0xB0, bytesOf(0x42))), "手動で沸き増しを始めました")) shByUs = false
@@ -1895,6 +1916,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun ecoBackToAuto() = viewModelScope.launch {
+        if (isServerMode) { serverPost("/heat", JSONObject().put("action", "auto")); return@launch }
         ecoAuto("手動の操作")
         updateSolarView()
     }
@@ -1917,6 +1939,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 毎日の設定を今すぐやり直す（画面のボタン） */
     fun retrySolarPlan() = viewModelScope.launch {
+        if (isServerMode) { serverPost("/retry", JSONObject()); return@launch }
         shAddLog("手動で設定をやり直します")
         runSolarPlan(manual = true)
         updateSolarView()
@@ -1991,7 +2014,111 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- サーバーで動かす（スマートフォン・タブレットが無くても動き続ける） ----
+
+    fun setSolarWhere(where: String, server: String? = null) {
+        server?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }?.let {
+            val url = if (it.startsWith("http")) it else "http://$it"
+            prefs.shServer = url; shServer.value = url
+        }
+        prefs.shWhere = where; shWhere.value = where
+        if (where == "server" && shByUs) viewModelScope.launch { ecoAuto("サーバーで動かすことにしたため") }
+        solarWake.trySend(Unit)
+    }
+
+    private suspend fun serverCall(path: String, body: JSONObject?): JSONObject = withContext(Dispatchers.IO) {
+        val url = shServer.value + "/solar-api" + path
+        val req = Request.Builder().url(url).apply {
+            if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
+        }.build()
+        photoHttp.newCall(req).execute().use { r ->
+            if (r.code == 404) throw HaException("サーバーにおひさま沸き上げのサービスがありません（サーバーのセットアップをやり直してください）")
+            if (!r.isSuccessful) throw HaException("サーバーでエラーになりました (HTTP ${r.code})")
+            JSONObject(r.body?.string().orEmpty())
+        }
+    }
+
+    private suspend fun serverPost(path: String, body: JSONObject) {
+        try {
+            applyServerState(serverCall(path, body))
+            shServerMsg.value = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            shServerMsg.value = "サーバーに送れませんでした：${e.message}"
+        }
+        updateSolarView()
+    }
+
+    /** このタブレットで見つけたエコキュート・スマートメーターと、Home Assistant の自宅の位置をサーバーに送る */
+    fun pushSolarToServer() = viewModelScope.launch {
+        val c = JSONObject()
+            .put("enabled", shEnabled.value).put("start_hour", shStart.value).put("end_hour", shEnd.value)
+            .put("threshold_w", shThreshold.value).put("shift", shShift.value).put("plan_hour", shPlanHour.value)
+        ecoDevice()?.let { c.put("eco_ip", it.ip).put("eco_eoj", it.eoj.hex()) }
+        meterDevice()?.let { c.put("meter_ip", it.ip).put("meter_eoj", it.eoj.hex()) }
+        client?.let { cl ->
+            runCatching {
+                val r = cl.request(JSONObject().put("type", "get_config")).optJSONObject("result")
+                if (r != null && !r.optDouble("latitude").isNaN()) c.put("lat", r.optDouble("latitude")).put("lon", r.optDouble("longitude"))
+            }
+        }
+        serverPost("/config", c)
+        val missing = listOfNotNull(
+            if (!c.has("eco_ip")) "エコキュート" else null,
+            if (!c.has("meter_ip")) "スマートメーター" else null,
+            if (!c.has("lat")) "自宅の位置（Home Assistant）" else null,
+        )
+        if (shServerMsg.value == null) {
+            shServerMsg.value = "サーバーに送りました" + if (missing.isNotEmpty()) "（見つからないもの：${missing.joinToString("・")}）" else ""
+        }
+    }
+
+    private fun applyServerState(j: JSONObject) {
+        val eco = j.optJSONObject("eco") ?: JSONObject()
+        val conf = j.optJSONObject("config") ?: JSONObject()
+        val plan = j.optJSONObject("plan")
+        val hist = j.optJSONArray("history") ?: JSONArray()
+        fun optBool(o: JSONObject, k: String): Boolean? = if (o.has(k) && !o.isNull(k)) o.optBoolean(k) else null
+        fun optInt(o: JSONObject, k: String): Int? = if (o.has(k) && !o.isNull(k)) o.optInt(k) else null
+        val logArr = j.optJSONArray("log")
+        if (logArr != null) shLog.value = (0 until logArr.length()).map { logArr.optString(it) }
+        serverError = null
+        serverView = SolarHeatView(
+            device = null,
+            remainL = optInt(eco, "remain"), tankL = optInt(eco, "tank"),
+            heating = optBool(eco, "heating"), manual = optBool(eco, "manual"),
+            shift = optBool(eco, "shift"), shiftHour = optInt(eco, "shift_hour")?.takeIf { it in 1..23 },
+            surplusW = if (j.isNull("surplus_w")) null else j.optDouble("surplus_w"),
+            sensorName = conf.optString("meter_ip").takeIf { it.isNotBlank() }?.let { "スマートメーター（$it）" },
+            canManual = eco.optBoolean("can_manual", false), canShift = eco.optBoolean("can_shift", false),
+            status = j.optString("status"),
+            plan = plan?.let { SolarPlan(it.optString("date"), it.optBoolean("ok"), it.optString("message"), (it.optDouble("at") * 1000).toLong(), optBool(it, "sunny")) },
+            history = (0 until hist.length()).mapNotNull { hist.optJSONArray(it) }.map { (it.optDouble(0) * 1000).toLong() to it.optDouble(1) },
+            deviceName = "エコキュート（サーバーで管理）",
+            online = eco.optBoolean("online", false),
+            server = true,
+        )
+        // 画面の設定もサーバーの値に合わせる
+        shEnabled.value = conf.optBoolean("enabled", shEnabled.value)
+        shStart.value = conf.optInt("start_hour", shStart.value)
+        shEnd.value = conf.optInt("end_hour", shEnd.value)
+        shThreshold.value = conf.optInt("threshold_w", shThreshold.value)
+        shShift.value = conf.optBoolean("shift", shShift.value)
+        shPlanHour.value = conf.optInt("plan_hour", shPlanHour.value)
+    }
+
     private suspend fun solarTick() {
+        if (isServerMode) {
+            try {
+                applyServerState(serverCall("/status", null))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                serverError = "サーバー（${shServer.value}）に届きません：${e.message}"
+            }
+            return
+        }
         if (!elEnabled.value) { shStatus = "ECHONET Lite がオフです（⚙ 設定 →「ECHONET Lite」）"; return }
         val d0 = ecoDevice() ?: run { shStatus = "エコキュートが見つかりません（⚙ 設定 →「ECHONET Lite」で「機器を探す」）"; return }
         val now = java.time.LocalTime.now()
@@ -2072,6 +2199,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun updateSolarView() {
+        if (isServerMode) {
+            solarHeat.value = (serverView ?: SolarHeatView(null, null, null, null, null, null, null, null, null, false, false,
+                "サーバーの状態を読み込んでいます…", null, emptyList(), deviceName = "エコキュート（サーバーで管理）", server = true))
+                .copy(serverError = serverError)
+            return
+        }
         val d = ecoDevice()
         solarHeat.value = SolarHeatView(
             device = d,
@@ -2496,6 +2629,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     init {
         // 開発用のビルドの「デモ表示」：Home Assistant につながず、見本のデータで画面を出す（画面の確認用）
+        if (!solarStarted) { solarStarted = true; startSolarHeat() }
         if (BuildConfig.DEBUG && prefs.demoMode) loadDemo() else start()
         startEchonet()
         // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）

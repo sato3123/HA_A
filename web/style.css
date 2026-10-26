@@ -285,3 +285,5 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
   .stepper .sl { flex-basis: 100%; }
 }
 .thermo .tvv { white-space: nowrap; }
+.card.solar { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+#energy:empty + #solar .card.solar { margin-top: 0; }

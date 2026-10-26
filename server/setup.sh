@@ -38,6 +38,14 @@ if ! cmp -s "\$TMP/new/version.json" "$WEB/version.json"; then
   chmod -R a+rX "$WEB"
   echo "更新しました: \$(cat "$WEB/version.json")"
 fi
+# おひさま沸き上げのサービスも新しくする
+if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o "\$TMP/solar.py" && python3 -m py_compile "\$TMP/solar.py"; then
+  if ! cmp -s "\$TMP/solar.py" /usr/local/bin/homepanel-solar; then
+    install -m 755 "\$TMP/solar.py" /usr/local/bin/homepanel-solar
+    systemctl restart homepanel-solar.service 2>/dev/null || true
+    echo "おひさま沸き上げのサービスを更新しました"
+  fi
+fi
 EOF
 chmod +x /usr/local/bin/homepanel-update
 
@@ -144,6 +152,26 @@ DynamicUser=yes
 WantedBy=multi-user.target
 UNITEOF
 
+echo "== おひさま沸き上げ（エコキュート）のサービスを用意しています"
+curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o /usr/local/bin/homepanel-solar
+chmod 755 /usr/local/bin/homepanel-solar
+cat > /etc/systemd/system/homepanel-solar.service <<'UNITEOF'
+[Unit]
+Description=ホームパネル おひさま沸き上げ（エコキュート）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/homepanel-solar
+Restart=always
+RestartSec=10
+DynamicUser=yes
+StateDirectory=homepanel-solar
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
 echo "== iPad 版をダウンロードしています"
 /usr/local/bin/homepanel-update
 
@@ -156,6 +184,12 @@ cat > /etc/caddy/Caddyfile <<EOF
 
 # http で来たら：証明書の配布ページ以外は https へ
 http://$SELF_IP {
+	# おひさま沸き上げの状態・設定（Android 版から。家の中のネットワークからだけ）
+	handle /solar-api/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		reverse_proxy 127.0.0.1:8098
+	}
 	handle /ca.crt {
 		root * $CA_DIR
 		header Content-Type application/x-x509-ca-cert
@@ -178,6 +212,13 @@ https://$SELF_IP {
 		root * $WEB
 		header Cache-Control "no-cache"
 		file_server
+	}
+
+	# おひさま沸き上げの状態・設定（家の中のネットワークからだけ）
+	handle /solar-api/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		reverse_proxy 127.0.0.1:8098
 	}
 
 	# スクリーンセーバーの写真一覧（このサーバーの中のサービス）
@@ -203,6 +244,8 @@ systemctl daemon-reload
 systemctl enable --now homepanel-update.timer >/dev/null
 systemctl enable --now homepanel-photos.service >/dev/null
 systemctl restart homepanel-photos.service
+systemctl enable --now homepanel-solar.service >/dev/null
+systemctl restart homepanel-solar.service
 
 echo "== 証明書を用意しています"
 ROOT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
@@ -238,6 +281,10 @@ cat <<EOF
 
  2. iPad の Safari で https://$SELF_IP/ を開くと、ホームパネルが表示されます。
     共有ボタン →「ホーム画面に追加」でアプリのように使えます。
+
+ 3. おひさま沸き上げ（エコキュート）は、このサーバーで動きます。
+    Android 版の「⚙ 設定 → おひさま沸き上げ」で「サーバーで動かす」を選ぶと、
+    エコキュート・スマートメーター・自宅の位置がサーバーに送られます。
 
  更新は5分おきに自動で確認されます。
  今すぐ更新するとき： homepanel-update

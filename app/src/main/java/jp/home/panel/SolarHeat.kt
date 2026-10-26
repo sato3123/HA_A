@@ -41,17 +41,18 @@ fun EcoCuteCard(vm: MainViewModel) {
     val v by vm.solarHeat.collectAsState()
     val enabled by vm.shEnabled.collectAsState()
     val s = v ?: return
-    if (s.device == null) return
+    if (s.device == null && !s.server) return
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("🛁 " + s.device.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Text("🛁 " + (s.deviceName ?: "エコキュート"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 Text(
                     when {
-                        !s.device.online -> "応答なし"
+                        s.serverError != null -> "サーバーに届きません"
+                        !s.online -> "応答なし"
                         s.heating == true -> "♨ 沸き上げ中"
                         else -> "沸き上げ停止中"
                     },
@@ -127,7 +128,33 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 "・エコキュートとは ECHONET Lite で直接やりとりします。お湯を止める操作はしません。",
             style = MaterialTheme.typography.bodySmall,
         )
-        if (!elOn) {
+        // 動かす場所
+        val where by vm.shWhere.collectAsState()
+        val server by vm.shServer.collectAsState()
+        val serverMsg by vm.shServerMsg.collectAsState()
+        var serverText by remember(server) { mutableStateOf(server.removePrefix("http://")) }
+        Text("動かす場所", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = where == "server", onClick = { vm.setSolarWhere("server", serverText) }, label = { Text("サーバー（おすすめ）") }, colors = chipColors)
+            FilterChip(selected = where == "local", onClick = { vm.setSolarWhere("local") }, label = { Text("このタブレット") }, colors = chipColors)
+        }
+        Text(
+            if (where == "server") "ホームパネルのサーバー（Proxmox のコンテナ）が、天気予報の確認・売電のリアルタイム確認・沸き上げの調整をします。このタブレットやスマートフォンを切っていても動き続けます。この画面では状態を見たり設定を変えたりできます。"
+            else "このタブレットのアプリが動いている間だけ働きます。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (where == "server") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(serverText, { serverText = it.trim() }, singleLine = true, label = { Text("サーバーの IP アドレス") },
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = { vm.setSolarWhere("server", serverText) }) { Text("保存") }
+            }
+            Button(onClick = { vm.pushSolarToServer() }) { Text("このタブレットの設定をサーバーに送る") }
+            Text("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、下の時間帯などの設定をサーバーに送ります。最初に1回押してください。", style = MaterialTheme.typography.bodySmall)
+            serverMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            view?.serverError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
+        if (!elOn && where != "server") {
             Text("先に ⚙ 設定 →「ECHONET Lite」をオンにして、「機器を探す」でエコキュートを見つけてください。", color = MaterialTheme.colorScheme.error)
         }
         SwitchRow("おひさま沸き上げを使う", enabled, sub = view?.status) { vm.setSolarHeat(enabled = it) }
