@@ -161,7 +161,9 @@ val EL_CLASSES = listOf(
     ElClass(0x026B, "エコキュート", ElKind.WATER_HEATER), // 電気温水器。おひさま沸き上げの沸き上げ操作だけに使う
     ElClass(0x026F, "電気錠", ElKind.READONLY),       // 安全のため操作しない
     ElClass(0x0288, "スマートメーター", ElKind.METER),
+    ElClass(0x0287, "分電盤（電力の計測）", ElKind.METER), // Panasonic のスマートコスモなど。瞬時電力は 0xC6
     ElClass(0x0279, "太陽光発電", ElKind.SOLAR),
+    ElClass(0x02A5, "太陽光発電（マルチ入力 PCS）", ElKind.SOLAR),
     ElClass(0x027D, "蓄電池", ElKind.BATTERY),
     ElClass(0x02A1, "電気自動車充電器", ElKind.READONLY),
     ElClass(0x05FF, "コントローラー", ElKind.READONLY),

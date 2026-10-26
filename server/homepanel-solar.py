@@ -35,7 +35,7 @@ API_PORT = int(os.environ.get("SOLAR_API_PORT", "8098"))
 DEFAULT_CONF = {
     "enabled": False,
     "eco_ip": "", "eco_eoj": "026B01",      # エコキュート
-    "meter_ip": "", "meter_eoj": "028801",  # スマートメーター（低圧スマート電力量メータ）
+    "meter_ip": "", "meter_eoj": "028801",  # スマートメーター（0288）または分電盤の電力計測（0287）
     "start_hour": 10, "end_hour": 15,       # 昼に沸かす時間帯
     "threshold_w": 1200,                    # 沸き増しを始める売電（W）
     "stop_buy_w": 300,                      # 沸き増し中、この量を超えて買い始めたら戻す（W）
@@ -288,11 +288,13 @@ def meter_surplus_w():
     ip = conf["meter_ip"]
     if not ip:
         return None
-    v = el.get(ip, conf["meter_eoj"], [0xE7], timeout=4)
-    if not v or 0xE7 not in v or len(v[0xE7]) < 4:
+    # スマートメーター（0288）は 0xE7、分電盤（0287）は 0xC6 が家全体の瞬時電力
+    epc = 0xC6 if str(conf["meter_eoj"]).upper().startswith("0287") else 0xE7
+    v = el.get(ip, conf["meter_eoj"], [epc], timeout=4)
+    if not v or epc not in v or len(v[epc]) < 4:
         return None
-    w = struct.unpack(">i", v[0xE7][:4])[0]
-    if w in (0x7FFFFFFE, -0x7FFFFFFF):
+    w = struct.unpack(">i", v[epc][:4])[0]
+    if w in (0x7FFFFFFE, -0x7FFFFFFF, 0x7FFFFFFF):
         return None
     return -float(w)  # 買電がプラス・売電がマイナス → 余剰（売電）をプラスに
 

@@ -242,7 +242,8 @@ fun SolarHeatSettings(vm: MainViewModel) {
         }
         Text(
             (if (vm.hasMeter) "スマートメーターが見つかりました。15秒ごとに売電・買電をリアルタイムに読み、沸き増し中に電気を買い始めたら3分で自動に戻します。"
-            else "スマートメーター（ECHONET Lite の低圧スマート電力量メータ）は見つかっていません。HEMS（AiSEG2 など）がスマートメーターとつながっていれば、「機器を探す」で見つかります。") +
+            else "スマートメーター・分電盤（電力の計測）は見つかっていません。スマートメーターは Wi-Fi ではなく専用の無線（Bルート）でしか話さないため、" +
+                "Panasonic のスマートコスモなどの分電盤が AiSEG2 を通して見えるか、Bルート用の機器が必要です。⚙ 設定 →「ECHONET Lite」の「すべてのアドレスに問い合わせ」も試してください。") +
                 "「自動」は、スマートメーターがあればそれを、なければ Home Assistant のセンサーを使います。",
             style = MaterialTheme.typography.bodySmall,
         )

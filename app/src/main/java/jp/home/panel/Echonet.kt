@@ -401,7 +401,7 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
             ElKind.LIGHT -> listOf(0x80, 0xB0)
             ElKind.COVER -> listOf(0x80, 0xE0, 0xEA, 0xE1)
             ElKind.ONOFF -> listOf(0x80)
-            ElKind.METER -> listOf(0x80, 0xE7, 0xE0, 0xE1, 0xD3, 0xE3)
+            ElKind.METER -> if (d.eoj.classCode == 0x0287) listOf(0x80, 0xC6) else listOf(0x80, 0xE7, 0xE0, 0xE1, 0xD3, 0xE3)
             ElKind.SOLAR -> listOf(0x80, 0xE0, 0xE1)
             ElKind.BATTERY -> listOf(0x80, 0xE4, 0xDA, 0xD3)
             // 沸き上げ自動設定・沸き上げ中・残湯量・タンク容量・昼間沸き増し許可・エネルギーシフト参加・昼間沸き上げシフト時刻・沸き上げ湯温
@@ -614,15 +614,22 @@ fun ElDevice.toEntity(): Entity {
         java.time.Instant.ofEpochMilli(updatedAt).atOffset(java.time.ZoneOffset.UTC).toString() else "")
 }
 
+/** 家全体の瞬時電力（W。買電がプラス・売電がマイナス）。スマートメーターは 0xE7、分電盤は 0xC6 */
+fun meterWatts(d: ElDevice): Long? {
+    val epc = if (d.eoj.classCode == 0x0287) 0xC6 else 0xE7
+    return d.props[epc]?.s32()?.takeIf { it != 0x7FFFFFFEL && it != -0x7FFFFFFFL && it != 0x7FFFFFFFL }
+}
+
 /** スマートメーター・太陽光・蓄電池の値（いまの電力など） */
 data class ElLive(val buyW: Long?, val solarW: Long?, val batteryPct: Int?)
 
 fun elLive(devices: Collection<ElDevice>): ElLive {
-    val meter = devices.firstOrNull { it.cls.kind == ElKind.METER && it.props[0xE7] != null }
+    val meter = devices.filter { it.cls.kind == ElKind.METER && meterWatts(it) != null }
+        .sortedBy { if (it.eoj.classCode == 0x0288) 0 else 1 }.firstOrNull()
     val solar = devices.filter { it.cls.kind == ElKind.SOLAR }.mapNotNull { it.props[0xE0]?.u16()?.toLong() }
     val bat = devices.firstOrNull { it.cls.kind == ElKind.BATTERY }?.props?.get(0xE4)?.u8()
     return ElLive(
-        buyW = meter?.props?.get(0xE7)?.s32()?.takeIf { it != 0x7FFFFFFEL && it != -0x7FFFFFFFL },
+        buyW = meter?.let { meterWatts(it) },
         solarW = solar.takeIf { it.isNotEmpty() }?.sum(),
         batteryPct = bat?.takeIf { it in 0..100 },
     )

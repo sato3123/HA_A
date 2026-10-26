@@ -1825,7 +1825,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val waterHeaters: List<ElDevice> get() = elDevices.value.filter { it.cls.kind == ElKind.WATER_HEATER }
 
     /** スマートメーター（瞬時電力 0xE7 が読めるもの） */
-    private fun meterDevice(): ElDevice? = elDevices.value.firstOrNull { it.cls.kind == ElKind.METER && (it.getMap.isEmpty() || 0xE7 in it.getMap) }
+    private fun meterDevice(): ElDevice? = elDevices.value.filter { d ->
+        d.cls.kind == ElKind.METER && (d.getMap.isEmpty() || (if (d.eoj.classCode == 0x0287) 0xC6 else 0xE7) in d.getMap)
+    }.sortedBy { if (it.eoj.classCode == 0x0288) 0 else 1 }.firstOrNull()
 
     val hasMeter: Boolean get() = meterDevice() != null
 
@@ -1842,7 +1844,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun meterSurplusW(): Double? {
         val m = meterDevice() ?: return null
         if (!m.online || System.currentTimeMillis() - m.updatedAt > 120_000) return null
-        val w = m.props[0xE7]?.s32()?.takeIf { it != 0x7FFFFFFEL && it != -0x7FFFFFFFL } ?: return null
+        val w = meterWatts(m) ?: return null
         return -w.toDouble()
     }
 
@@ -1873,9 +1875,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** いまの余剰電力（W）。プラス = 売電（余っている）、マイナス = 買電。分からなければ null */
     private fun readSurplusW(): Double? {
         val v = when (shSource.value) {
-            "meter" -> meterSurplusW().also { surplusFrom = "スマートメーター（ECHONET Lite）" }
+            "meter" -> meterSurplusW().also { surplusFrom = (meterDevice()?.cls?.name ?: "スマートメーター") + "（ECHONET Lite）" }
             "ha" -> haSurplusW().also { surplusFrom = surplusSensorId()?.let { allStates.value[it]?.name ?: it } }
-            else -> meterSurplusW()?.also { surplusFrom = "スマートメーター（ECHONET Lite）" }
+            else -> meterSurplusW()?.also { surplusFrom = (meterDevice()?.cls?.name ?: "スマートメーター") + "（ECHONET Lite）" }
                 ?: haSurplusW().also { surplusFrom = surplusSensorId()?.let { allStates.value[it]?.name ?: it } }
         }
         if (v != null) {
@@ -2200,7 +2202,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             when {
                 full -> ecoAuto("お湯がいっぱいになったため")
                 shBuySec >= 180 -> ecoAuto("電気を買い始めたため")
-                surplusFrom?.contains("スマートメーター") != true && shUnderSec >= 900 -> ecoAuto("余った電気が無くなったため")
+                surplusFrom?.contains("ECHONET Lite") != true && shUnderSec >= 900 -> ecoAuto("余った電気が無くなったため")
             }
         }
     }
