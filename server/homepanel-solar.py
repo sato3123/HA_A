@@ -166,13 +166,24 @@ class Echonet:
         return {epc: edt for epc, edt in f["props"] if edt}
 
     def setc(self, ip, deoj, epc, edt):
-        """1項目だけ設定する。成功なら None、失敗なら理由"""
-        f = self.request(ip, deoj, 0x61, [(epc, edt)])
-        if not f:
-            return f"返事がありません（{ip}）"
-        if f["esv"] == 0x51:
+        """1項目だけ設定する。成功なら None、失敗なら理由。
+        エコキュートは返事が遅い機種があるので長めに待ち、2回まで送る。それでも返事がなければ
+        返事のいらない設定（SetI）で送り、読み直して変わったかで確かめる。"""
+        for _ in range(2):
+            f = self.request(ip, deoj, 0x61, [(epc, edt)], timeout=8)
+            if f:
+                return f"値（{edt.hex().upper()}）を受け付けませんでした" if f["esv"] == 0x51 else None
+        print(f"{ip} が {epc:02X} の設定に返事をしないため、返事のいらない設定で送ります", flush=True)
+        f = self.request(ip, deoj, 0x60, [(epc, edt)], timeout=2)
+        if f and f["esv"] == 0x50:
             return f"値（{edt.hex().upper()}）を受け付けませんでした"
-        return None
+        time.sleep(2)
+        v = self.get(ip, deoj, [epc], timeout=8)
+        if v is None or epc not in v:
+            return f"返事がありません（{ip}）。エコキュートの通信アダプターの電源・Wi-Fi を確認してください"
+        if v[epc] == edt:
+            return None
+        return f"設定が反映されませんでした（エコキュートの値：{v[epc].hex().upper()}）"
 
     def discover(self, seconds=4.0):
         """家の中の ECHONET Lite 機器を探す（マルチキャストと、同じネットワークの全アドレスへの問い合わせ）"""

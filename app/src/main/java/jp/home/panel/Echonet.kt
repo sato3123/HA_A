@@ -460,15 +460,32 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         val out = LinkedHashMap<Int, String?>()
         for (p in props.filter { it.epc in safe }) {
             if (d.setMap.isNotEmpty() && p.epc !in d.setMap) { out[p.epc] = "この機種は設定に対応していません"; continue }
-            val r = request(d.ip, d.eoj, Esv.SETC, listOf(p))
-            out[p.epc] = when {
-                r == null -> "返事がありません（${d.ip}）"
-                r.esv == Esv.SETC_SNA -> "値（${p.edt.joinToString("") { "%02X".format(it) }}）を受け付けませんでした"
-                else -> null
-            }
+            out[p.epc] = setOneWaterHeater(d, p)
         }
         refresh(d.key)
         out
+    }
+
+    /**
+     * 1項目を設定する。エコキュートは返事が遅い機種があるので長めに待ち、2回まで送る。
+     * それでも返事がなければ「返事のいらない設定（SetI）」で送り、読み直して変わったかで確かめる。
+     */
+    private suspend fun setOneWaterHeater(d: ElDevice, p: Prop): String? {
+        val hex = p.edt.joinToString("") { "%02X".format(it) }
+        repeat(2) {
+            val r = request(d.ip, d.eoj, Esv.SETC, listOf(p), 8000)
+            if (r != null) return if (r.esv == Esv.SETC_SNA) "値（$hex）を受け付けませんでした" else null
+        }
+        log("ECHONET：${d.ip} が ${"%02X".format(p.epc)} の設定に返事をしないため、返事のいらない設定で送ります")
+        val sna = request(d.ip, d.eoj, Esv.SETI, listOf(p), 2000)
+        if (sna?.esv == Esv.SETI_SNA) return "値（$hex）を受け付けませんでした"
+        delay(2000)
+        val back = request(d.ip, d.eoj, Esv.GET, listOf(Prop(p.epc)), 8000)?.props?.firstOrNull { it.epc == p.epc }?.edt
+        return when {
+            back == null -> "返事がありません（${d.ip}）。エコキュートの通信アダプターの電源・Wi-Fi を確認してください"
+            back.contentEquals(p.edt) -> null
+            else -> "設定が反映されませんでした（エコキュートの値：${back.joinToString("") { "%02X".format(it) }}）"
+        }
     }
 
     /** エコキュートの対応状況を調べる（設定できる項目・読める項目と、いまの値） */
