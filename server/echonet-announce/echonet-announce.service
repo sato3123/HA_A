@@ -1,0 +1,12 @@
+[Unit]
+Description=ECHONET Lite devices announce to Home Assistant (HEMS Echonet Lite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/echonet-announce.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
