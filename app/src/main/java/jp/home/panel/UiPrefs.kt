@@ -148,7 +148,11 @@ class UiPrefs(context: Context) {
     var shSource: String
         get() = p.getString("sh_source", "auto") ?: "auto"
         set(v) = p.edit().putString("sh_source", v).apply()
-    /** 毎日の設定の結果（JSON） */
+    /** エコキュートがエネルギーシフトの設定を断った（非対応の機種） */
+    var shShiftUnsupported: Boolean
+        get() = p.getBoolean("sh_shift_unsup", false)
+        set(v) = p.edit().putBoolean("sh_shift_unsup", v).apply()
+        /** 毎日の設定の結果（JSON） */
     var shPlanJson: String?
         get() = p.getString("sh_plan", null)
         set(v) = p.edit().putString("sh_plan", v).apply()

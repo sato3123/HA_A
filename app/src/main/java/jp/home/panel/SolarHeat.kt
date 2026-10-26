@@ -76,7 +76,7 @@ fun EcoCuteCard(vm: MainViewModel) {
             if (enabled) s.plan?.let { p ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        (if (p.ok) "✓ " else "✕ ") + "毎日の設定（${planTime(p.at)}）：" + p.message,
+                        (if (p.message.startsWith("⚠")) "" else if (p.ok) "✓ " else "✕ ") + "毎日の設定（${planTime(p.at)}）：" + p.message,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (p.ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                         modifier = Modifier.weight(1f),
@@ -164,7 +164,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
         val plan = view?.plan
         Text(
             if (plan == null) "まだ設定していません（毎日 ${planHour}時に、翌日の天気予報を見て設定します）"
-            else (if (plan.ok) "✓ " else "✕ ") + planTime(plan.at) + "　" + plan.message,
+            else (if (plan.message.startsWith("⚠")) "" else if (plan.ok) "✓ " else "✕ ") + planTime(plan.at) + "　" + plan.message,
             style = MaterialTheme.typography.bodyMedium,
             color = if (plan != null && !plan.ok) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
         )

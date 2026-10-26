@@ -76,7 +76,7 @@ def log(msg):
     print(line, flush=True)
     with lock:
         state["log"] = ([line] + state["log"])[:80]
-        save_json(STATE_PATH, {k: state[k] for k in ("plan", "log", "by_us")})
+        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported")})
 
 
 # ================= ECHONET Lite =================
@@ -339,7 +339,7 @@ def run_plan(manual=False):
         with lock:
             state["plan"] = {"date": target.isoformat(), "ok": ok, "message": msg, "at": time.time(), "sunny": sunny}
         retry_at[0] = 0 if ok else time.time() + 600
-        log(("✓ " if ok else "✕ ") + msg)
+        log(("" if msg.startswith("⚠") else "✓ " if ok else "✕ ") + msg)
         return ok
 
     if not conf["shift"]:
@@ -349,8 +349,10 @@ def run_plan(manual=False):
     eco = eco_read()
     if not eco or not eco.get("online"):
         return result(False, f"エコキュート（{conf['eco_ip']}）から返事がありません" + ("" if manual else "（10分後にもう一度試します）"))
-    if eco_caps["set"] is not None and 0xC7 not in eco_caps["set"]:
-        return result(False, "このエコキュートは昼間沸き上げ（エネルギーシフト）の設定に対応していません")
+    if manual:
+        state["shift_unsupported"] = False
+    if state.get("shift_unsupported") or (eco_caps["set"] is not None and 0xC7 not in eco_caps["set"]):
+        return result(True, "⚠ このエコキュートは、夜の沸き上げを昼にずらす設定（エネルギーシフト）を外から変えられない機種です。夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います（夜の沸き上げを減らしたいときは、エコキュートのリモコンの昼間沸き上げ・ソーラーチャージなどの設定を使ってください）")
     name = "今日" if target == date.today() else "明日"
     try:
         sunny, code = forecast_sunny(target)
@@ -361,6 +363,14 @@ def run_plan(manual=False):
     else:
         props = [(0xC7, b"\x42"), (0xCA, b"\x00")]
     res = set_each(props)
+    if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
+        # 時刻・回数を先に設定してから、もう一度参加を送る（順番で受け付ける機種があるため）
+        res.update(set_each([pp for pp in props if pp[0] != 0xC7][::-1]))
+        res.update(set_each([pp for pp in props if pp[0] == 0xC7]))
+        if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
+            state["shift_unsupported"] = True
+            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported")})
+            return result(True, "⚠ このエコキュートは、夜の沸き上げを昼にずらす設定（エネルギーシフト）を外から変えられない機種です。夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います（夜の沸き上げを減らしたいときは、エコキュートのリモコンの昼間沸き上げ・ソーラーチャージなどの設定を使ってください）（エコキュートの応答：" + res[0xC7] + "）", sunny)
     if res.get(0xC7):
         return result(False, f"設定できませんでした（{EPC_NAME[0xC7]}：{res[0xC7]}）" + ("" if manual else "（10分後にもう一度試します）"), sunny)
     sub = {k: v for k, v in res.items() if k != 0xC7 and v}
@@ -487,7 +497,7 @@ def loop():
 def public_state():
     with lock:
         c = dict(conf)
-        return {"config": c, "plan": state.get("plan"), "log": state["log"][:40], "status": state["status"],
+        return {"config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}
 

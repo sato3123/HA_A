@@ -1731,6 +1731,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val serverError: String? = null,
     )
 
+    private val SHIFT_UNSUPPORTED = "このエコキュートは、夜の沸き上げを昼にずらす設定（エネルギーシフト）を外から変えられない機種です。" +
+        "夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います（夜の沸き上げを減らしたいときは、エコキュートのリモコンの昼間沸き上げ・ソーラーチャージなどの設定を使ってください）"
+
     /** 毎日の設定の結果 */
     data class SolarPlan(val date: String, val ok: Boolean, val message: String, val at: Long, val sunny: Boolean?)
 
@@ -1960,12 +1963,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // date は「どの日のための設定か」
             savePlan(SolarPlan(target.toString(), ok, msg, now, sunny))
             shRetryAt = if (ok) 0L else now + 10 * 60_000L
-            shAddLog((if (ok) "✓ " else "✕ ") + msg)
+            shAddLog((if (msg.startsWith("⚠")) "" else if (ok) "✓ " else "✕ ") + msg)
             return ok
         }
         if (!shShift.value) return result(true, "夜の沸き上げを昼にずらす設定はオフです（いつもどおり夜に沸かします）", null)
         val d = ecoDevice() ?: return result(false, "エコキュートが見つかりません", null)
-        if (!d.canSet(0xC7)) return result(false, "このエコキュートは昼間沸き上げ（エネルギーシフト）に対応していません", null)
+        if (manual) prefs.shShiftUnsupported = false
+        if (prefs.shShiftUnsupported || !d.canSet(0xC7)) return result(true, "⚠ $SHIFT_UNSUPPORTED", null)
         val dayName = if (target == LocalDate.now()) "今日" else "明日"
         val sunny = forecastSunny(target) ?: return result(false, "${dayName}の天気予報がまだありません（天気の連携を確認してください）", null)
         val props = mutableListOf<Prop>()
@@ -1978,7 +1982,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (d.canSet(0xCA)) props += Prop(0xCA, bytesOf(0x00))
         }
         // 1項目ずつ設定する。必須は「エネルギーシフト参加」だけ。回数・時刻は断られても、機種の決まった時刻で動く
-        val res = echonet.setWaterHeaterEach(d.key, props)
+        val res = echonet.setWaterHeaterEach(d.key, props).toMutableMap()
+        if (res[0xC7]?.contains("受け付けませんでした") == true) {
+            // 時刻・回数を先に設定してから、もう一度参加を送る（順番で受け付ける機種があるため）
+            res.putAll(echonet.setWaterHeaterEach(d.key, props.filter { it.epc != 0xC7 }.reversed()))
+            res.putAll(echonet.setWaterHeaterEach(d.key, props.filter { it.epc == 0xC7 }))
+            if (res[0xC7]?.contains("受け付けませんでした") == true) {
+                prefs.shShiftUnsupported = true
+                return result(true, "⚠ $SHIFT_UNSUPPORTED（エコキュートの応答：${res[0xC7]}）", sunny)
+            }
+        }
         val mainErr = res[0xC7]
         if (mainErr != null) return result(false, "設定できませんでした（${waterHeaterEpcName(0xC7)}：$mainErr）" + if (!manual) "（10分後にもう一度試します）" else "", sunny)
         val sub = res.filter { it.key != 0xC7 && it.value != null }

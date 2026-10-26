@@ -2642,7 +2642,7 @@
         <span class="${e.heating ? "fl" : "note"}">${!e.online ? "応答なし" : e.heating ? "♨ 沸き上げ中" : "沸き上げ停止中"}</span></div>
       ${e.remain != null ? `<div>残りのお湯 <b style="font-size:22px">${e.remain}L</b>${e.tank ? ` ／ ${e.tank}L（${pct}%）` : ""}</div>${pct !== null ? `<div class="bar"><div style="height:100%;width:${pct}%;background:var(--primary)"></div></div>` : ""}` : ""}
       <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
-      ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
+      ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.message.startsWith("⚠") ? "" : p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
       ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
       <div class="brow">${p && !p.ok ? `<button class="btn" data-set="solarRetry">もう一度設定</button>` : `<button class="tbtn" data-set="solarRetry">設定し直す</button>`}
         ${e.can_manual ? `<button class="btn outline" data-set="solarHeat" data-id="start">今すぐ沸き増し</button>${e.manual ? `<button class="tbtn" data-set="solarHeat" data-id="auto">自動に戻す</button>` : ""}` : ""}</div></div>`;
