@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DIR = os.environ.get("SOLAR_DIR", "/var/lib/homepanel-solar")
 CONF_PATH = os.path.join(DIR, "config.json")
 STATE_PATH = os.path.join(DIR, "state.json")
+ENERGY_PATH = os.path.join(DIR, "energy.json")
 PORT = 3610
 MCAST = "224.0.23.0"
 API_PORT = int(os.environ.get("SOLAR_API_PORT", "8098"))
@@ -42,6 +43,11 @@ DEFAULT_CONF = {
     "stop_buy_w": 300,                      # 沸き増し中、この量を超えて買い始めたら戻す（W）
     "plan_hour": 20,                        # 毎日の設定をする時刻
     "shift": True,                          # 晴れの日は夜の沸き上げを昼にずらす
+    # 夜の沸き上げの減らし方：auto（エネルギーシフト→タンクの運転モード）/ stop（このサーバーが夜の沸き上げを手動で止める）
+    "night_method": "auto",
+    "stop_min_pct": 50,                     # 夜に止めるのは、残りのお湯がこれ以上のとき（%）
+    "safety_hour": 4, "safety_pct": 30,     # 夜中に残りがこれより減ったら、止めるのをやめて夜に沸かす
+    "ensure_pct": 60,                       # 昼の時間帯の終わる2時間前に、残りがこれより少なければ売電が無くても沸かす
     "lat": None, "lon": None,               # 天気予報の場所（Home Assistant の自宅の位置を画面から送る）
     # AiSEG2（Panasonic の HEMS）から、いまの発電・消費を読む（スマートメーターの代わり。こちらが優先）
     "aiseg_url": "", "aiseg_user": "aiseg", "aiseg_password": "",
@@ -86,7 +92,7 @@ def log(msg):
     print(line, flush=True)
     with lock:
         state["log"] = ([line] + state["log"])[:80]
-        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us")})
+        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop")})
 
 
 # ================= ECHONET Lite =================
@@ -365,6 +371,115 @@ def aiseg_surplus_w():
     return (g - u) * 1000
 
 
+def aiseg_open(path, post=False):
+    base = str(conf.get("aiseg_url") or "").strip().rstrip("/")
+    if not base.startswith("http"):
+        base = "http://" + base
+    pm = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    pm.add_password(None, base, conf.get("aiseg_user") or "aiseg", conf.get("aiseg_password") or "")
+    opener = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(pm), urllib.request.HTTPBasicAuthHandler(pm))
+    req = urllib.request.Request(base + path, data=urllib.parse.urlencode({"data": "{}"}).encode() if post else None, method="POST" if post else "GET")
+    with opener.open(req, timeout=10) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+_CIRCUIT_RE = None
+
+
+def aiseg_circuits():
+    """AiSEG2 の回路ごとの、いまの電力（W）。/page/electricflow/1113?id=1,2,... を、同じページが返るまで読む"""
+    import re
+    global _CIRCUIT_RE
+    if _CIRCUIT_RE is None:
+        _CIRCUIT_RE = re.compile(r'<div class="c_value">(.*?)</div>\s*<div class="c_device">(.*?)</div>', re.S)
+    zen = str.maketrans("０１２３４５６７８９．，", "0123456789.,")
+    out, prev = {}, None
+    for page in range(1, 21):
+        html = aiseg_open(f"/page/electricflow/1113?id={page}")
+        rows = []
+        for val, dev in _CIRCUIT_RE.findall(html):
+            name = re.sub(r"<[^>]+>", "", dev).replace("\u3000", " ").strip()
+            name = re.sub(r"\s+", " ", name)
+            if not name or name == "-":
+                continue
+            v = re.sub(r"[^0-9.]", "", val.translate(zen))
+            rows.append((name, float(v) if v else 0.0))
+        sig = ",".join(n for n, _ in rows)
+        if not rows or sig == prev:
+            break
+        prev = sig
+        for n, w in rows:
+            out[n] = out.get(n, 0.0) + w
+    return out
+
+
+# ---- 時間ごと・回路ごとの電気の記録（AiSEG2 から1分ごとに読んで積み上げる） ----
+energy = load_json(ENERGY_PATH, {"hours": {}})
+energy_last = {"t": None}
+
+
+def energy_collect():
+    now = time.time()
+    use = gen = None
+    circuits = {}
+    src = None
+    if conf.get("aiseg_url"):
+        try:
+            if aiseg_surplus_w() is not None:
+                p = state.get("power") or {}
+                use, gen, src = p.get("consumption_w"), p.get("generation_w"), "AiSEG2"
+            circuits = aiseg_circuits()
+        except Exception as e:
+            state["aiseg_error"] = f"AiSEG2 の回路を読めませんでした：{e}"
+    if use is None and conf.get("meter_ip"):
+        w = meter_surplus_w()
+        if w is not None:
+            src = "スマートメーター"
+            use, gen = (max(0.0, -w), 0.0)  # 買電だけ分かる（発電は分からない）
+            state["power"] = {"generation_w": None, "consumption_w": None, "net_w": w, "from": src}
+    last = energy_last["t"]
+    energy_last["t"] = now
+    if use is None or last is None:
+        return
+    dt = min(now - last, 180) / 3600.0  # 時間（h）。読めなかった間は長くても3分ぶんまで
+    key = datetime.now().strftime("%Y-%m-%dT%H")
+    with lock:
+        h = energy["hours"].setdefault(key, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+        net = (gen or 0.0) - use if src == "AiSEG2" else -use
+        h["use"] += (use if src == "AiSEG2" else 0.0) * dt
+        h["gen"] += (gen or 0.0) * dt
+        h["buy"] += max(0.0, -net) * dt
+        h["sell"] += max(0.0, net) * dt
+        for n, w in circuits.items():
+            h["circuits"][n] = h["circuits"].get(n, 0.0) + w * dt
+        h["src"] = src
+        cut = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H")
+        for k in [k for k in energy["hours"] if k < cut]:
+            del energy["hours"][k]
+
+
+def energy_loop():
+    saved = time.time()
+    while True:
+        try:
+            energy_collect()
+        except Exception as e:
+            print("電気の記録でエラー:", e, flush=True)
+        if time.time() - saved > 300:
+            with lock:
+                save_json(ENERGY_PATH, energy)
+            saved = time.time()
+        time.sleep(60)
+
+
+def energy_report(days):
+    days = max(1, min(40, int(days)))
+    start = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%dT00")
+    with lock:
+        hours = [dict(v, h=k) for k, v in sorted(energy["hours"].items()) if k >= start]
+    return {"hours": hours, "days": days}
+
+
 def read_surplus():
     """余剰（W）。AiSEG2 が設定されていればそれを、なければスマートメーター（ECHONET Lite）を使う"""
     if conf.get("aiseg_url"):
@@ -424,6 +539,8 @@ def run_plan(manual=False):
         sunny, code = forecast_sunny(target)
     except Exception as e:
         return result(False, f"{name}の天気予報を読めませんでした：{e}")
+    if conf.get("night_method") == "stop":
+        return stop_plan(sunny, name, eco, result)
     if state.get("shift_unsupported") or (eco_caps["set"] is not None and 0xC7 not in eco_caps["set"]):
         return tank_plan(sunny, name, eco, result)
     if sunny:
@@ -437,7 +554,7 @@ def run_plan(manual=False):
         res.update(set_each([pp for pp in props if pp[0] == 0xC7]))
         if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
             state["shift_unsupported"] = True
-            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us")})
+            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop")})
             log("エネルギーシフトを受け付けない機種のため、タンクの運転モードで夜の沸き上げを調整します（エコキュートの応答：" + res[0xC7] + "）")
             return tank_plan(sunny, name, eco, result)
     if res.get(0xC7):
@@ -480,6 +597,44 @@ def tank_plan(sunny, name, eco, result):
     if sunny:
         return result(True, f"{name}は晴れの予報：タンクの運転モードを「節約」にして夜の沸き上げを減らし、昼に余った電気で沸き増しします（昼の時間帯のあと「標準」に戻します）", True)
     return result(True, f"{name}は晴れない予報：タンクの運転モードを「標準」にして、いつもどおり夜に沸かします", False)
+
+
+def remain_pct(eco):
+    r, t = (eco or {}).get("remain"), (eco or {}).get("tank")
+    return r * 100 // t if r is not None and t else None
+
+
+def stop_plan(sunny, name, eco, result):
+    """このサーバーが夜の沸き上げを手動で止める（沸き上げ自動設定 B0=0x43「手動沸き上げ停止」）。
+    翌日が晴れで、残りのお湯が十分なときだけ止める。止めたら、昼に余った電気で沸かし、昼の時間帯の終わりに自動へ戻す。"""
+    s = eco_caps["set"]
+    if s is not None and 0xB0 not in s:
+        return result(True, "⚠ このエコキュートは、沸き上げの自動・停止を外から変えられない機種です（夜の沸き上げを止められません）", sunny)
+    pct = remain_pct(eco)
+    if not sunny:
+        if state.get("night_stop"):
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
+            state["night_stop"] = False
+        return result(True, f"{name}は晴れない予報：夜はいつもどおり沸かします（沸き上げ：自動）", False)
+    if pct is not None and pct < conf.get("stop_min_pct", 50):
+        return result(True, f"{name}は晴れの予報ですが、残りのお湯が少ない（{pct}%）ため、夜はいつもどおり沸かします", True)
+    err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+    if err:
+        return result(False, f"夜の沸き上げを止められませんでした（{EPC_NAME[0xB0]}：{err}）（10分後にもう一度試します）", True)
+    with lock:
+        state["night_stop"] = True
+        state["plan_method"] = "stop"
+    return result(True, f"{name}は晴れの予報：夜の沸き上げを止めました（残り {pct if pct is not None else '?'}%）。"
+                        f"昼の{conf['start_hour']}時から余った電気で沸かし、{conf['end_hour']}時に自動に戻します"
+                        f"（夜中に残りが{conf.get('safety_pct', 30)}%より減ったら、止めるのをやめて沸かします）", True)
+
+
+def eco_pause(reason):
+    """夜止めのときの沸き増しの終わり：自動に戻さず、止めたままにする（昼の高い電気で沸かさないため）"""
+    err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+    log(f"沸き増しを止めました（{reason}）" if not err else f"沸き増しを止められませんでした（{err}）")
+    with lock:
+        state["by_us"] = False
 
 
 counters = {"over": 0, "buy": 0}
@@ -567,7 +722,7 @@ def tick():
     if now.hour == 7 and morning_checked[0] != today and conf["shift"]:
         morning_checked[0] = today
         p = state.get("plan") or {}
-        if p.get("date") == today and p.get("sunny") is not None and eco and eco.get("shift_raw") is not None and not state.get("shift_unsupported"):
+        if p.get("date") == today and p.get("sunny") is not None and eco and eco.get("shift_raw") is not None and not state.get("shift_unsupported") and conf.get("night_method") != "stop":
             if eco["shift_raw"] == (0x41 if p["sunny"] else 0x42):
                 log("朝の確認：昨夜の設定どおりです")
             else:
@@ -581,9 +736,30 @@ def tick():
             state["tank_by_us"] = False
             log("昼の時間帯が終わったので、タンクの運転モードを「標準」に戻しました")
 
+    # 夜止め：夜中にお湯が減りすぎたら、止めるのをやめる（安い夜の電気で沸かす）
+    pct = remain_pct(eco)
+    if state.get("night_stop") and conf.get("safety_hour", 4) <= now.hour < conf["start_hour"] and pct is not None and pct < conf.get("safety_pct", 30):
+        if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
+            state["night_stop"] = False
+            log(f"残りのお湯が少ない（{pct}%）ため、夜の沸き上げを止めるのをやめました（自動に戻しました）")
+    # 夜止め：昼の時間帯が終わったら自動に戻す
+    if state.get("night_stop") and not in_window and conf["end_hour"] <= now.hour < conf["plan_hour"]:
+        if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
+            state["night_stop"] = False
+            state["by_us"] = False
+            log("昼の時間帯が終わったので、沸き上げを自動に戻しました")
+    # 夜止め：昼の時間帯の終わる2時間前に、まだお湯が少なければ、売電が無くても沸かす（お湯切れを防ぐ保険）
+    if state.get("night_stop") and in_window and now.hour >= conf["end_hour"] - 2 and not state["by_us"] \
+            and pct is not None and pct < conf.get("ensure_pct", 60) and not (eco or {}).get("heating"):
+        if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42"):
+            state["by_us"] = True
+            state["ensure"] = True
+            log(f"残りのお湯が少ない（{pct}%）ため、売電が無くても沸き増しを始めました（お湯切れを防ぐため）")
+
     # 2. 昼：売電をリアルタイムに見て沸き増し
     if not in_window:
         counters["over"] = counters["buy"] = 0
+        state["ensure"] = False
         if state["by_us"]:
             eco_auto("昼の時間帯が終わったため")
         state["status"] = f"待機中（{conf['start_hour']}時〜{conf['end_hour']}時に、余った電気で沸かします）"
@@ -605,10 +781,12 @@ def tick():
     else:
         counters["buy"] = counters["buy"] + 15 if surplus < -conf["stop_buy_w"] else 0
         state["status"] = "余った電気で沸き増し中（" + (f"売電 {surplus / 1000:.1f}kW" if surplus >= 0 else f"買電 {-surplus / 1000:.1f}kW") + "）"
+        stop = eco_pause if state.get("night_stop") else eco_auto
         if full:
-            eco_auto("お湯がいっぱいになったため")
-        elif counters["buy"] >= 180:
-            eco_auto("電気を買い始めたため")
+            stop("お湯がいっぱいになったため")
+            state["ensure"] = False
+        elif counters["buy"] >= 180 and not state.get("ensure"):
+            stop("電気を買い始めたため")
 
 
 wake = threading.Event()
@@ -632,7 +810,7 @@ def public_state():
     with lock:
         c = {k: v for k, v in conf.items() if k not in SECRET_CONF}
         c["aiseg_password_set"] = bool(conf.get("aiseg_password"))
-        return {"power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
+        return {"night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}
 
@@ -660,6 +838,9 @@ class Api(BaseHTTPRequestHandler):
         p = self._path()
         if p in ("/", "/status"):
             return self._ok(public_state())
+        if p == "/energy":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._ok(energy_report((q.get("days") or ["7"])[0]))
         self._ok({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -710,6 +891,7 @@ def main():
     os.makedirs(DIR, exist_ok=True)
     el = Echonet()
     threading.Thread(target=loop, daemon=True).start()
+    threading.Thread(target=energy_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

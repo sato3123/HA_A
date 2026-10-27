@@ -252,6 +252,11 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             item { CalendarSettings(vm) }
         }
 
+        if (page == "climate") {
+            item { SectionTitle("エアコンの自動温度調整") }
+            item { ClimateAutoSettings(vm) }
+        }
+
         if (page == "solar") {
             item { SectionTitle("おひさま沸き上げ（エコキュート）") }
             item { SolarHeatSettings(vm) }
@@ -576,6 +581,7 @@ val SETTINGS_MENU = listOf(
     MenuItem("voice", "🎤", "音声と AI", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"),
     MenuItem("screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間"),
     MenuItem("calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"),
+    MenuItem("climate","❄","エアコンの自動温度調整","温度の範囲を決めて、自動で冷房・暖房"),
     MenuItem("solar","☀","おひさま沸き上げ","太陽光で余った電気でエコキュートを沸かす"),
     MenuItem("cameras","📷","カメラ（直接つなぐ）","Home Assistant を通さずに見るネットワークカメラ"),
     MenuItem("echonet", "📡", "ECHONET Lite", "Home Assistant を通さずに直接つなぐ機器"),

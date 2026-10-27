@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -84,13 +85,16 @@ fun EcoCuteCard(vm: MainViewModel) {
                     if (!p.ok) TextButton(onClick = { vm.retrySolarPlan() }) { Text("もう一度設定") }
                 }
             }
-            if (enabled && s.history.size >= 2) SurplusChart(s.history, Modifier.fillMaxWidth().height(48.dp))
+            if (enabled && s.history.size >= 2) SurplusChart(s.history, Modifier.fillMaxWidth())
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
-            if (s.canManual) {
+            var analysis by remember { mutableStateOf(false) }
+            if (analysis) EnergyAnalysisDialog(vm) { analysis = false }
+            if (s.canManual || s.server) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { vm.ecoManualStart() }) { Text("今すぐ沸き増し") }
+                    if (s.server) TextButton(onClick = { analysis = true }) { Text("📊 電気の分析") }
+                    if (s.canManual) OutlinedButton(onClick = { vm.ecoManualStart() }) { Text("今すぐ沸き増し") }
                     if (s.manual == true) TextButton(onClick = { vm.ecoBackToAuto() }) { Text("自動に戻す") }
                 }
             }
@@ -152,6 +156,38 @@ fun SolarHeatSettings(vm: MainViewModel) {
             Button(onClick = { vm.pushSolarToServer() }) { Text("このタブレットの設定をサーバーに送る") }
             Text("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、下の時間帯などの設定をサーバーに送ります。最初に1回押してください。", style = MaterialTheme.typography.bodySmall)
             serverMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+
+            // 夜の沸き上げの減らし方（サーバー）
+            val sc by vm.serverConf.collectAsState()
+            val method = sc["night_method"] as? String ?: "auto"
+            Text("夜の沸き上げの減らし方", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = method == "stop", onClick = { vm.setServerConf("night_method", "stop") }, label = { Text("夜は止める（おすすめ）") }, colors = chipColors)
+                FilterChip(selected = method == "auto", onClick = { vm.setServerConf("night_method", "auto") }, label = { Text("エコキュートの機能で減らす") }, colors = chipColors)
+            }
+            Text(
+                if (method == "stop") "翌日が晴れの予報のとき、サーバーが夜の沸き上げを止め（手動沸き上げ停止）、昼に余った電気で沸かします。昼の時間帯が終わると自動に戻します。" +
+                    "お湯切れを防ぐため、夜中に残りが減りすぎたら止めるのをやめ、昼の終わる2時間前にまだ少なければ売電が無くても沸かします。"
+                else "エネルギーシフト（夜の沸き上げを昼にずらす設定）を使います。使えない機種では、晴れの夜だけタンクの運転モードを「節約」にします。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (method == "stop") {
+                @Composable
+                fun pctRow(label: String, key: String, def: Int, options: List<Int>) {
+                    val cur = (sc[key] as? Number)?.toInt() ?: def
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(end = 8.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            options.forEach { v -> FilterChip(selected = cur == v, onClick = { vm.setServerConf(key, v) }, label = { Text("$v%") }, colors = chipColors) }
+                        }
+                    }
+                }
+                pctRow("夜に止めるのは、残りがこれ以上のとき", "stop_min_pct", 50, listOf(30, 40, 50, 60, 70))
+                pctRow("夜中に残りがこれより減ったら沸かす", "safety_pct", 30, listOf(20, 30, 40))
+                pctRow("昼の終わりの2時間前に、これより少なければ沸かす", "ensure_pct", 60, listOf(40, 50, 60, 70, 80))
+                val ns by vm.nightStop.collectAsState()
+                if (ns) Text("いまは夜の沸き上げを止めています（昼に沸かします）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
 
             // AiSEG2 から売電・買電を読む（スマートメーターの代わり）
             Text("AiSEG2 から売電・買電を読む", style = MaterialTheme.typography.labelLarge)
@@ -273,7 +309,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 (view?.sensorName?.let { "（$it）" } ?: ""),
             style = MaterialTheme.typography.bodyMedium,
         )
-        view?.history?.takeIf { it.size >= 2 }?.let { SurplusChart(it, Modifier.fillMaxWidth().height(80.dp)) }
+        view?.history?.takeIf { it.size >= 2 }?.let { SurplusChart(it, Modifier.fillMaxWidth()) }
 
         Text("Home Assistant のセンサー（読み取り先が Home Assistant のとき）", style = MaterialTheme.typography.labelLarge)
         Text(
@@ -338,22 +374,56 @@ fun SolarHeatSettings(vm: MainViewModel) {
 private fun planTime(ms: Long): String =
     java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("M/d H:mm"))
 
-/** 直近1時間の売電（上・緑）と買電（下・赤）の変化 */
+/**
+ * 直近1時間の電気の流れ。0 の線より上（緑）＝売電（電気が余って電力会社に売っている）、下（赤）＝買電（電力会社から買っている）。
+ * 縦の目盛りは kW、横は時刻（左が1時間前、右がいま）。
+ */
 @Composable
 private fun SurplusChart(pts: List<Pair<Long, Double>>, modifier: Modifier) {
     val grid = MaterialTheme.colorScheme.outlineVariant
-    androidx.compose.foundation.Canvas(modifier) {
-        val end = System.currentTimeMillis()
-        val start = end - 3_600_000L
-        val maxAbs = (pts.maxOf { kotlin.math.abs(it.second) }).coerceAtLeast(1000.0)
-        val mid = size.height / 2
-        fun x(t: Long) = size.width * ((t - start).toFloat() / (end - start)).coerceIn(0f, 1f)
-        fun y(v: Double) = mid - (v / maxAbs).toFloat() * (mid - 2)
-        drawLine(grid, androidx.compose.ui.geometry.Offset(0f, mid), androidx.compose.ui.geometry.Offset(size.width, mid), 1f)
-        for (i in 1 until pts.size) {
-            val a = pts[i - 1]; val b = pts[i]
-            val c = if (b.second >= 0) androidx.compose.ui.graphics.Color(0xFF66BB6A) else androidx.compose.ui.graphics.Color(0xFFEF5350)
-            drawLine(c, androidx.compose.ui.geometry.Offset(x(a.first), y(a.second)), androidx.compose.ui.geometry.Offset(x(b.first), y(b.second)), 3f)
+    val label = MaterialTheme.colorScheme.onSurfaceVariant
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val style = MaterialTheme.typography.labelSmall.copy(color = label)
+    val green = androidx.compose.ui.graphics.Color(0xFF66BB6A)
+    val red = androidx.compose.ui.graphics.Color(0xFFEF5350)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("直近1時間の電気の流れ", style = MaterialTheme.typography.labelMedium)
+            Text("■ 売電（余っている）", style = MaterialTheme.typography.labelSmall, color = green)
+            Text("■ 買電（買っている）", style = MaterialTheme.typography.labelSmall, color = red)
+        }
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(96.dp)) {
+            val end = System.currentTimeMillis()
+            val start = end - 3_600_000L
+            val maxKw = kotlin.math.ceil((pts.maxOf { kotlin.math.abs(it.second) } / 1000).coerceAtLeast(1.0))
+            val left = 40.dp.toPx(); val bottom = size.height - 16.dp.toPx(); val top = 4.dp.toPx()
+            val mid = (top + bottom) / 2
+            fun x(t: Long) = left + (size.width - left) * ((t - start).toFloat() / (end - start)).coerceIn(0f, 1f)
+            fun y(w: Double) = mid - (w / 1000 / maxKw).toFloat() * (mid - top)
+            // 目盛り（＋最大・0・－最大）
+            listOf(maxKw to "売 ${maxKw.toInt()}kW", 0.0 to "0", -maxKw to "買 ${maxKw.toInt()}kW").forEach { (v, t) ->
+                val yy = y(v * 1000)
+                drawLine(grid, androidx.compose.ui.geometry.Offset(left, yy), androidx.compose.ui.geometry.Offset(size.width, yy), if (v == 0.0) 2f else 1f)
+                val tl = measurer.measure(t, style)
+                drawText(tl, topLeft = androidx.compose.ui.geometry.Offset(0f, yy - tl.size.height / 2))
+            }
+            // 時刻（1時間前・30分前・いま）
+            listOf(start to "1時間前", start + 1_800_000L to "30分前", end to "いま").forEach { (t, txt) ->
+                val tl = measurer.measure(txt, style)
+                val xx = (x(t) - tl.size.width / 2).coerceIn(left, size.width - tl.size.width)
+                drawText(tl, topLeft = androidx.compose.ui.geometry.Offset(xx, bottom + 2))
+            }
+            // 売電は 0 の線より上を緑、買電は下を赤で塗る
+            for (i in 1 until pts.size) {
+                val a = pts[i - 1]; val b = pts[i]
+                val c = if (b.second >= 0) green else red
+                val x0 = x(a.first); val x1 = x(b.first)
+                val path = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(x0, mid); lineTo(x0, y(a.second)); lineTo(x1, y(b.second)); lineTo(x1, mid); close()
+                }
+                drawPath(path, c.copy(alpha = 0.35f))
+                drawLine(c, androidx.compose.ui.geometry.Offset(x0, y(a.second)), androidx.compose.ui.geometry.Offset(x1, y(b.second)), 3f)
+            }
         }
     }
 }

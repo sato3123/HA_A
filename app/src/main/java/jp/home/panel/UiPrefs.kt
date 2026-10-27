@@ -173,6 +173,11 @@ class UiPrefs(context: Context) {
         get() = p.getString("ctl_mode", "auto") ?: "auto"
         set(v) = p.edit().putString("ctl_mode", v).apply()
 
+    /** エアコンの自動温度調整（JSON） */
+    var climateRulesJson: String?
+        get() = p.getString("climate_rules", null)
+        set(v) = p.edit().putString("climate_rules", v).apply()
+
     /** 部屋の並び順（部屋の key の並び） */
     var roomOrder: List<String>
         get() = (p.getString("room_order", "") ?: "").split("\n").filter { it.isNotBlank() }

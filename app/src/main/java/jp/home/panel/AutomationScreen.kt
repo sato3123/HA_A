@@ -207,6 +207,9 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                 FilterChip(t is Trig.State, { if (t !is Trig.State) rule = rule.copy(trigger = Trig.State("", "on")) }, { Text("機器の状態") })
                 FilterChip(t is Trig.Sun && t.event == "sunrise", { rule = rule.copy(trigger = Trig.Sun("sunrise", 0)) }, { Text("日の出") })
                 FilterChip(t is Trig.Sun && t.event == "sunset", { rule = rule.copy(trigger = Trig.Sun("sunset", 0)) }, { Text("日の入り") })
+                FilterChip(t is Trig.Distance, {
+                    if (t !is Trig.Distance) rule = rule.copy(trigger = Trig.Distance(states.values.firstOrNull { it.domain == "person" }?.entityId ?: "", 1.0, true))
+                }, { Text("家からの距離") })
             }
         }
         when (val t = rule.trigger) {
@@ -221,6 +224,27 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                             FilterChip(t.to == v, { rule = rule.copy(trigger = t.copy(to = v)) }, { Text(label) })
                         }
                     }
+                }
+            }
+            is Trig.Distance -> {
+                val people = states.values.filter { it.domain == "person" || it.domain == "device_tracker" }.sortedWith(compareBy({ it.domain != "person" }, { it.name }))
+                Text("だれの位置で決めるか（スマートフォンの Home Assistant アプリで位置を送っている人）", style = MaterialTheme.typography.bodySmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    people.forEach { p -> FilterChip(t.personId == p.entityId, { rule = rule.copy(trigger = t.copy(personId = p.entityId)) }, { Text(p.name) }) }
+                }
+                if (people.isEmpty()) Text("Home Assistant に人（person）がいません。スマートフォンに Home Assistant アプリを入れて、位置情報を送るようにしてください。", color = MaterialTheme.colorScheme.error)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(t.approach, { rule = rule.copy(trigger = t.copy(approach = true)) }, { Text("近づいたとき（帰宅前）") })
+                    FilterChip(!t.approach, { rule = rule.copy(trigger = t.copy(approach = false)) }, { Text("離れたとき（外出後）") })
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0).forEach { km ->
+                        FilterChip(t.km == km, { rule = rule.copy(trigger = t.copy(km = km)) }, { Text(kmText(km)) })
+                    }
+                }
+                states[t.personId]?.let { p ->
+                    val lat = p.attributes.optDouble("latitude")
+                    Text(if (lat.isNaN()) "※ ${p.name} の位置はまだ届いていません" else "${p.name} の位置は届いています", style = MaterialTheme.typography.bodySmall)
                 }
             }
             is Trig.Sun -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -336,6 +360,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
 private fun validate(r: Rule): String? = when {
     r.actions.isEmpty() -> "「＋ 操作を追加」で、実行することを1つ以上選んでください"
     r.trigger is Trig.State && (r.trigger as Trig.State).entityId.isBlank() -> "きっかけにする機器を選んでください"
+    r.trigger is Trig.Distance && (r.trigger as Trig.Distance).personId.isBlank() -> "だれの位置で決めるかを選んでください"
     else -> null
 }
 

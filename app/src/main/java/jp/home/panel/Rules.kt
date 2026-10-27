@@ -20,6 +20,12 @@ sealed interface Trig {
     data class State(val entityId: String, val to: String) : Trig
     /** 日の出・日の入り。offsetMin がマイナスなら前、プラスなら後 */
     data class Sun(val event: String, val offsetMin: Int) : Trig
+    /**
+     * 家からの距離。personId（人・スマートフォンの位置）が家から km 以内に近づいたとき（approach）、
+     * または km より遠くへ離れたとき。Home Assistant の distance() を使うので、スマートフォンの
+     * Home Assistant アプリで位置を送っている人が対象。
+     */
+    data class Distance(val personId: String, val km: Double, val approach: Boolean) : Trig
 }
 
 /** 実行すること。service は "light.turn_on" の形 */
@@ -85,6 +91,10 @@ fun Rule.toConfig(): JSONObject {
         is Trig.Sun -> JSONObject().put("trigger", "sun").put("event", t.event).also {
             if (t.offsetMin != 0) it.put("offset", offsetString(t.offsetMin))
         }
+        is Trig.Distance -> JSONObject().put("trigger", "template").put(
+            "value_template",
+            "{{ distance('${t.personId}') is number and distance('${t.personId}') ${if (t.approach) "<" else ">"} ${t.km} }}",
+        )
     }
     val conds = JSONArray()
     if (weekdays.isNotEmpty() || after != null || before != null) {
@@ -140,6 +150,10 @@ fun parseRule(id: String, j: JSONObject): Rule? {
         "time" -> Trig.Time(hhmm(singleString(t.opt("at")) ?: return null))
         "state" -> Trig.State(singleString(t.opt("entity_id")) ?: return null, t.opt("to")?.toString() ?: return null)
         "sun" -> Trig.Sun(t.optString("event", "sunset"), parseOffset(t.opt("offset")))
+        "template" -> {
+            val m = Regex("""distance\('([^']+)'\)\s*([<>])\s*([0-9.]+)""").find(t.optString("value_template")) ?: return null
+            Trig.Distance(m.groupValues[1], m.groupValues[3].toDoubleOrNull() ?: return null, m.groupValues[2] == "<")
+        }
         else -> return null
     }
 
@@ -266,7 +280,10 @@ fun trigLabel(t: Trig, nameOf: (String) -> String): String = when (t) {
         t.offsetMin > 0 -> "の${t.offsetMin}分後に"
         else -> "に"
     }
+    is Trig.Distance -> "${nameOf(t.personId)} が家から${kmText(t.km)}" + if (t.approach) "以内に近づいたとき" else "より遠くへ離れたとき"
 }
+
+fun kmText(km: Double): String = if (km < 1) "${(km * 1000).toInt()}m" else (if (km % 1.0 == 0.0) km.toInt().toString() else km.toString()) + "km"
 
 fun ruleSummary(r: Rule, nameOf: (String) -> String): String {
     val time = listOfNotNull(

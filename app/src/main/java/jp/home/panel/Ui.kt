@@ -412,14 +412,19 @@ private fun CtlModeButton(vm: MainViewModel, compact: Boolean) {
 
 @Composable
 private fun ConnectionBadge(conn: Conn, route: Route?, showLabel: Boolean = true) {
-    val (color, label) = when (conn) {
-        Conn.CONNECTED -> Color(0xFF66BB6A) to if (route?.remote == true) "外出先（Cloud）" else "家の中"
-        Conn.CONNECTING -> Color(0xFFFFCA28) to "接続しています"
-        Conn.RETRYING -> Color(0xFFEF5350) to "再接続待ち"
+    // 家の中（🏠）か外出先（🌏）かを、ひと目で分かるアイコンで出す
+    val (icon, color, label) = when (conn) {
+        Conn.CONNECTED -> if (route?.remote == true) Triple("🌏", Color(0xFF42A5F5), "外出先から接続") else Triple("🏠", Color(0xFF66BB6A), "家の中から接続")
+        Conn.CONNECTING -> Triple("⏳", Color(0xFFFFCA28), "接続しています")
+        Conn.RETRYING -> Triple("⚠", Color(0xFFEF5350), "再接続待ち")
     }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(10.dp).background(color, CircleShape))
-        if (showLabel) Text(" $label", style = MaterialTheme.typography.labelMedium)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.background(color.copy(alpha = 0.18f), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Text(icon, fontSize = 20.sp)
+        if (showLabel) Text(" $label", style = MaterialTheme.typography.labelLarge, color = color)
     }
 }
 

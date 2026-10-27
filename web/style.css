@@ -287,3 +287,6 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .thermo .tvv { white-space: nowrap; }
 .card.solar { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #energy:empty + #solar .card.solar { margin-top: 0; }
+.conn { display: inline-flex; align-items: center; gap: 6px; border-radius: 16px; padding: 3px 10px; font-size: 14px; font-weight: 600; }
+.conn .ci { font-size: 20px; }
+@media (max-width: 600px) { .conn .cl { display: none; } }

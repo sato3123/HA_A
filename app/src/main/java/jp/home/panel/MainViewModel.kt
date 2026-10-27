@@ -1706,6 +1706,100 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= エアコンの自動温度調整 =================
+
+    val climateRules = MutableStateFlow(ClimateRule.listFrom(prefs.climateRulesJson))
+    val climateStatus = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    private data class ClimateMem(
+        var lastCmdAt: Long = 0, var lastMode: String? = null, var lastTarget: Double? = null,
+        var manualUntil: Long = 0, var outSince: Long = 0, var boost: Int = 0, var byUs: Boolean = false,
+    )
+    private val climateMem = HashMap<String, ClimateMem>()
+
+    fun saveClimateRule(r: ClimateRule) {
+        val next = climateRules.value.filter { it.entityId != r.entityId } + r
+        prefs.climateRulesJson = JSONArray(next.map { it.toJson() }).toString()
+        climateRules.value = next
+        if (!r.enabled) climateStatus.value = climateStatus.value - r.entityId
+        climateMem.remove(r.entityId)
+    }
+
+    private fun startClimateAuto() {
+        viewModelScope.launch {
+            delay(20_000)
+            while (isActive) {
+                try { climateTick() } catch (e: CancellationException) { throw e } catch (e: Exception) { addLog("温度調整：${e.message}") }
+                delay(60_000)
+            }
+        }
+    }
+
+    private fun climateTick() {
+        val now = System.currentTimeMillis()
+        val st = climateStatus.value.toMutableMap()
+        for (r in climateRules.value.filter { it.enabled }) {
+            val e = allEntities.value.firstOrNull { it.entityId == r.entityId } ?: continue
+            val mem = climateMem.getOrPut(r.entityId) { ClimateMem() }
+            val temp = if (r.source == "ac") e.attributes.optDouble("current_temperature").takeIf { !it.isNaN() }
+            else thermos.value.firstOrNull { it.key == r.source }?.temperature
+            val srcName = if (r.source == "ac") "エアコンの室温" else thermos.value.firstOrNull { it.key == r.source }?.name ?: "温度計"
+            if (temp == null) { st[r.entityId] = "温度（$srcName）が読めません"; continue }
+            val mode = e.state
+            val target = e.attributes.optDouble("temperature").takeIf { !it.isNaN() }
+            // 人が操作したら、しばらくその設定を優先する
+            if (mem.lastCmdAt > 0 && now - mem.lastCmdAt > 120_000 && (mode != mem.lastMode || (target != null && mem.lastTarget != null && target != mem.lastTarget))) {
+                mem.manualUntil = now + 10 * 60_000L
+                mem.lastCmdAt = 0; mem.byUs = false
+            }
+            if (now < mem.manualUntil) {
+                st[r.entityId] = "いま ${fmt(temp)}℃（$srcName）・手で操作されたので ${(mem.manualUntil - now) / 60_000 + 1} 分間はそのままにします"
+                continue
+            }
+            val h = 0.5
+            fun cmd(newMode: String?, newTarget: Double?, what: String) {
+                if (now - mem.lastCmdAt < 5 * 60_000L && mem.lastCmdAt > 0) return
+                if (newMode == null) call(e, "turn_off")
+                else {
+                    if (mode != newMode) call(e, "set_hvac_mode", JSONObject().put("hvac_mode", newMode))
+                    if (newTarget != null && target != newTarget) call(e, "set_temperature", JSONObject().put("temperature", newTarget))
+                }
+                mem.lastCmdAt = now; mem.lastMode = newMode ?: "off"; mem.lastTarget = newTarget ?: target
+                addLog("温度調整：${e.name} を$what（${fmt(temp)}℃・$srcName）")
+            }
+            val hasMode = { m: String -> e.attributes.optJSONArray("hvac_modes")?.let { a -> (0 until a.length()).any { a.optString(it) == m } } ?: true }
+            when {
+                temp > r.max + h && r.cool && hasMode("cool") -> {
+                    if (mem.outSince == 0L) mem.outSince = now
+                    // 温度計で見ていて、20分たっても下がらなければ設定温度を強める
+                    if (r.source != "ac" && now - mem.outSince > 20 * 60_000L && mem.boost < 3 && mode == "cool") { mem.boost++; mem.outSince = now }
+                    val t = r.max - mem.boost
+                    cmd("cool", t, "冷房 ${fmt(t)}℃ にしました")
+                    mem.byUs = true
+                    st[r.entityId] = "いま ${fmt(temp)}℃（$srcName）：上限 ${fmt(r.max)}℃ を超えたので冷房中（設定 ${fmt(t)}℃）"
+                }
+                temp < r.min - h && r.heat && hasMode("heat") -> {
+                    if (mem.outSince == 0L) mem.outSince = now
+                    if (r.source != "ac" && now - mem.outSince > 20 * 60_000L && mem.boost < 3 && mode == "heat") { mem.boost++; mem.outSince = now }
+                    val t = r.min + mem.boost
+                    cmd("heat", t, "暖房 ${fmt(t)}℃ にしました")
+                    mem.byUs = true
+                    st[r.entityId] = "いま ${fmt(temp)}℃（$srcName）：下限 ${fmt(r.min)}℃ を下回ったので暖房中（設定 ${fmt(t)}℃）"
+                }
+                else -> {
+                    mem.outSince = 0; mem.boost = 0
+                    val mid = (r.min + r.max) / 2
+                    if (r.offInRange && mem.byUs && mode != "off" && kotlin.math.abs(temp - mid) <= (r.max - r.min) / 4) {
+                        cmd(null, null, "止めました（範囲の真ん中に戻ったため）")
+                        mem.byUs = false
+                    }
+                    st[r.entityId] = "いま ${fmt(temp)}℃（$srcName）：範囲（${fmt(r.min)}〜${fmt(r.max)}℃）の中です"
+                }
+            }
+        }
+        climateStatus.value = st
+    }
+
     // ================= おひさま沸き上げ（エコキュート） =================
     //
     // ・毎日、決まった時刻（初期値 20 時）に翌日の天気予報を見て、晴れならエコキュートの「エネルギーシフト」に参加させ、
@@ -2104,8 +2198,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         updateSolarView()
     }
 
+    // ---- 電気の分析（サーバーが AiSEG2 から記録した時間ごと・回路ごとの電気） ----
+    val energyHours = MutableStateFlow<List<EnergyHour>?>(null)
+    val energyHoursStatus = MutableStateFlow<String?>(null)
+
+    fun loadEnergyHours(days: Int) = viewModelScope.launch {
+        energyHoursStatus.value = "読み込んでいます…"
+        try {
+            val j = serverCall("/energy?days=$days", null)
+            val arr = j.optJSONArray("hours") ?: JSONArray()
+            energyHours.value = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { h ->
+                val c = h.optJSONObject("circuits") ?: JSONObject()
+                EnergyHour(h.optString("h"), h.optDouble("use", 0.0), h.optDouble("gen", 0.0), h.optDouble("buy", 0.0), h.optDouble("sell", 0.0),
+                    c.keys().asSequence().associateWith { c.optDouble(it, 0.0) })
+            }
+            energyHoursStatus.value = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            energyHoursStatus.value = "ホームパネルのサーバー（${shServer.value}）から記録を読めませんでした：${e.message}" +
+                "（⚙ 設定 →「おひさま沸き上げ」でサーバーと AiSEG2 を設定してください）"
+        }
+    }
+
+    /** サーバーの設定（夜の沸き上げの減らし方など）。キー → 値 */
+    val serverConf = MutableStateFlow<Map<String, Any?>>(emptyMap())
+
+    fun setServerConf(key: String, value: Any) = viewModelScope.launch {
+        serverConf.value = serverConf.value + (key to value)
+        serverPost("/config", JSONObject().put(key, value))
+    }
+
     /** サーバーに登録した AiSEG2 の状態（画面用） */
     val serverAiseg = MutableStateFlow<String?>(null)
+    val nightStop = MutableStateFlow(false)
     val serverAisegUrl = MutableStateFlow("")
 
     /** AiSEG2 の住所とパスワードをサーバーに登録する（パスワードはサーバーにだけ保存し、このタブレットには残さない） */
@@ -2186,6 +2312,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             server = true,
         )
         serverAisegUrl.value = conf.optString("aiseg_url")
+        serverConf.value = conf.keys().asSequence().associateWith { k -> conf.opt(k) }
+        nightStop.value = j.optBoolean("night_stop")
         // 画面の設定もサーバーの値に合わせる
         shEnabled.value = conf.optBoolean("enabled", shEnabled.value)
         shStart.value = conf.optInt("start_hour", shStart.value)
@@ -2724,6 +2852,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         // 開発用のビルドの「デモ表示」：Home Assistant につながず、見本のデータで画面を出す（画面の確認用）
         if (!solarStarted) { solarStarted = true; startSolarHeat() }
+        startClimateAuto()
         if (BuildConfig.DEBUG && prefs.demoMode) loadDemo() else start()
         startEchonet()
         // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）

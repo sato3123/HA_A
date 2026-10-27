@@ -3000,8 +3000,10 @@
     S.conn = c;
     const b = $("#badge");
     if (b) {
-      const [color, label] = { connected: ["#66bb6a", location.protocol === "https:" ? "接続中（https）" : "接続中"], connecting: ["#ffca28", "接続しています"], retry: ["#ef5350", "再接続待ち"] }[c];
-      b.innerHTML = `<span class="dot" style="background:${color}"></span>${label}`;
+      // 家の中（🏠）か外出先（🌏）かを、ひと目で分かるアイコンで出す
+      const home = SERVER_MODE || /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|localhost$)/.test(location.hostname) || location.hostname.endsWith(".local");
+      const [icon, color, label] = { connected: home ? ["🏠", "#66bb6a", "家の中から接続"] : ["🌏", "#42a5f5", "外出先から接続"], connecting: ["⏳", "#ffca28", "接続しています"], retry: ["⚠", "#ef5350", "再接続待ち"] }[c];
+      b.innerHTML = `<span class="conn" style="background:${color}2e;color:${color}"><span class="ci">${icon}</span><span class="cl">${label}</span></span>`;
     }
     renderMsg();
     renderVoice();

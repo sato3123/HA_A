@@ -24,6 +24,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -89,6 +92,8 @@ fun EnergyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     val r by vm.energy.collectAsState()
     val states by vm.allStates.collectAsState()
     val report = r ?: return
+    var analysis by remember { mutableStateOf(false) }
+    if (analysis) { EnergyAnalysisDialog(vm) { analysis = false }; return }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("⚡ 電気の収支") },
@@ -154,6 +159,7 @@ fun EnergyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     }
                 }
                 Text("※ Home Assistant の「エネルギー」の設定と記録をもとに計算しています（数分おきに更新）。", style = MaterialTheme.typography.labelSmall, fontSize = 11.sp)
+                androidx.compose.material3.OutlinedButton(onClick = { analysis = true }) { Text("📊 回路別・時間別に分析（AiSEG2）") }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } },
