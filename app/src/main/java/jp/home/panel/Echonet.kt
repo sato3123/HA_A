@@ -456,7 +456,7 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
     suspend fun setWaterHeaterEach(key: String, props: List<Prop>): Map<Int, String?> = withContext(Dispatchers.IO) {
         val d = devices.value[key] ?: return@withContext props.associate { it.epc to "エコキュートが見つかりません" }
         if (d.cls.kind != ElKind.WATER_HEATER) return@withContext props.associate { it.epc to "エコキュートではありません" }
-        val safe = setOf(0xB0, 0xC0, 0xC7, 0xC9, 0xCA)
+        val safe = setOf(0xB0, 0xC0, 0xC7, 0xC9, 0xCA, 0xB6)
         val out = LinkedHashMap<Int, String?>()
         for (p in props.filter { it.epc in safe }) {
             if (d.setMap.isNotEmpty() && p.epc !in d.setMap) { out[p.epc] = "この機種は設定に対応していません"; continue }
@@ -499,13 +499,21 @@ class EchonetClient(private val context: Context, private val log: (String) -> U
         if (setMap != null || getMap != null) {
             devices.value[key]?.let { cur -> devices.value = devices.value + (key to cur.copy(setMap = setMap ?: cur.setMap, getMap = getMap ?: cur.getMap)) }
         }
-        for (epc in listOf(0xB0, 0xC0, 0xC7, 0xC9, 0xCA)) {
+        for (epc in listOf(0xB0, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xC0, 0xC7, 0xC8, 0xC9, 0xCA, 0xE1, 0xE2)) {
             val v = request(d.ip, d.eoj, Esv.GET, listOf(Prop(epc)), 2000)?.props?.firstOrNull()?.takeIf { it.edt.isNotEmpty() }?.edt
+            var txt = v?.joinToString("") { "%02X".format(it) } ?: "読めない"
+            if (epc == 0xB6 && v != null) txt += "（" + (mapOf(0x41 to "標準", 0x42 to "節約", 0x43 to "多め")[v[0].toInt() and 0xFF] ?: "?") + "）"
+            if ((epc == 0xE1 || epc == 0xE2) && v != null) v.u16()?.let { txt += "（${it}L）" }
             lines += "・${waterHeaterEpcName(epc)}：" + when {
                 setMap == null -> "（不明）"
                 epc in setMap -> "設定できる"
                 else -> "設定できない"
-            } + "・値 " + (v?.joinToString("") { "%02X".format(it) } ?: "読めない")
+            } + "・値 " + txt
+        }
+        lines += "→ 夜の沸き上げを減らす方法：" + when {
+            setMap != null && 0xC7 in setMap -> "エネルギーシフト（断られた場合はタンクの運転モード）"
+            setMap == null || 0xB6 in setMap -> "タンクの運転モード（晴れの夜だけ「節約」）"
+            else -> "外からは変えられません（エコキュートのアプリ・リモコンの設定を使ってください）"
         }
         lines.joinToString("\n")
     }

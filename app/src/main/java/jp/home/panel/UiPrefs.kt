@@ -152,7 +152,11 @@ class UiPrefs(context: Context) {
     var shShiftUnsupported: Boolean
         get() = p.getBoolean("sh_shift_unsup", false)
         set(v) = p.edit().putBoolean("sh_shift_unsup", v).apply()
-        /** 毎日の設定の結果（JSON） */
+        /** タンクの運転モードを「節約」にしたのがこのアプリか（昼の時間帯のあと「標準」に戻す） */
+    var shTankByUs: Boolean
+        get() = p.getBoolean("sh_tank_by_us", false)
+        set(v) = p.edit().putBoolean("sh_tank_by_us", v).apply()
+    /** 毎日の設定の結果（JSON） */
     var shPlanJson: String?
         get() = p.getString("sh_plan", null)
         set(v) = p.edit().putString("sh_plan", v).apply()

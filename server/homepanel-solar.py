@@ -48,7 +48,13 @@ DEFAULT_CONF = {
 }
 SECRET_CONF = {"aiseg_password"}
 
-EPC_NAME = {0xB0: "沸き上げ自動設定", 0xC0: "昼間沸き増し許可", 0xC7: "エネルギーシフト参加", 0xC9: "エネルギーシフト回数", 0xCA: "昼間沸き上げシフト時刻"}
+EPC_NAME = {0xB0: "沸き上げ自動設定", 0xC0: "昼間沸き増し許可", 0xC7: "エネルギーシフト参加", 0xC9: "エネルギーシフト回数", 0xCA: "昼間沸き上げシフト時刻",
+            0xB6: "タンク運転モード"}
+# 調べるだけの項目（設定はしない）
+DIAG_EPCS = [0xB0, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xC0, 0xC7, 0xC8, 0xC9, 0xCA, 0xE1, 0xE2]
+DIAG_NAME = {**EPC_NAME, **{0xB2: "沸き上げ中の状態", 0xB3: "沸き上げ湯温", 0xB4: "手動沸き上げ停止日数", 0xB5: "手動沸き上げ停止（時間）",
+                              0xC8: "沸き上げ開始の基準時刻", 0xE1: "残りのお湯の量", 0xE2: "タンクの容量"}}
+TANK_MODE = {0x41: "標準", 0x42: "節約", 0x43: "多め"}
 SAFE_SET = set(EPC_NAME)
 
 lock = threading.RLock()
@@ -80,7 +86,7 @@ def log(msg):
     print(line, flush=True)
     with lock:
         state["log"] = ([line] + state["log"])[:80]
-        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported")})
+        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us")})
 
 
 # ================= ECHONET Lite =================
@@ -281,7 +287,7 @@ def eco_read():
         m = el.get(ip, eoj, [0x9E])
         if m and 0x9E in m:
             eco_caps["set"] = prop_map(m[0x9E])
-    v = el.get(ip, eoj, [0x80, 0xB0, 0xB2, 0xE1, 0xE2, 0xC0, 0xC7, 0xCA])
+    v = el.get(ip, eoj, [0x80, 0xB0, 0xB2, 0xE1, 0xE2, 0xC0, 0xC7, 0xCA, 0xB6])
     if v is None:
         v = el.get(ip, eoj, [0xB0, 0xB2, 0xE1, 0xC7])
     eco = {"online": v is not None, "at": time.time()}
@@ -290,7 +296,7 @@ def eco_read():
         u16 = lambda e: int.from_bytes(v[e][:2], "big") if e in v and len(v[e]) >= 2 else None
         eco.update(heating=u8(0xB2) == 0x41 if u8(0xB2) is not None else None, manual=u8(0xB0) == 0x42 if u8(0xB0) is not None else None,
                    remain=u16(0xE1), tank=u16(0xE2), shift=u8(0xC7) == 0x41 if u8(0xC7) is not None else None,
-                   shift_raw=u8(0xC7), shift_hour=u8(0xCA))
+                   shift_raw=u8(0xC7), shift_hour=u8(0xCA), tank_mode=u8(0xB6))
     s = eco_caps["set"]
     eco["can_manual"] = s is None or 0xB0 in s
     eco["can_shift"] = s is None or 0xC7 in s
@@ -413,13 +419,13 @@ def run_plan(manual=False):
         return result(False, f"エコキュート（{conf['eco_ip']}）から返事がありません" + ("" if manual else "（10分後にもう一度試します）"))
     if manual:
         state["shift_unsupported"] = False
-    if state.get("shift_unsupported") or (eco_caps["set"] is not None and 0xC7 not in eco_caps["set"]):
-        return result(True, "⚠ このエコキュートは、夜の沸き上げを昼にずらす設定（エネルギーシフト）を外から変えられない機種です。夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います（夜の沸き上げを減らしたいときは、エコキュートのリモコンの昼間沸き上げ・ソーラーチャージなどの設定を使ってください）")
     name = "今日" if target == date.today() else "明日"
     try:
         sunny, code = forecast_sunny(target)
     except Exception as e:
         return result(False, f"{name}の天気予報を読めませんでした：{e}")
+    if state.get("shift_unsupported") or (eco_caps["set"] is not None and 0xC7 not in eco_caps["set"]):
+        return tank_plan(sunny, name, eco, result)
     if sunny:
         props = [(0xC7, b"\x41"), (0xC9, b"\x01"), (0xCA, bytes([max(9, min(17, int(conf["start_hour"])))]))]
     else:
@@ -431,8 +437,9 @@ def run_plan(manual=False):
         res.update(set_each([pp for pp in props if pp[0] == 0xC7]))
         if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
             state["shift_unsupported"] = True
-            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported")})
-            return result(True, "⚠ このエコキュートは、夜の沸き上げを昼にずらす設定（エネルギーシフト）を外から変えられない機種です。夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います（夜の沸き上げを減らしたいときは、エコキュートのリモコンの昼間沸き上げ・ソーラーチャージなどの設定を使ってください）（エコキュートの応答：" + res[0xC7] + "）", sunny)
+            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us")})
+            log("エネルギーシフトを受け付けない機種のため、タンクの運転モードで夜の沸き上げを調整します（エコキュートの応答：" + res[0xC7] + "）")
+            return tank_plan(sunny, name, eco, result)
     if res.get(0xC7):
         return result(False, f"設定できませんでした（{EPC_NAME[0xC7]}：{res[0xC7]}）" + ("" if manual else "（10分後にもう一度試します）"), sunny)
     sub = {k: v for k, v in res.items() if k != 0xC7 and v}
@@ -446,6 +453,33 @@ def run_plan(manual=False):
     if sunny:
         return result(True, f"{name}は晴れの予報：夜の沸き上げを減らして、{conf['start_hour']}時から昼に沸かす設定にしました", True)
     return result(True, f"{name}は晴れない予報：いつもどおり夜に沸かす設定にしました", False)
+
+
+def tank_plan(sunny, name, eco, result):
+    """エネルギーシフトが使えない機種：晴れの予報の夜だけタンクの運転モードを「節約」にして夜の沸き上げを減らす。
+    昼の時間帯が終わったら「標準」に戻す。残りのお湯が少ないときは減らさない。"""
+    unsup = ("⚠ このエコキュートは、夜の沸き上げを昼にずらす設定（エネルギーシフト）も、タンクの運転モードも外から変えられない機種です。"
+             "夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います（夜の沸き上げを減らしたいときは、エコキュートのアプリ・リモコンの昼間沸き上げやソーラーチャージなどの設定を使ってください）")
+    s = eco_caps["set"]
+    if s is not None and 0xB6 not in s:
+        return result(True, unsup, sunny)
+    remain, tank = (eco or {}).get("remain"), (eco or {}).get("tank")
+    pct = remain * 100 // tank if remain is not None and tank else None
+    if sunny and pct is not None and pct < 40:
+        err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB6, b"\x41")
+        return result(True, f"{name}は晴れの予報ですが、残りのお湯が少ない（{pct}%）ため、夜はいつもどおり沸かします（タンクの運転モード：標準）", sunny)
+    want = 0x42 if sunny else 0x41
+    err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB6, bytes([want]))
+    if err and "受け付けませんでした" in err:
+        return result(True, unsup + f"（タンクの運転モード：{err}）", sunny)
+    if err:
+        return result(False, f"タンクの運転モードを設定できませんでした：{err}（10分後にもう一度試します）", sunny)
+    with lock:
+        state["tank_by_us"] = sunny
+        state["plan_method"] = "tank"
+    if sunny:
+        return result(True, f"{name}は晴れの予報：タンクの運転モードを「節約」にして夜の沸き上げを減らし、昼に余った電気で沸き増しします（昼の時間帯のあと「標準」に戻します）", True)
+    return result(True, f"{name}は晴れない予報：タンクの運転モードを「標準」にして、いつもどおり夜に沸かします", False)
 
 
 counters = {"over": 0, "buy": 0}
@@ -472,6 +506,36 @@ def eco_start(surplus):
     with lock:
         state["by_us"] = True
     return True
+
+
+def diagnose():
+    """エコキュートが何を読めて、何を設定できるかを調べる"""
+    ip, eoj = conf["eco_ip"], conf["eco_eoj"]
+    if not ip:
+        return "エコキュートの IP アドレスが設定されていません"
+    lines = [f"【エコキュート（{ip}・{eoj}）】"]
+    m = el.get(ip, eoj, [0x9E, 0x9F], timeout=5)
+    setm = prop_map(m[0x9E]) if m and 0x9E in m else None
+    getm = prop_map(m[0x9F]) if m and 0x9F in m else None
+    if setm is not None:
+        eco_caps["set"] = setm
+    else:
+        lines.append("設定できる項目の一覧を読めませんでした" + ("（返事がありません）" if m is None else ""))
+    for epc in DIAG_EPCS:
+        v = el.get(ip, eoj, [epc], timeout=4)
+        val = v.get(epc) if v else None
+        txt = val.hex().upper() if val else "読めない"
+        if epc == 0xB6 and val:
+            txt += f"（{TANK_MODE.get(val[0], '?')}）"
+        if epc in (0xE1, 0xE2) and val and len(val) >= 2:
+            txt += f"（{int.from_bytes(val[:2], 'big')}L）"
+        can = "（不明）" if setm is None else "設定できる" if epc in setm else "設定できない"
+        lines.append(f"・{DIAG_NAME.get(epc, hex(epc))}：{can}・値 {txt}")
+    lines.append("→ 夜の沸き上げを減らす方法：" + (
+        "エネルギーシフト" if setm and 0xC7 in setm and not state.get("shift_unsupported")
+        else "タンクの運転モード（晴れの夜だけ「節約」）" if setm is None or 0xB6 in setm
+        else "外からは変えられません（エコキュートのアプリ・リモコンの設定を使ってください）"))
+    return "\n".join(lines)
 
 
 def tick():
@@ -503,12 +567,19 @@ def tick():
     if now.hour == 7 and morning_checked[0] != today and conf["shift"]:
         morning_checked[0] = today
         p = state.get("plan") or {}
-        if p.get("date") == today and p.get("sunny") is not None and eco and eco.get("shift_raw") is not None:
+        if p.get("date") == today and p.get("sunny") is not None and eco and eco.get("shift_raw") is not None and not state.get("shift_unsupported"):
             if eco["shift_raw"] == (0x41 if p["sunny"] else 0x42):
                 log("朝の確認：昨夜の設定どおりです")
             else:
                 log("朝の確認：昨夜の設定が変わっています。設定し直します")
                 run_plan()
+
+    # タンクの運転モードを「節約」にしていたら、昼の時間帯が終わったところで「標準」に戻す
+    if state.get("tank_by_us") and now.hour >= conf["end_hour"] and now.hour < conf["plan_hour"]:
+        err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB6, b"\x41")
+        if not err:
+            state["tank_by_us"] = False
+            log("昼の時間帯が終わったので、タンクの運転モードを「標準」に戻しました")
 
     # 2. 昼：売電をリアルタイムに見て沸き増し
     if not in_window:
@@ -624,6 +695,8 @@ class Api(BaseHTTPRequestHandler):
                 eco_auto("手動の操作")
             eco_read()
             return self._ok(public_state())
+        if p == "/diagnose":
+            return self._ok({"text": diagnose()})
         if p == "/aiseg-test":
             v = aiseg_surplus_w()
             return self._ok({"ok": v is not None, "surplus_w": v, "power": state.get("power"), "error": state.get("aiseg_error")})

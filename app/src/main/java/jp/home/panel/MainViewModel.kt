@@ -1930,6 +1930,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** エコキュートが何に対応しているか調べる（画面のボタン） */
     fun diagnoseEco() = viewModelScope.launch {
+        if (isServerMode) {
+            ecoDiag.value = "サーバーで調べています…"
+            ecoDiag.value = try {
+                serverCall("/diagnose", JSONObject()).optString("text")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "サーバーに届きません：${e.message}"
+            }
+            return@launch
+        }
         val d = ecoDevice() ?: run { ecoDiag.value = "エコキュートが見つかりません"; return@launch }
         ecoDiag.value = "調べています…"
         ecoDiag.value = echonet.diagnoseWaterHeater(d.key)
@@ -1954,6 +1965,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 毎日の設定：対象の日（夜の沸き上げのあとに来る日）の天気で、エネルギーシフトに参加するか決めて設定し、読み直して確かめる。
      * 夜中の 0〜4 時に実行したときは「今日」、それ以外は「明日」が対象。
      */
+    /** エネルギーシフトが使えない機種：晴れの予報の夜だけタンクの運転モードを「節約」に。昼の時間帯のあと「標準」に戻す */
+    private suspend fun tankPlan(d: ElDevice, sunny: Boolean, dayName: String, result: (Boolean, String, Boolean?) -> Boolean): Boolean {
+        val unsup = "⚠ このエコキュートは、エネルギーシフトもタンクの運転モードも外から変えられない機種です。夜はいつもどおり沸かし、昼に余った電気での沸き増しだけ行います" +
+            "（夜の沸き上げを減らしたいときは、エコキュートのアプリ・リモコンの昼間沸き上げやソーラーチャージなどの設定を使ってください）"
+        if (!d.canSet(0xB6)) return result(true, unsup, sunny)
+        val remain = d.props[0xE1]?.u16()
+        val tank = d.props[0xE2]?.u16()
+        val pct = if (remain != null && tank != null && tank > 0) remain * 100 / tank else null
+        if (sunny && pct != null && pct < 40) {
+            echonet.setWaterHeaterEach(d.key, listOf(Prop(0xB6, bytesOf(0x41))))
+            return result(true, "${dayName}は晴れの予報ですが、残りのお湯が少ない（$pct%）ため、夜はいつもどおり沸かします（タンクの運転モード：標準）", sunny)
+        }
+        val err = echonet.setWaterHeaterEach(d.key, listOf(Prop(0xB6, bytesOf(if (sunny) 0x42 else 0x41))))[0xB6]
+        if (err != null && err.contains("受け付けませんでした")) return result(true, "$unsup（タンクの運転モード：$err）", sunny)
+        if (err != null) return result(false, "タンクの運転モードを設定できませんでした：$err（10分後にもう一度試します）", sunny)
+        prefs.shTankByUs = sunny
+        return if (sunny) result(true, "${dayName}は晴れの予報：タンクの運転モードを「節約」にして夜の沸き上げを減らし、昼に余った電気で沸き増しします（昼の時間帯のあと「標準」に戻します）", true)
+        else result(true, "${dayName}は晴れない予報：タンクの運転モードを「標準」にして、いつもどおり夜に沸かします", false)
+    }
+
     private fun planTarget(): LocalDate = if (java.time.LocalTime.now().hour < 5) LocalDate.now() else LocalDate.now().plusDays(1)
 
     private suspend fun runSolarPlan(manual: Boolean = false): Boolean {
@@ -1969,9 +2000,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!shShift.value) return result(true, "夜の沸き上げを昼にずらす設定はオフです（いつもどおり夜に沸かします）", null)
         val d = ecoDevice() ?: return result(false, "エコキュートが見つかりません", null)
         if (manual) prefs.shShiftUnsupported = false
-        if (prefs.shShiftUnsupported || !d.canSet(0xC7)) return result(true, "⚠ $SHIFT_UNSUPPORTED", null)
         val dayName = if (target == LocalDate.now()) "今日" else "明日"
         val sunny = forecastSunny(target) ?: return result(false, "${dayName}の天気予報がまだありません（天気の連携を確認してください）", null)
+        if (prefs.shShiftUnsupported || !d.canSet(0xC7)) return tankPlan(d, sunny, dayName, ::result)
         val props = mutableListOf<Prop>()
         if (sunny) {
             props += Prop(0xC7, bytesOf(0x41))
@@ -1989,7 +2020,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             res.putAll(echonet.setWaterHeaterEach(d.key, props.filter { it.epc == 0xC7 }))
             if (res[0xC7]?.contains("受け付けませんでした") == true) {
                 prefs.shShiftUnsupported = true
-                return result(true, "⚠ $SHIFT_UNSUPPORTED（エコキュートの応答：${res[0xC7]}）", sunny)
+                shAddLog("エネルギーシフトを受け付けない機種のため、タンクの運転モードで夜の沸き上げを調整します（エコキュートの応答：${res[0xC7]}）")
+                return tankPlan(d, sunny, dayName, ::result)
             }
         }
         val mainErr = res[0xC7]
@@ -2198,8 +2230,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val due = (now.hour >= shPlanHour.value || now.hour < 5) &&
             (plan?.date != target || (!plan.ok && System.currentTimeMillis() >= shRetryAt))
         if (due) runSolarPlan()
+        // タンクの運転モードを「節約」にしていたら、昼の時間帯が終わったところで「標準」に戻す
+        if (prefs.shTankByUs && now.hour >= shEnd.value && now.hour < shPlanHour.value) {
+            if (echonet.setWaterHeaterEach(d.key, listOf(Prop(0xB6, bytesOf(0x41))))[0xB6] == null) {
+                prefs.shTankByUs = false
+                shAddLog("昼の時間帯が終わったので、タンクの運転モードを「標準」に戻しました")
+            }
+        }
         // 朝 7 時：前の晩の設定がそのまま残っているか確かめる
-        if (now.hour == 7 && shMorningChecked != today && shShift.value && d.canSet(0xC7)) {
+        if (now.hour == 7 && shMorningChecked != today && shShift.value && d.canSet(0xC7) && !prefs.shShiftUnsupported) {
             shMorningChecked = today
             val last = loadPlan()?.takeIf { it.date == today }
             val c7 = d.props[0xC7]?.u8()
