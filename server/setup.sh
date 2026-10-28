@@ -42,7 +42,10 @@ if ! cmp -s "\$TMP/new/version.json" "$WEB/version.json"; then
   chmod -R a+rX "$WEB"
   echo "更新しました: \$(cat "$WEB/version.json")"
 fi
-# カメラの記録のサービスも新しくする
+# カメラの記録のサービスも新しくする（止まっていれば動かす）
+if [ -f /etc/systemd/system/homepanel-camera.service ] && ! systemctl is-active -q homepanel-camera.service; then
+  systemctl enable --now homepanel-camera.service >/dev/null 2>&1 || true
+fi
 if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-camera.py" -o "\$TMP/camera.py" && python3 -m py_compile "\$TMP/camera.py"; then
   if ! cmp -s "\$TMP/camera.py" /usr/local/bin/homepanel-camera; then
     install -m 755 "\$TMP/camera.py" /usr/local/bin/homepanel-camera
@@ -55,8 +58,6 @@ if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-sol
   if ! cmp -s "\$TMP/solar.py" /usr/local/bin/homepanel-solar; then
     install -m 755 "\$TMP/solar.py" /usr/local/bin/homepanel-solar
     systemctl restart homepanel-solar.service
-systemctl enable --now homepanel-camera.service >/dev/null
-systemctl restart homepanel-camera.service 2>/dev/null || true
     echo "おひさま沸き上げのサービスを更新しました"
   fi
 fi
@@ -294,6 +295,8 @@ systemctl enable --now homepanel-photos.service >/dev/null
 systemctl restart homepanel-photos.service
 systemctl enable --now homepanel-solar.service >/dev/null
 systemctl restart homepanel-solar.service
+systemctl enable --now homepanel-camera.service >/dev/null
+systemctl restart homepanel-camera.service
 
 echo "== 証明書を用意しています"
 ROOT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt

@@ -79,6 +79,13 @@ jobs:
           assert got == ["https://lh3.googleusercontent.com/pw/AP1GczAAAA_bbb-ccc"], got
           print("::notice::写真URLの取り出しOK")
           PYEOF
+          # おひさま沸き上げ・カメラの記録のサービス
+          for svc in homepanel-solar homepanel-camera; do
+            systemctl is-active $svc || { sudo journalctl -u $svc --no-pager | tail -30; fail "$svc が動いていません"; }
+          done
+          sleep 2
+          curl -fsS http://127.0.0.1/solar-api/climate | grep -q '"enabled"' || fail "/solar-api/climate に届きません"
+          curl -fsS http://127.0.0.1/camera-api/status | grep -q '"cameras"' || fail "/camera-api/status に届きません"
           # 自動更新タイマー
           systemctl is-active homepanel-update.timer || fail "更新タイマーが動いていません"
           sudo /usr/local/bin/homepanel-update
