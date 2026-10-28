@@ -105,12 +105,7 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
                         CoverButtons(e, vm)
                         if (e.hasPosition) CoverPositionSlider(e, vm)
                     }
-                    "climate" -> {
-                        TemperatureControls(e, vm)
-                        ChipGroup(null, e.attributes.strings("hvac_modes"), e.state, ::hvacLabel) {
-                            vm.call(e, "set_hvac_mode", JSONObject().put("hvac_mode", it))
-                        }
-                    }
+                    "climate" -> ClimateTileControls(e, vm)
                 }
             }
         }
@@ -341,6 +336,81 @@ private fun CoverPositionSlider(e: Entity, vm: MainViewModel) {
     val pos = (e.attributes.num("current_position") ?: 0.0).toFloat()
     ValueSlider(pos, 0f..100f, label = { "開き具合 ${it.roundToInt()}%" }) { v ->
         vm.call(e, "set_cover_position", JSONObject().put("position", v.roundToInt()))
+    }
+}
+
+/**
+ * タイル用のエアコンの操作（小さくまとめる）：設定温度の −／＋ と、運転モード・風量の切り替えボタン。
+ * 風向きなどは、名前をタップしたときの詳細パネルで変える。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ClimateTileControls(e: Entity, vm: MainViewModel) {
+    val single = e.attributes.num("temperature")
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (e.state != "off" && single != null) {
+            CompactStepper(single, e.attributes.num("min_temp") ?: 16.0, e.attributes.num("max_temp") ?: 32.0,
+                e.attributes.num("target_temp_step") ?: 0.5) {
+                vm.call(e, "set_temperature", JSONObject().put("temperature", it))
+            }
+        }
+        MenuButton("運転", e.state, e.attributes.strings("hvac_modes"), ::hvacLabel) {
+            vm.call(e, "set_hvac_mode", JSONObject().put("hvac_mode", it))
+        }
+        if (e.state != "off") {
+            MenuButton("風量", e.attributes.optString("fan_mode"), e.attributes.strings("fan_modes"), ::fanModeLabel) {
+                vm.call(e, "set_fan_mode", JSONObject().put("fan_mode", it))
+            }
+        }
+    }
+    // 冷暖自動（上下限）の機種は、今までどおりの大きな表示
+    if (e.state != "off" && single == null) TemperatureControls(e, vm)
+}
+
+/** 小さな −／＋（タイル用）。連打しても最後に押してから少し待ってまとめて送る */
+@Composable
+private fun CompactStepper(value: Double, min: Double, max: Double, step: Double, onSet: (Double) -> Unit) {
+    var pending by remember(value) { mutableStateOf<Double?>(null) }
+    val shown = pending ?: value
+    LaunchedEffect(pending) {
+        val p = pending ?: return@LaunchedEffect
+        delay(700)
+        onSet(p)
+    }
+    fun snap(v: Double) = (Math.round(v / step) * step).coerceIn(min, max)
+    val pad = androidx.compose.foundation.layout.PaddingValues(0.dp)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min, contentPadding = pad, modifier = Modifier.size(40.dp)) {
+            Text("−", fontSize = 20.sp)
+        }
+        Text("${fmt(shown)}℃", fontSize = 22.sp, modifier = Modifier.padding(horizontal = 8.dp))
+        FilledTonalButton(onClick = { pending = snap(shown + step) }, enabled = shown < max, contentPadding = pad, modifier = Modifier.size(40.dp)) {
+            Text("＋", fontSize = 20.sp)
+        }
+    }
+}
+
+/** 押すと選択肢が出るボタン（運転モード・風量など）。選択肢が無ければ出さない */
+@Composable
+private fun MenuButton(title: String, selected: String, options: List<String>, label: (String) -> String, onSelect: (String) -> Unit) {
+    if (options.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    Box {
+        androidx.compose.material3.OutlinedButton(
+            onClick = { open = true },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            modifier = Modifier.heightIn(min = 40.dp),
+        ) {
+            Text("$title：" + (selected.takeIf { it.isNotBlank() && it != "null" }?.let(label) ?: "－") + " ▾", maxLines = 1)
+        }
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { o ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text((if (o == selected) "✓ " else "　") + label(o)) },
+                    onClick = { open = false; if (o != selected) onSelect(o) },
+                )
+            }
+        }
     }
 }
 

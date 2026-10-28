@@ -188,6 +188,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     val forecast by vm.forecast.collectAsState()
     val rooms by vm.rooms.collectAsState()
     val overrides by vm.roomOverrides.collectAsState()
+    val thermos by vm.thermos.collectAsState()
     val areas by vm.entityAreas.collectAsState()
     val groupRooms by vm.groupRooms.collectAsState()
     val roomFilter by vm.roomFilter.collectAsState()
@@ -310,12 +311,23 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                     sections.forEach { (room, list) ->
                         if (room != null) {
                             item(span = { full(this) }, key = "room_" + room.key) {
-                                Text(
-                                    room.name,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(top = 8.dp),
-                                )
+                                // 部屋の温度・湿度（その部屋の温度計。無ければエアコンの室温）
+                                val t = thermos.firstOrNull { it.tempEntity != null && roomKeyOf(it.tempEntity, overrides, areas, rooms) == room.key && it.temperature != null }
+                                val ac = if (t == null) list.firstOrNull { it.domain == "climate" && it.attributes.num("current_temperature") != null } else null
+                                val climate = listOfNotNull(
+                                    (t?.temperature ?: ac?.attributes?.num("current_temperature"))?.let { "🌡 ${fmt(Math.round(it * 10) / 10.0)}℃" },
+                                    (t?.humidity ?: ac?.attributes?.num("current_humidity"))?.let { "💧 ${Math.round(it)}%" },
+                                ).joinToString("　")
+                                Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 8.dp)) {
+                                    Text(room.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                                    if (climate.isNotEmpty()) {
+                                        Text(
+                                            "　$climate" + if (ac != null) "（エアコン）" else "",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
                             }
                         }
                         items(

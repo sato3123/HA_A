@@ -314,3 +314,14 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .camhint .lv { display: none; }
 .camimg.live .camhint .lv { display: inline; }
 .camimg.live .camhint .nv { display: none; }
+
+/* ---- 機器のタイルを大きくしすぎない ---- */
+.grid { align-items: start; }
+.ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cstep { display: inline-flex; align-items: center; gap: 6px; }
+.cstep .tv { font-size: 22px; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+.cstep .tb { width: 40px; height: 40px; min-width: 40px; padding: 0; }
+.msel { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+.msel select { font: inherit; font-size: 15px; color: inherit; background: var(--surface); border: 1px solid var(--outline); border-radius: 18px; padding: 6px 10px; }
+.tile.on .msel select { background: transparent; }
+.roomh .rclim { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 12px; }

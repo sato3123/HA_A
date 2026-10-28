@@ -438,6 +438,25 @@
       <span class="tv" data-tv="${esc(pk)}">${fmt(v)}℃</span>
       <button class="tb" data-act="temp" data-key="${key}" data-delta="1">＋</button></div>`;
   }
+  /** タイル用のエアコンの操作（小さくまとめる）：設定温度の −／＋ と、運転モード・風量の選択 */
+  function climateTileHTML(e) {
+    const a = e.attributes;
+    const single = num(a, "temperature");
+    const sel = (title, options, cur, svc, key, labelFn) => (options && options.length
+      ? `<label class="msel"><span>${esc(title)}</span><select data-act="svcsel" data-svc="${svc}" data-key="${key}">${options
+        .map((o) => `<option value="${esc(o)}" ${o === cur ? "selected" : ""}>${esc(labelFn(o))}</option>`).join("")}</select></label>` : "");
+    let h = `<div class="ctl">`;
+    if (e.state !== "off" && single !== null) {
+      const pk = e.entity_id + "|temperature";
+      const v = pendingTemp.has(pk) ? pendingTemp.get(pk).value : single;
+      h += `<span class="cstep"><button class="tb" data-act="temp" data-key="temperature" data-delta="-1">−</button><span class="tv" data-tv="${esc(pk)}">${fmt(v)}℃</span><button class="tb" data-act="temp" data-key="temperature" data-delta="1">＋</button></span>`;
+    }
+    h += sel("運転", a.hvac_modes, e.state, "set_hvac_mode", "hvac_mode", hvacLabel);
+    if (e.state !== "off") h += sel("風量", a.fan_modes, a.fan_mode, "set_fan_mode", "fan_mode", fanLabel);
+    h += `</div>`;
+    if (e.state !== "off" && single === null) h += tempHTML(e);
+    return h;
+  }
   function tempHTML(e) {
     if (e.state === "off") return "";
     const a = e.attributes;
@@ -461,7 +480,7 @@
       if (d === "light" && dimmable(e) && e.state === "on") body = brightnessHTML(e);
       else if (d === "fan" && hasPct(e)) body = fanHTML(e);
       else if (d === "cover") body = coverButtons(e) + (hasPos(e) ? positionHTML(e) : "");
-      else if (d === "climate") body = tempHTML(e) + chipsHTML(null, e.attributes.hvac_modes, e.state, "set_hvac_mode", "hvac_mode", hvacLabel);
+      else if (d === "climate") body = climateTileHTML(e);
     }
     const cls = ["tile", isWide(e) ? "wide" : "", isOn(e) && d !== "scene" && d !== "script" ? "on" : "", unav ? "unav" : "", SIMPLE.includes(d) ? "simple" : ""].join(" ");
     return `<div class="${cls}" data-entity="${esc(e.entity_id)}">${headHTML(e, false)}${body}</div>`;
@@ -515,6 +534,16 @@
     requestAnimationFrame(() => { renderQueued = false; renderEntities(); });
   }
 
+  /** 部屋の見出しに出す温度・湿度（その部屋の温度計。無ければエアコンの室温） */
+  function roomClimateHTML(room, items) {
+    if (room.key === "none") return "";
+    const t = thermos().find((x) => x.tId && x.temp !== null && roomKey(x.tId) === room.key);
+    const ac = t ? null : items.find((e) => dom(e) === "climate" && num(e.attributes, "current_temperature") !== null);
+    const temp = t ? t.temp : ac ? num(ac.attributes, "current_temperature") : null;
+    const hum = t ? t.hum : ac ? num(ac.attributes, "current_humidity") : null;
+    if (temp === null && hum === null) return "";
+    return `<span class="rclim">${temp !== null ? `🌡 ${fmt(Math.round(temp * 10) / 10)}℃` : ""}${hum !== null ? `　💧 ${Math.round(hum)}%` : ""}${ac ? "（エアコン）" : ""}</span>`;
+  }
   function renderEntities() {
     const grid = $("#grid");
     if (!grid) return;
@@ -526,7 +555,7 @@
       if (room) {
         let h = headerCache.get(room.key);
         if (!h) { h = document.createElement("div"); h.className = "roomh"; headerCache.set(room.key, h); }
-        h.textContent = room.name;
+        h.innerHTML = esc(room.name) + roomClimateHTML(room, items);
         els.push(h);
       }
       for (const e of items) {
@@ -632,7 +661,7 @@
 
   function bindControls(root) {
     root.addEventListener("click", (ev) => {
-      if (ev.target.closest("label.sw, input")) return; // スイッチは change で処理
+      if (ev.target.closest("label.sw, input, select, label.msel")) return; // スイッチ・選択は change で処理
       if (ev.target.closest("[data-set]")) return; // ⓘ やカメラは別の処理
       const el = ev.target.closest("[data-act]");
       if (el) { handleAction(el); return; }
@@ -648,6 +677,7 @@
       const el = ev.target;
       if (el.dataset.act === "range") { commitRange(el); setTimeout(() => { S.dragging = null; scheduleRender(); }, 300); }
       else if (el.dataset.act === "toggle" || el.dataset.act === "osc") handleAction(el);
+      else if (el.dataset.act === "svcsel") { const e = entityFor(el); if (e) call(e, el.dataset.svc, { [el.dataset.key]: el.value }); }
     });
     root.addEventListener("input", (ev) => {
       const el = ev.target;
