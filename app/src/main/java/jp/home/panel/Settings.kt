@@ -263,6 +263,8 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
         }
 
         if (page == "cameras") {
+            item { SectionTitle("ホーム画面のカメラ") }
+            item { CameraTileSettings(vm) }
             item { SectionTitle("カメラ（直接つなぐ）") }
             item { DirectCameraSettings(vm) }
             item { SectionTitle("サーバーで記録・分析（2日分）") }

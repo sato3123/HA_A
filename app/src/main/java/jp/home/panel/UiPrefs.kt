@@ -185,6 +185,10 @@ class UiPrefs(context: Context) {
     var climateWhere: String
         get() = p.getString("climate_where", "server") ?: "server"
         set(v) = p.edit().putString("climate_where", v).apply()
+    /** ホーム画面のカメラ：live（タップしなくても動画）/ snapshot（10秒ごとの静止画） */
+    var camTile: String
+        get() = p.getString("cam_tile", "live") ?: "live"
+        set(v) = p.edit().putString("cam_tile", v).apply()
     /** ホームパネルのサーバーで記録・分析するカメラ（JSON。パスワードは入れない） */
     var camServerJson: String?
         get() = p.getString("cam_server", null)

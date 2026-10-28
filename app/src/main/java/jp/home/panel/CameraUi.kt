@@ -61,7 +61,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
-/** ホーム画面のカメラ：静止画を10秒ごとに更新。タップで動画 */
+/** ホーム画面のカメラ：タップしなくても動画（設定で静止画にもできる）。タップで全画面 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraTile(e: Entity, vm: MainViewModel) {
@@ -69,13 +69,28 @@ fun CameraTile(e: Entity, vm: MainViewModel) {
     var failed by remember(e.entityId) { mutableStateOf(false) }
     val viewing by vm.cameraFor.collectAsState()
     val saver by vm.screensaver.collectAsState()
-    // 映像を開いている間とスクリーンセーバー中は、静止画の読み込みを休む
-    val paused = viewing != null || saver || e.unavailable
-    LaunchedEffect(e.entityId, paused) {
+    val tileMode by vm.camTile.collectAsState()
+    // アプリが裏に回っている間は、映像を止める
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) }
+    DisposableEffect(lifecycle) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+            foreground = ev.targetState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+        }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
+    // 全画面で見ている間・スクリーンセーバー中・裏に回っている間は、読み込みを休む
+    val paused = viewing != null || saver || e.unavailable || !foreground
+    val live = tileMode == "live" && !paused
+    var liveOk by remember(e.entityId) { mutableStateOf(true) }
+    LaunchedEffect(e.entityId, paused, live && liveOk) {
+        // 動画のときも、つながるまでの間とつながらないときのために静止画を出しておく
         while (!paused && isActive) {
             val next = vm.cameraSnapshot(e.entityId, 640)
             if (next != null) img = next
             failed = next == null && img == null
+            if (live && liveOk && img != null) break
             delay(10_000)
         }
     }
@@ -94,23 +109,67 @@ fun CameraTile(e: Entity, vm: MainViewModel) {
                 val i = img
                 when {
                     e.unavailable -> Text("カメラにつながりません", color = Color.White)
-                    i != null -> {
-                        Image(i, contentDescription = e.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                        Text(
-                            "▶ タップで動画",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)
-                                .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
-                    failed && vm.ipCamera(e.entityId)?.snapshotUrl?.isBlank() == true ->
-                        Text("📷 タップで映像を表示", color = Color.White)
-                    failed -> Text("映像を読めませんでした", color = Color.White)
-                    else -> CircularProgressIndicator()
+                    i != null -> Image(i, contentDescription = e.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    failed && vm.ipCamera(e.entityId)?.snapshotUrl?.isBlank() == true && !live -> Text("📷 タップで映像を表示", color = Color.White)
+                    failed && !live -> Text("映像を読めませんでした", color = Color.White)
+                    !live -> CircularProgressIndicator()
+                }
+                if (live && liveOk) TileLive(vm, e.entityId, e.name) { liveOk = false }
+                if (!e.unavailable) {
+                    Text(
+                        if (live && liveOk) "● ライブ　タップで全画面" else "▶ タップで動画",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
                 }
             }
         }
+    }
+}
+
+/** ホーム画面のタイルの中の動画。カメラごとに選んだ画質の方式で、だめならほかの方式、すべてだめなら静止画に戻す */
+@Composable
+private fun TileLive(vm: MainViewModel, entityId: String, name: String, onGiveUp: () -> Unit) {
+    val modes by vm.cameraModes.collectAsState()
+    val direct = vm.ipCamera(entityId)
+    val mode = modes[entityId] ?: vm.cameraMode(entityId)
+    val failed = remember(entityId, mode) { mutableSetOf<Play>() }
+    var retry by remember(entityId, mode) { mutableStateOf(0) }
+    var play by remember(entityId, mode) { mutableStateOf<Pair<Play, String>?>(null) }
+    LaunchedEffect(entityId, mode, retry) {
+        play = null
+        if (direct != null) {
+            if (Play.RTSP in failed) { onGiveUp(); return@LaunchedEffect }
+            // タイルは小さいので、いつも軽量の映像
+            play = Play.RTSP to vm.ipCameraUrl(direct, light = true)
+            return@LaunchedEffect
+        }
+        val order = when (mode) {
+            "hls" -> listOf(Play.HLS, Play.MJPEG)
+            "mjpeg" -> listOf(Play.MJPEG)
+            else -> listOf(Play.WEBRTC, Play.HLS, Play.MJPEG)
+        }.filter { it !in failed }
+        for (p in order) {
+            when (p) {
+                Play.WEBRTC -> if (vm.cameraWebRtcSupported(entityId)) { play = p to ""; return@LaunchedEffect }
+                Play.HLS -> {
+                    val u = try { vm.cameraHlsUrl(entityId) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                    if (u != null) { play = p to u; return@LaunchedEffect }
+                }
+                else -> { play = p to ""; return@LaunchedEffect }
+            }
+        }
+        onGiveUp()
+    }
+    val fail: (Play) -> Unit = { p -> failed.add(p); retry++ }
+    val p = play ?: return
+    when (p.first) {
+        Play.WEBRTC -> WebRtcView(vm, entityId, tile = true) { fail(Play.WEBRTC) }
+        Play.HLS -> PlayerView(vm, p.second, rtsp = false, tcp = false, tile = true) { fail(Play.HLS) }
+        Play.RTSP -> PlayerView(vm, p.second, rtsp = true, tcp = direct?.tcp == true, tile = true) { fail(Play.RTSP) }
+        Play.MJPEG -> MjpegView(vm, entityId, name, tile = true) { }
     }
 }
 
@@ -248,14 +307,16 @@ private fun label(p: Play) = when (p) {
 
 /** リアルタイム（WebRTC）。遅れが1秒未満 */
 @Composable
-private fun WebRtcView(vm: MainViewModel, entityId: String, onError: (String) -> Unit) {
+private fun WebRtcView(vm: MainViewModel, entityId: String, tile: Boolean = false, onError: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val egl = remember { EglBase.create() }
     val renderer = remember {
         SurfaceViewRenderer(context).apply {
             init(egl.eglBaseContext, null)
-            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            setScalingType(if (tile) RendererCommon.ScalingType.SCALE_ASPECT_FILL else RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            // タイルの中では、ほかの画面（ダイアログなど）の下に描く
+            if (tile) setZOrderMediaOverlay(false)
             setEnableHardwareScaler(true)
         }
     }
@@ -272,10 +333,10 @@ private fun WebRtcView(vm: MainViewModel, entityId: String, onError: (String) ->
         s.start()
         onDispose { s.close() }
     }
-    KeepAwake(vm)
+    if (!tile) KeepAwake(vm)
     Box(Modifier.fillMaxSize()) {
         AndroidView(factory = { renderer }, modifier = Modifier.fillMaxSize())
-        if (connecting) CircularProgressIndicator(Modifier.align(Alignment.Center))
+        if (connecting && !tile) CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
 }
 
@@ -296,7 +357,7 @@ private fun KeepAwake(vm: MainViewModel) {
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boolean, onError: (String) -> Unit) {
+private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boolean, tile: Boolean = false, onError: (String) -> Unit) {
     val context = LocalContext.current
     val player = remember(url) {
         val load = DefaultLoadControl.Builder()
@@ -324,6 +385,8 @@ private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boole
                             .build(),
                     )
                 }
+                // タイルは音を出さない
+                if (tile) volume = 0f
                 playWhenReady = true
                 prepare()
             }
@@ -344,35 +407,35 @@ private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boole
             player.release()
         }
     }
-    KeepAwake(vm)
+    if (!tile) KeepAwake(vm)
     Box(Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
                 androidx.media3.ui.PlayerView(ctx).apply {
                     useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    resizeMode = if (tile) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
                     setShutterBackgroundColor(android.graphics.Color.BLACK)
                     this.player = player
                 }
             },
             modifier = Modifier.fillMaxSize(),
         )
-        if (buffering) CircularProgressIndicator(Modifier.align(Alignment.Center))
+        if (buffering && !tile) CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
 }
 
 /** 簡易表示（MJPEG）。どのカメラでも見られるが、コマ数が少なく音声は出ない */
 @Composable
-private fun MjpegView(vm: MainViewModel, entityId: String, name: String, onNote: (String) -> Unit) {
+private fun MjpegView(vm: MainViewModel, entityId: String, name: String, tile: Boolean = false, onNote: (String) -> Unit) {
     var frame by remember(entityId) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(entityId) {
         // 静止画ですぐに何か出してから、動画につなぐ
-        vm.cameraSnapshot(entityId, 1920)?.let { if (frame == null) frame = it }
+        if (!tile) vm.cameraSnapshot(entityId, 1920)?.let { if (frame == null) frame = it }
         while (isActive) {
             try {
                 vm.cameraStream(entityId).collect {
                     frame = it
-                    vm.onUserInteraction()
+                    if (!tile) vm.onUserInteraction()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -380,15 +443,16 @@ private fun MjpegView(vm: MainViewModel, entityId: String, name: String, onNote:
                 // 動画がだめなら、しばらく静止画を1秒ごとに更新してから、もう一度つなぐ
                 onNote("動画につなげないため、静止画を1秒ごとに更新しています（${e.message}）")
                 repeat(20) {
-                    vm.cameraSnapshot(entityId, 1920)?.let { frame = it }
-                    vm.onUserInteraction()
-                    delay(1000)
+                    vm.cameraSnapshot(entityId, if (tile) 640 else 1920)?.let { frame = it }
+                    if (!tile) vm.onUserInteraction()
+                    delay(if (tile) 3000 else 1000)
                 }
             }
         }
     }
     Box(Modifier.fillMaxSize()) {
-        frame?.let { Image(it, contentDescription = name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
-            ?: CircularProgressIndicator(Modifier.align(Alignment.Center))
+        val f = frame
+        if (f != null) Image(f, contentDescription = name, contentScale = if (tile) ContentScale.Crop else ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        else if (!tile) CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
 }

@@ -546,6 +546,7 @@
       grid.replaceChildren(...els);
       grid.querySelectorAll("img[data-snap]").forEach((img) => { if (!img.getAttribute("src")) refreshSnapshot(img.dataset.snap); });
     }
+    syncLiveTiles();
     renderRoomBar();
     $("#empty").classList.toggle("hidden", list.length > 0);
     $("#empty").textContent = S.conn === "connected" ? "表示する機器がありません（⚙ 設定 から選べます）" : "接続しています…";
@@ -1284,7 +1285,7 @@
       "Home Assistant の「エネルギー」の設定から、今日の使用量・買電・売電・発電・電気代を表示します。",
     ]],
     ["📷 カメラ", [
-      "Home Assistant のカメラを、静止画（10秒ごとに更新）で表示します。タップすると全画面の動画になります。",
+      "Home Assistant のカメラを、ホーム画面のタイルにそのまま動画で表示します（⚙ 設定 →「カメラ」で静止画にも変えられます）。タップすると全画面になります。",
       "全画面の右上の「画質」で、自動／リアルタイム（WebRTC）／高画質（HLS）／簡易 を選べます。再生できないときは自動でほかの方式に切り替わります。",
     ]],
     ["⏱ タイマー", [
@@ -2952,6 +2953,7 @@
         try { await solarApi("/config", { climate_enabled: el.checked }); } catch (e) { S.climateErr = "サーバーに送れませんでした：" + e.message; }
         loadClimate(); return true;
       case "climDetail": S.climDetail = S.climDetail === id ? null : id; fillExtra(); return true;
+      case "camTile": store.set("camTile", id); syncLiveTiles(); openPageKeep(); return true;
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
       case "camRecToggle": {
         const cams = ((S.camRec && S.camRec.cameras) || []).map((c) => ({ id: c.id, name: c.name, kind: c.kind, entity: c.entity })).filter((c) => c.id !== id);
@@ -2988,14 +2990,40 @@
     } catch (e) { /* 次の更新で */ }
   }
   function refreshSnapshots() {
+    syncLiveTiles();
     if (S.ssOn || S.cam || document.visibilityState !== "visible") return;
     document.querySelectorAll("img[data-snap]").forEach((img) => refreshSnapshot(img.dataset.snap));
   }
+  // ---- ホーム画面のタイルにそのまま動画（MJPEG）を映す ----
+  const camTileLive = () => store.get("camTile", "live") === "live";
+  const liveRetryAt = new Map();
+  function syncLiveTiles() {
+    const stop = !camTileLive() || S.ssOn || S.cam || document.visibilityState !== "visible";
+    document.querySelectorAll(".camimg").forEach((box) => {
+      const id = box.dataset.id;
+      let v = box.querySelector("img.camlive");
+      const e = S.ha && S.ha.states[id];
+      if (stop || !e || isUnav(e)) {
+        if (v) { v.onerror = null; v.removeAttribute("src"); v.remove(); }
+        box.classList.remove("live");
+        return;
+      }
+      if (v || Date.now() < (liveRetryAt.get(id) || 0)) return;
+      v = document.createElement("img");
+      v.className = "camlive";
+      v.alt = "";
+      v.onerror = () => { v.onerror = null; v.removeAttribute("src"); v.remove(); box.classList.remove("live"); liveRetryAt.set(id, Date.now() + 60000); };
+      v.src = `/api/camera_proxy_stream/${id}?token=${encodeURIComponent(e.attributes.access_token || "")}`;
+      box.insertBefore(v, box.querySelector(".camhint"));
+      box.classList.add("live");
+    });
+  }
+  document.addEventListener("visibilitychange", () => syncLiveTiles());
   function cameraTileHTML(e) {
     const url = camSnapUrls.get(e.entity_id);
     return `<div class="tile wide cam${isUnav(e) ? " unav" : ""}" data-entity="${esc(e.entity_id)}">${headHTML(e, false)}
       <div class="camimg" data-set="camOpen" data-id="${esc(e.entity_id)}"><img data-snap="${esc(e.entity_id)}" alt="" ${url ? `src="${url}"` : ""}>
-      <span class="camhint">${isUnav(e) ? "カメラにつながりません" : "▶ タップで動画"}</span></div></div>`;
+      <span class="camhint">${isUnav(e) ? "カメラにつながりません" : `<span class="lv">● ライブ　タップで全画面</span><span class="nv">▶ タップで動画</span>`}</span></div></div>`;
   }
   let camPc = null, camSub = null;
   function closeCameraStream() {
@@ -3005,7 +3033,7 @@
     const v = $("#camVideo");
     if (v) { v.pause(); v.removeAttribute("src"); v.srcObject = null; v.load(); }
   }
-  function closeCamera() { closeCameraStream(); S.cam = null; renderCameraBox(); }
+  function closeCamera() { closeCameraStream(); S.cam = null; renderCameraBox(); syncLiveTiles(); }
   async function webrtcSupported(id) {
     try {
       const r = await S.ha.send({ type: "camera/capabilities", entity_id: id });
@@ -3074,7 +3102,7 @@
       }
     }
   }
-  function openCamera(id) { S.cam = { id, failed: [], playing: null, status: null, note: null, menu: false }; renderCameraBox(); playCamera(); }
+  function openCamera(id) { S.cam = { id, failed: [], playing: null, status: null, note: null, menu: false }; syncLiveTiles(); renderCameraBox(); playCamera(); }
   function renderCameraBox() {
     const box = $("#camBox");
     if (!box) return;
@@ -3206,7 +3234,10 @@
       }
       case "screensaver": return `<div class="sec">スクリーンセーバー</div>${screensaverSettingsHTML()}`;
       case "calendar": return `<div class="sec">カレンダー（TimeTree）</div>${calendarSettingsHTML()}`;
-      case "cameras": return `<div class="sec">カメラ</div>
+      case "cameras": return `<div class="sec">ホーム画面のカメラ</div>
+        <div class="chips"><button class="chip${camTileLive() ? " sel" : ""}" data-set="camTile" data-id="live">動画（タップしなくても映る）</button><button class="chip${camTileLive() ? "" : " sel"}" data-set="camTile" data-id="snapshot">静止画（10秒ごとに更新）</button></div>
+        <div class="note">${camTileLive() ? "ホーム画面のカメラのタイルに、そのまま動画を映します（音は出しません）。スクリーンセーバー中や全画面で見ている間は止めます。動きが重いときは「静止画」にしてください。" : "ホーム画面には10秒ごとの静止画を出し、タップすると動画になります。"}</div>
+        <div class="sec">カメラ</div>
         <div class="note">Home Assistant に登録したカメラを、ホーム画面に静止画（10秒ごとに更新）で表示します。タップすると全画面の動画になり、右上の「画質」で方式を選べます（カメラごとに覚えます）。</div>
         <div class="note">・自動：使える中でいちばん遅れの少ない方式<br>・リアルタイム：遅れ1秒未満（WebRTC。Home Assistant 2024.11 以降）<br>・高画質：なめらか・数秒の遅れ（HLS）<br>・簡易：どのカメラでも見られるがコマ数少なめ</div>
         <div class="note">※ Home Assistant を通さずにネットワークカメラ（RTSP）へ直接つなぐ機能は、ブラウザでは使えないため Android 版だけです。iPad では、カメラを Home Assistant に登録してください。</div>`;

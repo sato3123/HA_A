@@ -59,6 +59,28 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+/** 設定画面：ホーム画面のカメラの見せ方 */
+@Composable
+fun CameraTileSettings(vm: MainViewModel) {
+    val mode by vm.camTile.collectAsState()
+    val chip = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = MaterialTheme.colorScheme.primary,
+        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = mode == "live", onClick = { vm.setCamTile("live") }, label = { Text("動画（タップしなくても映る）") }, colors = chip)
+            FilterChip(selected = mode == "snapshot", onClick = { vm.setCamTile("snapshot") }, label = { Text("静止画（10秒ごとに更新）") }, colors = chip)
+        }
+        Text(
+            if (mode == "live") "ホーム画面のカメラのタイルに、そのまま動画を映します（音は出しません）。画質の方式はカメラごとに選んだもの（直接つなぐカメラは軽量の映像）を使います。" +
+                "スクリーンセーバー中や全画面で見ている間、アプリが裏に回っている間は止めます。カメラが多くて動きが重いときは「静止画」にしてください。"
+            else "ホーム画面には10秒ごとの静止画を出し、タップすると動画になります。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
 /** 設定画面：カメラの映像をサーバーで記録（2日分）し、動きのある時間・ない時間を分析する */
 @Composable
 fun CameraRecordingSettings(vm: MainViewModel) {

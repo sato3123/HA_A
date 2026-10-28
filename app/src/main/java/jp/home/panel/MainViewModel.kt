@@ -1135,6 +1135,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun ipCameraUrl(c: IpCamera, light: Boolean): String =
         withCredentials(if (light && c.subUrl.isNotBlank()) c.subUrl else c.mainUrl, c.user, ipCameraPassword(c.id))
 
+    // ---- ホーム画面のカメラ（動画／静止画） ----
+    val camTile = MutableStateFlow(prefs.camTile)
+    fun setCamTile(v: String) { prefs.camTile = v; camTile.value = v }
+
     // ---- 画質 ----
     val cameraModes = MutableStateFlow(prefs.cameraModes)
 

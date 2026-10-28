@@ -308,3 +308,9 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .accrow { display: flex; gap: 8px; padding: 3px 0; font-size: 15px; }
 .accrow .accl { width: 210px; flex: none; }
 @media (max-width: 600px) { .oprow .opw, .accrow .accl { width: 110px; } }
+
+/* ---- タイルの中の動画 ---- */
+.camimg .camlive { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.camhint .lv { display: none; }
+.camimg.live .camhint .lv { display: inline; }
+.camimg.live .camhint .nv { display: none; }
