@@ -105,7 +105,7 @@ fun AccountList(vm: MainViewModel) {
         }
         Group("📅 その他のサービス") {
             val tt = all.count { it.entityId.startsWith("calendar.timetree") }
-            Line("TimeTree", if (tt > 0) "Home Assistant に登録（カレンダー${tt}個）。ログイン情報はアプリにはありません" else "なし", tt > 0)
+            Line("TimeTree", if (tt > 0) "サーバーで取り込み → Home Assistant（カレンダー${tt}個）。ログイン情報はサーバーにだけあります" else "なし", tt > 0)
         }
         Group("👥 Home Assistant のユーザー") {
             val list = users

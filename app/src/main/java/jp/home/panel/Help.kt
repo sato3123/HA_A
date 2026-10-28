@@ -88,7 +88,8 @@ private val HELP = listOf(
         listOf(
             "Home Assistant に取り込んだ TimeTree の予定を、ホーム画面に「今日・明日」で表示します。タップすると1週間分を表示します。",
             "音声で「今日の予定は？」「明日の予定」と聞くと読み上げます。",
-            "設定は ⚙ 設定 →「カレンダー（TimeTree）」。TimeTree のログイン情報は Home Assistant にだけ登録し、このアプリには保存しません。",
+            "ホームパネルのサーバーが30分ごとに TimeTree から予定を取り出し、Home Assistant の「Remote Calendar」で読み込みます。設定は ⚙ 設定 →「カレンダー（TimeTree）」の手順のとおりです。",
+            "TimeTree のメールアドレスとパスワードはサーバーの中にだけ保存し、このアプリには保存しません。",
         ),
     ),
     HelpSection(

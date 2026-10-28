@@ -86,6 +86,14 @@ jobs:
           sleep 2
           curl -fsS http://127.0.0.1/solar-api/climate | grep -q '"enabled"' || fail "/solar-api/climate に届きません"
           curl -fsS http://127.0.0.1/camera-api/status | grep -q '"cameras"' || fail "/camera-api/status に届きません"
+          # TimeTree の予定の公開（.ics だけ・家の中だけ）
+          systemctl is-active homepanel-calendar.timer || fail "TimeTree の取り込みのタイマーが動いていません"
+          test -x /opt/timetree/bin/timetree-exporter || fail "timetree-exporter が入っていません"
+          printf 'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n' | sudo tee /var/lib/homepanel-calendar/test.ics > /dev/null
+          echo secret | sudo tee /var/lib/homepanel-calendar/secret.txt > /dev/null
+          curl -fsS http://127.0.0.1/calendar/test.ics | grep -q VCALENDAR || fail "/calendar/test.ics が配信されていません"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/calendar/secret.txt)" = "404" ] || fail ".ics 以外が見えてしまいます"
+          sudo /usr/local/bin/homepanel-calendar status
           # 自動更新タイマー
           systemctl is-active homepanel-update.timer || fail "更新タイマーが動いていません"
           sudo /usr/local/bin/homepanel-update

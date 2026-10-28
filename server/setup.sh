@@ -24,6 +24,10 @@ apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 tzdata 
 ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime && echo "Asia/Tokyo" > /etc/timezone
 # カメラの記録・動きの分析に使う（入らなくても、ほかの機能は動く）
 apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null || echo "注意：ffmpeg を入れられませんでした（カメラの記録は使えません）"
+# TimeTree の予定を取り出す道具（非公式の timetree-exporter）
+apt-get install -y -qq python3-venv >/dev/null
+[ -x /opt/timetree/bin/python ] || python3 -m venv /opt/timetree
+/opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null || echo "注意：timetree-exporter を入れられませんでした（TimeTree の取り込みは使えません）"
 
 echo "== 更新用スクリプトを作っています"
 mkdir -p "$WEB" "$CA_DIR"
@@ -41,6 +45,13 @@ if ! cmp -s "\$TMP/new/version.json" "$WEB/version.json"; then
   rsync -a --delete "\$TMP/new/" "$WEB/"
   chmod -R a+rX "$WEB"
   echo "更新しました: \$(cat "$WEB/version.json")"
+fi
+# TimeTree の取り込みの道具も新しくする（1日1回。TimeTree 側の変更に追いつくため）
+if [ -x /opt/timetree/bin/pip ] && [ -z "\$(find /opt/timetree/.updated -mtime -1 2>/dev/null)" ]; then
+  /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null 2>&1 && touch /opt/timetree/.updated || true
+fi
+if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-calendar.py" -o "\$TMP/calendar.py" && python3 -m py_compile "\$TMP/calendar.py"; then
+  cmp -s "\$TMP/calendar.py" /usr/local/bin/homepanel-calendar || install -m 755 "\$TMP/calendar.py" /usr/local/bin/homepanel-calendar
 fi
 # カメラの記録のサービスも新しくする（止まっていれば動かす）
 if [ -f /etc/systemd/system/homepanel-camera.service ] && ! systemctl is-active -q homepanel-camera.service; then
@@ -209,6 +220,36 @@ Environment=TZ=Asia/Tokyo
 WantedBy=multi-user.target
 UNITEOF
 
+echo "== TimeTree の予定の取り込み（30分ごと）を用意しています"
+curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-calendar.py" -o /usr/local/bin/homepanel-calendar
+chmod 755 /usr/local/bin/homepanel-calendar
+mkdir -p /var/lib/homepanel-calendar && chmod 755 /var/lib/homepanel-calendar
+cat > /etc/systemd/system/homepanel-calendar.service <<UNITEOF
+[Unit]
+Description=ホームパネル TimeTree の予定の書き出し
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/bin/homepanel-calendar run
+Environment=TZ=Asia/Tokyo
+Environment=SELF_IP=$SELF_IP
+TimeoutStartSec=1800
+UNITEOF
+cat > /etc/systemd/system/homepanel-calendar.timer <<'UNITEOF'
+[Unit]
+Description=ホームパネル TimeTree の予定の書き出し（30分ごと）
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
+UNITEOF
+
 echo "== iPad 版をダウンロードしています"
 /usr/local/bin/homepanel-update
 
@@ -232,6 +273,16 @@ http://$SELF_IP {
 		@outside not remote_ip private_ranges
 		respond @outside 403
 		reverse_proxy 127.0.0.1:8097
+	}
+	# TimeTree の予定（Home Assistant の Remote Calendar が読む。家の中のネットワークからだけ）
+	handle_path /calendar/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		root * /var/lib/homepanel-calendar
+		@other not path *.ics *.json
+		respond @other 404
+		header Cache-Control "no-cache"
+		file_server
 	}
 	handle /ca.crt {
 		root * $CA_DIR
@@ -270,6 +321,16 @@ https://$SELF_IP {
 		reverse_proxy 127.0.0.1:8097
 	}
 
+	# TimeTree の予定（Home Assistant の Remote Calendar が読む。家の中のネットワークからだけ）
+	handle_path /calendar/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		root * /var/lib/homepanel-calendar
+		@other not path *.ics *.json
+		respond @other 404
+		header Cache-Control "no-cache"
+		file_server
+	}
 	# スクリーンセーバーの写真一覧（このサーバーの中のサービス）
 	handle /photos-api/* {
 		reverse_proxy 127.0.0.1:8099
@@ -297,6 +358,7 @@ systemctl enable --now homepanel-solar.service >/dev/null
 systemctl restart homepanel-solar.service
 systemctl enable --now homepanel-camera.service >/dev/null
 systemctl restart homepanel-camera.service
+systemctl enable --now homepanel-calendar.timer >/dev/null
 
 echo "== 証明書を用意しています"
 ROOT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt

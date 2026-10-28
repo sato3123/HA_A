@@ -1279,7 +1279,7 @@
     ]],
     ["📅 予定（TimeTree）", [
       "Home Assistant に取り込んだカレンダー（TimeTree など）の今日と明日の予定を表示します。表示するカレンダーは ⚙ 設定 →「カレンダー」で選びます。",
-      "TimeTree のログイン情報は Home Assistant にだけ登録し、このアプリには保存しません。",
+      "ホームパネルのサーバーが30分ごとに TimeTree から予定を取り出し、Home Assistant の「Remote Calendar」で読み込みます。TimeTree のログイン情報はサーバーの中にだけ保存し、このアプリには保存しません。",
     ]],
     ["⚡ 今日の電気", [
       "Home Assistant の「エネルギー」の設定から、今日の使用量・買電・売電・発電・電気代を表示します。",
@@ -2597,8 +2597,8 @@
   }
   function calendarSettingsHTML() {
     const cals = calendarEntities(), sel = store.get("calendars");
-    return `<div class="note">TimeTree の予定は、Home Assistant に TimeTree のカレンダーを取り込んで表示します。<b>TimeTree のログイン情報は Home Assistant にだけ登録し、このアプリには保存しません。</b>このアプリが覚えるのは、どのカレンダーを表示するかだけです。</div>
-      <div class="note">取り込み方：Home Assistant の HACS で TimeTree 用の連携（例：「TimeTree」カスタム連携）を入れるか、TimeTree の予定を Google カレンダーなどに共有して、Home Assistant の「Google カレンダー」連携で取り込みます。</div>
+    return `<div class="note">TimeTree の予定は、ホームパネルのサーバーが30分ごとに TimeTree から取り出し、Home Assistant の「Remote Calendar」で読み込んで表示します。<b>TimeTree のログイン情報はサーバーの中にだけ保存し、このアプリには保存しません。</b>このアプリが覚えるのは、どのカレンダーを表示するかだけです。</div>
+      <div class="note">準備：① サーバーのセットアップをやり直す ② Proxmox のシェルで <code>pct enter 146</code> → <code>homepanel-calendar setup</code> ③ 表示された URL を Home Assistant の「Remote Calendar」に登録（名前は「TimeTree 家族」のように TimeTree から始める）</div>
       ${cals.length ? cals.map((c) => `<label class="row"><input type="checkbox" data-set="calSel" data-id="${esc(c.entity_id)}" ${!sel || sel.includes(c.entity_id) ? "checked" : ""}><span class="rt">${esc(nameOf(c))}<div class="sub">${esc(c.entity_id)}</div></span></label>`).join("")
         : `<div class="note">Home Assistant にカレンダーが見つかりません。</div>`}
       <div class="note">音声で「今日の予定は？」「明日の予定」と聞くと読み上げます。</div>`;
@@ -2921,7 +2921,7 @@
           + line("AiSEG2", c.aiseg_url ? `${c.aiseg_url}・パスワード${c.aiseg_password_set ? "登録あり" : "なし"}` : "なし", !!c.aiseg_url) + line("記録しているカメラ", ((a.cam && a.cam.cameras) || []).length + "台", ((a.cam && a.cam.cameras) || []).length > 0)
           : `<div class="note">サーバーにつながりません</div>`}</div>`;
     const tt = S.ha ? Object.keys(S.ha.states).filter((k) => k.startsWith("calendar.timetree")).length : 0;
-    h += `<div class="card"><div class="fl">📅 その他のサービス</div>${line("TimeTree", tt ? `Home Assistant に登録（カレンダー${tt}個）` : "なし", tt > 0)}</div>`;
+    h += `<div class="card"><div class="fl">📅 その他のサービス</div>${line("TimeTree", tt ? `サーバーで取り込み → Home Assistant（カレンダー${tt}個）` : "なし", tt > 0)}</div>`;
     h += `<div class="card"><div class="fl">👥 Home Assistant のユーザー</div>`;
     if (!a.users) h += `<div class="note">ユーザーの一覧は、管理者のユーザーで使っているときに表示します（Android 版では管理者ログインでも見られます）。</div>`;
     else {
