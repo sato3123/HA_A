@@ -58,6 +58,8 @@ private val GEN = Color(0xFF66BB6A)
 private val BUY = Color(0xFFEF5350)
 private val SELL = Color(0xFF42A5F5)
 
+private val COMPARE = listOf(Color(0xFFE53935), Color(0xFF1E88E5), Color(0xFF43A047), Color(0xFFFB8C00), Color(0xFF8E24AA), Color(0xFF00ACC1))
+
 private fun kwhOf(wh: Double) = if (wh >= 100_000) String.format("%.0f kWh", wh / 1000) else String.format("%.1f kWh", wh / 1000)
 
 /** 電気の分析（時間別・回路別）。データはホームパネルのサーバーが AiSEG2 から1分ごとに記録したもの */
@@ -67,6 +69,8 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     var tab by remember { mutableStateOf("hour") }
     var circuit by remember { mutableStateOf<String?>(null) }
     val data by vm.energyHours.collectAsState()
+    val daily by vm.energyDaily.collectAsState()
+    var picked by remember { mutableStateOf<Set<String>?>(null) }
     val status by vm.energyHoursStatus.collectAsState()
     LaunchedEffect(Unit) { vm.loadEnergyHours(31) }
     val chip = FilterChipDefaults.filterChipColors(
@@ -95,7 +99,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         FilterChip(selected = period == k, onClick = { period = k; circuit = null }, label = { Text(l) }, colors = chip)
                     }
                     Text("　")
-                    listOf("hour" to "時間別", "circuit" to "回路別").forEach { (k, l) ->
+                    listOf("hour" to "時間別", "day" to "日ごと（天気・気温）", "circuit" to "回路別", "compare" to "回路の比較").forEach { (k, l) ->
                         FilterChip(selected = tab == k, onClick = { tab = k }, label = { Text(l) }, colors = chip)
                     }
                 }
@@ -125,6 +129,48 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         val peak = slots.maxByOrNull { it.second.sumOf { h -> h.use } }
                         peak?.takeIf { it.second.isNotEmpty() }?.let {
                             Text("いちばん多く使ったのは ${it.first}（${kwhOf(it.second.sumOf { h -> h.use })}）", style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else if (tab == "day") {
+                        DailyWeatherTable(if (oneDay) (0..6).map { today.minusDays(it.toLong()).toString() } else dayList, data ?: emptyList(), daily)
+                    } else if (tab == "compare") {
+                        // 回路の比較（選んだ回路を同じグラフに重ねる）
+                        val totals = HashMap<String, Double>()
+                        hours.forEach { h -> h.circuits.forEach { (n, v) -> totals[n] = (totals[n] ?: 0.0) + v } }
+                        val names = totals.entries.sortedByDescending { it.value }.map { it.key }
+                        val sel = (picked ?: names.take(3).toSet()).filter { it in totals }
+                        Text("比べる回路を選んでください（最大6つ）", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                        if (names.isEmpty()) Text("回路ごとの記録がありません（AiSEG2 に回路の計測が登録されているか確認してください）。", style = MaterialTheme.typography.bodySmall)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            names.forEach { n ->
+                                val i = sel.indexOf(n)
+                                FilterChip(
+                                    selected = i >= 0,
+                                    onClick = {
+                                        val cur = sel.toMutableSet()
+                                        if (n in cur) cur.remove(n) else if (cur.size < 6) cur.add(n)
+                                        picked = cur
+                                    },
+                                    label = { Text((if (i >= 0) "● " else "") + n, color = if (i >= 0) COMPARE[i % COMPARE.size] else Color.Unspecified) },
+                                )
+                            }
+                        }
+                        if (sel.isNotEmpty()) {
+                            val labels = if (oneDay) (0..23).map { "${it}時" } else dayList.reversed().map { it.substring(5).replace('-', '/') }
+                            val series = sel.map { n ->
+                                n to (if (oneDay) (0..23).map { h -> hours.filter { it.hour == h }.sumOf { it.circuits[n] ?: 0.0 } }
+                                else dayList.reversed().map { d -> hours.filter { it.date == d }.sumOf { it.circuits[n] ?: 0.0 } })
+                            }
+                            CompareChart(labels, series.map { it.second })
+                            val all = totals.values.sum()
+                            series.forEachIndexed { i, (n, v) ->
+                                val t = v.sum()
+                                val peak = v.indices.maxByOrNull { v[it] }
+                                Text(
+                                    "● $n　${kwhOf(t)}" + (if (all > 0) String.format("（全体の%.0f%%）", t / all * 100) else "") +
+                                        (peak?.takeIf { v[it] > 0 }?.let { "・いちばん多いのは ${labels[it]}" } ?: ""),
+                                    color = COMPARE[i % COMPARE.size], style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
                     } else {
                         // 回路別
@@ -216,6 +262,104 @@ private fun FlowChart(slots: List<Slot>, onlyUse: Boolean = false) {
             if (i % every == 0) {
                 val tl = measurer.measure(s.label, style)
                 drawText(tl, topLeft = Offset((x + w / 2 - tl.size.width / 2).coerceAtLeast(left), bottom + 2))
+            }
+        }
+    }
+}
+
+/** 天気の番号（WMO）→ 絵文字と名前 */
+fun wmoWeather(code: Int?): Pair<String, String> = when (code) {
+    null -> "－" to "不明"
+    0 -> "☀️" to "快晴"
+    1 -> "🌤️" to "晴れ"
+    2 -> "⛅" to "晴れ時々くもり"
+    3 -> "☁️" to "くもり"
+    45, 48 -> "🌫️" to "霧"
+    in 51..57 -> "🌦️" to "霧雨"
+    in 61..67, in 80..82 -> "🌧️" to "雨"
+    in 71..77, 85, 86 -> "❄️" to "雪"
+    in 95..99 -> "⛈️" to "雷雨"
+    else -> "🌡" to "－"
+}
+
+/** 日ごとの電気と、天気・最高/最低気温・日照時間・雨・お湯 */
+@Composable
+private fun DailyWeatherTable(days: List<String>, data: List<EnergyHour>, daily: Map<String, org.json.JSONObject>) {
+    Text("日ごとの電気と天気・気温", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+    if (daily.isEmpty()) Text("天気・気温の記録はまだありません（サーバーが3時間ごとに記録します。自宅の位置をサーバーに送ってください）。", style = MaterialTheme.typography.bodySmall)
+    val maxUse = days.maxOfOrNull { d -> data.filter { it.date == d }.sumOf { it.use } }?.coerceAtLeast(1.0) ?: 1.0
+    days.forEach { d ->
+        val h = data.filter { it.date == d }
+        val w = daily[d]
+        fun num(k: String) = w?.takeIf { it.has(k) && !it.isNull(k) }?.optDouble(k)?.takeIf { !it.isNaN() }
+        val (emoji, wname) = wmoWeather(w?.takeIf { it.has("weather_code") && !it.isNull("weather_code") }?.optInt("weather_code"))
+        val date = runCatching { LocalDate.parse(d) }.getOrNull()
+        val label = date?.let { "${it.monthValue}/${it.dayOfMonth}（${"月火水木金土日"[it.dayOfWeek.value - 1]}）" } ?: d
+        Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)).padding(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(96.dp))
+                Text("$emoji $wname", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Text(
+                    listOfNotNull(
+                        num("tmax")?.let { "最高 ${fmt1(it)}℃" }, num("tmin")?.let { "最低 ${fmt1(it)}℃" },
+                    ).joinToString("・"),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text(
+                listOfNotNull(
+                    num("sun_h")?.let { "日照 ${fmt1(it)}時間" }, num("rain_mm")?.takeIf { it > 0 }?.let { "雨 ${fmt1(it)}mm" },
+                    num("hot_use_l")?.let { "お湯 ${it.toInt()}L" },
+                ).joinToString("・").ifBlank { " " },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (h.isEmpty()) Text("電気の記録なし", style = MaterialTheme.typography.bodySmall)
+            else {
+                val use = h.sumOf { it.use }
+                Box(Modifier.padding(vertical = 3.dp).fillMaxWidth((use / maxUse).toFloat().coerceIn(0.01f, 1f)).height(8.dp).background(USE, RoundedCornerShape(4.dp)))
+                Text(
+                    "使った ${kwhOf(use)}・発電 ${kwhOf(h.sumOf { it.gen })}・買った ${kwhOf(h.sumOf { it.buy })}・売った ${kwhOf(h.sumOf { it.sell })}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+    Text("※ 天気・気温は Open-Meteo（自宅の位置）の値です。日の切り替わりは日本時間の0時です。", style = MaterialTheme.typography.labelSmall)
+}
+
+private fun fmt1(v: Double) = String.format("%.1f", v)
+
+/** 回路の比較：選んだ回路ごとの折れ線 */
+@Composable
+private fun CompareChart(labels: List<String>, series: List<List<Double>>) {
+    val measurer = rememberTextMeasurer()
+    val style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    Canvas(Modifier.fillMaxWidth().height(200.dp)) {
+        val left = 44.dp.toPx(); val bottom = size.height - 18.dp.toPx(); val top = 6.dp.toPx()
+        val max = (series.flatten().maxOrNull() ?: 0.0).coerceAtLeast(50.0)
+        val n = labels.size.coerceAtLeast(1)
+        val w = (size.width - left) / n
+        fun y(v: Double) = bottom - (v / max).toFloat() * (bottom - top)
+        for (i in 0..2) {
+            val v = max * i / 2
+            drawLine(grid, Offset(left, y(v)), Offset(size.width, y(v)), 1f)
+            val tl = measurer.measure(String.format("%.1f", v / 1000) + "kWh", style)
+            drawText(tl, topLeft = Offset(0f, y(v) - tl.size.height / 2))
+        }
+        val every = when { n > 20 -> 6; n > 10 -> 3; else -> 1 }
+        labels.forEachIndexed { i, l ->
+            if (i % every == 0) {
+                val tl = measurer.measure(l, style)
+                drawText(tl, topLeft = Offset((left + i * w + w / 2 - tl.size.width / 2).coerceAtLeast(left), bottom + 2))
+            }
+        }
+        series.forEachIndexed { si, v ->
+            val c = COMPARE[si % COMPARE.size]
+            v.forEachIndexed { i, value ->
+                val x = left + i * w + w / 2
+                drawCircle(c, radius = 2.5.dp.toPx(), center = Offset(x, y(value)))
+                if (i > 0) drawLine(c, Offset(x - w, y(v[i - 1])), Offset(x, y(value)), 2.dp.toPx())
             }
         }
     }

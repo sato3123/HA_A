@@ -660,6 +660,113 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= アカウントの一覧・操作の記録 =================
+
+    /** Home Assistant のユーザー（管理者の権限が必要。普段使いが管理者でなければ、管理者ログインで読む） */
+    suspend fun haUsers(): List<JSONObject> {
+        val payload = JSONObject().put("type", "config/auth/list")
+        val arr = if (isAdmin.value == true) client?.request(payload)?.optJSONArray("result")
+        else {
+            if (store.adminRefresh == null) throw HaException("ユーザーの一覧を見るには、上の「管理者ログインを追加」をしてください")
+            val r = route.value ?: throw HaException("接続していません")
+            val c = HaClient(r.base, http)
+            try {
+                c.connect(editorToken(r.base))
+                c.request(payload).optJSONArray("result")
+            } finally {
+                c.close()
+            }
+        }
+        return (0 until (arr?.length() ?: 0)).mapNotNull { arr?.optJSONObject(it) }
+    }
+
+    /** サーバー（温度調整・おひさま沸き上げ・カメラの記録）の様子。アカウントの一覧用 */
+    suspend fun serverAccounts(): Pair<JSONObject?, JSONObject?> {
+        val solar = runCatching { serverCall("/status", null) }.getOrNull()
+        val cam = runCatching { cameraServerCall("/status", null) }.getOrNull()
+        return solar to cam
+    }
+
+    /** ユーザーの id → 名前（人（person）に結びついているユーザーと、普段使いのユーザー） */
+    private var userNames: Map<String, String> = emptyMap()
+
+    fun knownUserNames(): Map<String, String> {
+        val m = HashMap<String, String>(userNames)
+        allStates.value.values.filter { it.domain == "person" }.forEach { p ->
+            p.attributes.optString("user_id").takeIf { it.isNotBlank() }?.let { m.putIfAbsent(it, p.name) }
+        }
+        return m
+    }
+
+    data class OpLog(val at: Long, val who: String, val what: String, val kind: String)
+
+    /** 操作の記録：Home Assistant の記録（logbook）から、人や自動化が動かしたものを選び、サーバーの記録と合わせる */
+    suspend fun operationLog(hours: Int): List<OpLog> {
+        val r = route.value ?: throw HaException("接続していません")
+        val local = store.baseUrl ?: throw HaException("接続していません")
+        val token = validAccessToken(r.base, local)
+        // 管理者ならユーザーの一覧で名前を補う
+        if (userNames.isEmpty() && (isAdmin.value == true || store.adminRefresh != null)) {
+            runCatching { userNames = haUsers().associate { it.optString("id") to it.optString("name") } }
+        }
+        val names = knownUserNames()
+        val start = java.time.Instant.now().minusSeconds(hours * 3600L).toString()
+        val text = withContext(Dispatchers.IO) {
+            http.newCall(Request.Builder().url(r.base + "/api/logbook/" + start).header("Authorization", "Bearer $token").build()).execute().use {
+                if (!it.isSuccessful) throw HaException("記録を読めませんでした (HTTP ${it.code})")
+                it.body?.string().orEmpty()
+            }
+        }
+        val arr = JSONArray(text)
+        val out = ArrayList<OpLog>()
+        for (i in 0 until arr.length()) {
+            val e = arr.optJSONObject(i) ?: continue
+            val uid = e.optString("context_user_id").takeIf { it.isNotBlank() && it != "null" }
+            val evType = e.optString("context_event_type")
+            val ctxName = e.optString("context_name").takeIf { it.isNotBlank() && it != "null" }
+                ?: e.optString("context_entity_id_name").takeIf { it.isNotBlank() && it != "null" }
+            val kind: String
+            val who: String
+            when {
+                uid != null -> { kind = "user"; who = names[uid] ?: "ユーザー（${uid.take(6)}）" }
+                evType == "automation_triggered" -> { kind = "auto"; who = "自動化" + (ctxName?.let { "「$it」" } ?: "") }
+                evType == "script_started" -> { kind = "auto"; who = "スクリプト" + (ctxName?.let { "「$it」" } ?: "") }
+                e.optString("domain") == "automation" -> { kind = "auto"; who = "自動化" }
+                else -> continue
+            }
+            val name = e.optString("name").ifBlank { e.optString("entity_id") }
+            val msg = e.optString("message").ifBlank { e.optString("state") }
+            val at = runCatching { java.time.OffsetDateTime.parse(e.optString("when")).toInstant().toEpochMilli() }.getOrNull()
+                ?: runCatching { (e.optDouble("when") * 1000).toLong() }.getOrNull() ?: continue
+            out += OpLog(at, who, "$name：${translateLogbook(msg)}", kind)
+        }
+        // サーバーが行った操作（おひさま沸き上げ・温度調整）
+        runCatching { serverCall("/status", null) }.getOrNull()?.optJSONArray("log")?.let { a ->
+            val year = java.time.LocalDate.now().year
+            val now = System.currentTimeMillis()
+            for (i in 0 until a.length()) {
+                val line = a.optString(i)
+                val m = Regex("^(\\d{2})/(\\d{2}) (\\d{1,2}):(\\d{2})[\\s\u3000]*(.*)$").find(line) ?: continue
+                val (mo, d, h, mi, msg) = m.destructured
+                var t = java.time.LocalDateTime.of(year, mo.toInt(), d.toInt(), h.toInt(), mi.toInt()).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                if (t > now + 86_400_000L) t = java.time.LocalDateTime.of(year - 1, mo.toInt(), d.toInt(), h.toInt(), mi.toInt()).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                if (t >= now - hours * 3_600_000L) out += OpLog(t, "サーバー", msg.trim(), "server")
+            }
+        }
+        return out.sortedByDescending { it.at }
+    }
+
+    private fun translateLogbook(m: String): String = when (m.trim()) {
+        "turned on" -> "オンにしました"
+        "turned off" -> "オフにしました"
+        "triggered" -> "実行しました"
+        "opened" -> "開けました"
+        "closed" -> "閉めました"
+        "locked" -> "鍵をかけました"
+        "unlocked" -> "鍵を開けました"
+        else -> m.replace("changed to ", "→ ").replace("triggered by ", "きっかけ：")
+    }
+
     // ================= オートメーション・スケジュール =================
 
     /** アプリで作った自動化の設定を読み込む */
@@ -903,6 +1010,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 表示する機器を選んでいる場合も、追加したカメラは表示する
         if (isNew) selection.value?.let { sel -> (sel + c.entityId).also { prefs.selected = it; selection.value = it } }
         mergeEntities()
+        if (camRecording.value.any { it.entity == c.entityId }) pushCamerasToServer()
     }
 
     fun deleteIpCamera(id: String) {
@@ -911,7 +1019,117 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         store.setSecret("ipcam_$id", null)
         ipCameras.value = next
         mergeEntities()
+        if (camRecording.value.any { it.entity == "camera.ip_$id" }) {
+            camRecording.value = camRecording.value.filter { it.entity != "camera.ip_$id" }
+            saveCamRecording(); pushCamerasToServer("camera.ip_$id" to false)
+        }
     }
+
+    // ---- サーバーでの記録・動きの分析（2日分） ----
+
+    /** サーバーで記録するカメラ（entity は camera.xxx。直接つなぐカメラは camera.ip_xxx） */
+    data class CamRec(val entity: String, val name: String)
+
+    val camRecording = MutableStateFlow(
+        runCatching {
+            val a = JSONArray(prefs.camServerJson ?: "[]")
+            (0 until a.length()).map { a.getJSONObject(it) }.map { CamRec(it.optString("entity"), it.optString("name")) }
+        }.getOrDefault(emptyList()),
+    )
+    val camServerStatus = MutableStateFlow<JSONObject?>(null)
+    val camServerMsg = MutableStateFlow<String?>(null)
+
+    private fun saveCamRecording() {
+        prefs.camServerJson = JSONArray(camRecording.value.map { JSONObject().put("entity", it.entity).put("name", it.name) }).toString()
+    }
+
+    /** サーバーでのカメラの ID（記録のフォルダ名になる） */
+    fun camServerId(entity: String) = entity.substringAfter('.').replace(Regex("[^A-Za-z0-9_]"), "_")
+
+    fun setCameraRecording(entity: String, name: String, on: Boolean) {
+        camRecording.value = camRecording.value.filter { it.entity != entity } + if (on) listOf(CamRec(entity, name)) else emptyList()
+        saveCamRecording()
+        pushCamerasToServer(entity to on)
+    }
+
+    /**
+     * 記録するカメラの一覧をサーバーに送る（iPad などほかの端末で追加したカメラは残す）。
+     * 直接つなぐカメラは、パスワード入りの URL をサーバーにだけ送る。
+     */
+    fun pushCamerasToServer(change: Pair<String, Boolean>? = null) = viewModelScope.launch {
+        try {
+            val cur = cameraServerCall("/status", null).optJSONArray("cameras") ?: JSONArray()
+            val list = LinkedHashMap<String, JSONObject>()
+            for (i in 0 until cur.length()) {
+                val c = cur.optJSONObject(i) ?: continue
+                list[c.optString("id")] = JSONObject().put("id", c.optString("id")).put("name", c.optString("name"))
+                    .put("kind", c.optString("kind")).put("entity", c.optString("entity"))
+            }
+            change?.let { (entity, on) ->
+                val id = camServerId(entity)
+                if (!on) list.remove(id)
+                else list.getOrPut(id) { JSONObject().put("id", id).put("entity", entity) }
+                    .put("name", camRecording.value.firstOrNull { it.entity == entity }?.name ?: entity)
+            }
+            val arr = JSONArray()
+            for (c in list.values) {
+                val entity = c.optString("entity").ifBlank { "camera." + c.optString("id") }
+                val ip = ipCamera(entity)
+                if (ip != null) c.put("kind", "rtsp").put("entity", entity).put("url", ipCameraUrl(ip, light = true))
+                else if (c.optString("kind") != "rtsp") c.put("kind", "ha").put("entity", entity)
+                arr.put(c)
+            }
+            val body = JSONObject().put("cameras", arr)
+            store.baseUrl?.let { body.put("ha_url", it) }
+            applyCamStatus(cameraServerCall("/config", body))
+            camServerMsg.value = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            camServerMsg.value = "サーバーに送れませんでした：${e.message}"
+        }
+    }
+
+    private fun applyCamStatus(j: JSONObject) {
+        camServerStatus.value = j
+        val a = j.optJSONArray("cameras") ?: return
+        camRecording.value = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
+            CamRec(it.optString("entity").ifBlank { "camera." + it.optString("id") }, it.optString("name"))
+        }
+        saveCamRecording()
+    }
+
+    fun loadCamServer() = viewModelScope.launch {
+        try {
+            applyCamStatus(cameraServerCall("/status", null))
+            camServerMsg.value = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            camServerMsg.value = "サーバー（${shServer.value}）から読めませんでした：${e.message}"
+        }
+    }
+
+    fun setCamThreshold(v: Double) = viewModelScope.launch {
+        try { applyCamStatus(cameraServerCall("/config", JSONObject().put("threshold", v))) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            camServerMsg.value = "サーバーに送れませんでした：${e.message}"
+        }
+    }
+
+    /** いま1枚記録して、動きの量を試す */
+    suspend fun testCamServer(entity: String): String = try {
+        val j = cameraServerCall("/test", JSONObject().put("cam", camServerId(entity)))
+        if (j.optBoolean("ok")) "✓ 記録できました（動きの量 ${j.optDouble("score")}%）" else "✕ " + j.optString("error")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        "✕ ${e.message}"
+    }
+
+    /** 動きの記録（[時刻(秒), 動きの量%]）・しきい値・夜ごとの寝た/起きた時刻 */
+    suspend fun camMotion(entity: String, hours: Int = 48): JSONObject = cameraServerCall("/motion?cam=${camServerId(entity)}&hours=$hours", null)
+
+    suspend fun camFrame(entity: String, tSec: Long): ByteArray = serverBytes("/camera-api/frame?cam=${camServerId(entity)}&t=$tSec")
 
     /** RTSP の再生アドレス（ユーザー名・パスワード入り）。light = 軽量（サブストリーム） */
     fun ipCameraUrl(c: IpCamera, light: Boolean): String =
@@ -1723,11 +1941,105 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         climateRules.value = next
         if (!r.enabled) climateStatus.value = climateStatus.value - r.entityId
         climateMem.remove(r.entityId)
+        if (climateOnServer.value) pushClimateToServer()
+    }
+
+    // ---- サーバーで動かす（タブレットが止まっていても動き続ける） ----
+
+    val climateEnabled = MutableStateFlow(prefs.climateEnabled)
+    val climateOnServer = MutableStateFlow(prefs.climateWhere == "server")
+    /** サーバーの温度調整の様子（GET /solar-api/climate） */
+    val climateServer = MutableStateFlow<JSONObject?>(null)
+    val climateServerMsg = MutableStateFlow<String?>(null)
+
+    /** 自動温度調整の全体のオン/オフ（ホーム画面からも切り替えられる） */
+    fun setClimateEnabled(on: Boolean) {
+        prefs.climateEnabled = on
+        climateEnabled.value = on
+        addLog("温度調整：全体を" + if (on) "オンにしました" else "オフにしました")
+        if (climateOnServer.value) pushClimateToServer() else if (!on) climateStatus.value = emptyMap()
+    }
+
+    fun setClimateWhere(server: Boolean) {
+        prefs.climateWhere = if (server) "server" else "local"
+        climateOnServer.value = server
+        climateStatus.value = emptyMap()
+        // サーバーで動かすのをやめるときは、サーバー側を止める
+        pushClimateToServer(enabledOverride = if (server) null else false)
+    }
+
+    /** 温度計の key を、サーバーが読む Home Assistant の温度センサー（entity_id）に置き換えて送る */
+    fun pushClimateToServer(enabledOverride: Boolean? = null) = viewModelScope.launch {
+        val rules = JSONArray()
+        for (r in climateRules.value) {
+            val src = if (r.source == "ac") "" else thermos.value.firstOrNull { it.key == r.source }?.tempEntity ?: ""
+            rules.put(JSONObject().put("entity", r.entityId).put("enabled", r.enabled).put("min", r.min).put("max", r.max)
+                .put("source", src).put("cool", r.cool).put("heat", r.heat).put("off", r.offInRange))
+        }
+        val c = JSONObject().put("climate_enabled", enabledOverride ?: climateEnabled.value).put("climate_rules", rules)
+        store.baseUrl?.let { c.put("ha_url", it) }
+        try {
+            serverCall("/config", c)
+            climateServerMsg.value = null
+            loadClimateServer()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            climateServerMsg.value = "サーバーに送れませんでした：${e.message}"
+        }
+    }
+
+    fun loadClimateServer() = viewModelScope.launch {
+        try {
+            climateServer.value = serverCall("/climate", null)
+            climateServerMsg.value = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            climateServerMsg.value = "サーバー（${shServer.value}）から読めませんでした：${e.message}"
+        }
+    }
+
+    val serverTokenMsg = MutableStateFlow<String?>(null)
+
+    /**
+     * サーバー（温度調整・カメラの記録）が Home Assistant を操作・読み取りできるように、
+     * 長期アクセストークンを作ってサーバーにだけ送る（このタブレットには残さない）。
+     */
+    fun registerServerToken() = viewModelScope.launch {
+        val c = client ?: run { serverTokenMsg.value = "Home Assistant につながっていません"; return@launch }
+        serverTokenMsg.value = "トークンを作っています…"
+        try {
+            val name = "ホームパネルのサーバー " + java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+            val token = c.request(JSONObject().put("type", "auth/long_lived_access_token").put("client_name", name).put("lifespan", 3650))
+                .optString("result")
+            if (token.isBlank()) throw HaException("トークンを作れませんでした")
+            val body = JSONObject().put("ha_token", token)
+            store.baseUrl?.let { body.put("ha_url", it) }
+            val errs = mutableListOf<String>()
+            runCatching { serverCall("/config", body) }.onFailure { errs += "温度調整：${it.message}" }
+            runCatching { cameraServerCall("/config", body) }.onFailure { errs += "カメラの記録：${it.message}" }
+            serverTokenMsg.value = if (errs.isEmpty()) "✓ サーバーに登録しました（Home Assistant のプロフィール →「セキュリティ」に「$name」として表示されます）"
+            else "一部登録できませんでした：" + errs.joinToString("／")
+            loadClimateServer()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            serverTokenMsg.value = "✕ ${e.message}（普段使いのユーザーでトークンを作れないときは、管理者ログインを追加してください）"
+        }
     }
 
     private fun startClimateAuto() {
         viewModelScope.launch {
             delay(20_000)
+            // 前の版でこのタブレットに作った設定を、サーバーにまだ無ければ送っておく
+            if (climateOnServer.value && climateRules.value.isNotEmpty()) {
+                runCatching {
+                    val j = serverCall("/climate", null)
+                    climateServer.value = j
+                    if ((j.optJSONArray("rules")?.length() ?: 0) == 0) pushClimateToServer()
+                }
+            }
             while (isActive) {
                 try { climateTick() } catch (e: CancellationException) { throw e } catch (e: Exception) { addLog("温度調整：${e.message}") }
                 delay(60_000)
@@ -1736,6 +2048,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun climateTick() {
+        // サーバーで動かしているときや、全体がオフのときは、このタブレットでは何もしない
+        if (climateOnServer.value || !climateEnabled.value) return
         val now = System.currentTimeMillis()
         val st = climateStatus.value.toMutableMap()
         for (r in climateRules.value.filter { it.enabled }) {
@@ -2172,17 +2486,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** サーバー用（https への転送はたどらない） */
     private val serverHttp by lazy { photoHttp.newBuilder().followRedirects(false).followSslRedirects(false).build() }
 
-    private suspend fun serverCall(path: String, body: JSONObject?): JSONObject = withContext(Dispatchers.IO) {
-        val url = shServer.value + "/solar-api" + path
+    private suspend fun serverCall(path: String, body: JSONObject?): JSONObject = serverCallAt("/solar-api", "homepanel-solar", path, body)
+
+    /** カメラの記録・動きの分析のサービス（/camera-api/） */
+    private suspend fun cameraServerCall(path: String, body: JSONObject?): JSONObject = serverCallAt("/camera-api", "homepanel-camera", path, body)
+
+    private suspend fun serverCallAt(prefix: String, service: String, path: String, body: JSONObject?): JSONObject = withContext(Dispatchers.IO) {
+        val url = shServer.value + prefix + path
         val req = Request.Builder().url(url).apply {
             if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
         }.build()
         serverHttp.newCall(req).execute().use { r ->
             if (r.code in 300..399) throw HaException("サーバーが古い版です。コンテナでセットアップ（setup.sh）を新しい版でやり直してください")
-            if (r.code == 404) throw HaException("サーバーにおひさま沸き上げのサービスがありません（サーバーのセットアップをやり直してください）")
-            if (r.code == 502) throw HaException("サーバーのおひさま沸き上げのサービスが止まっています（コンテナで systemctl status homepanel-solar を確認してください）")
+            if (r.code == 404) throw HaException("サーバーにこの機能のサービスがありません（サーバーのセットアップ setup.sh をやり直してください）")
+            if (r.code == 502) throw HaException("サーバーのサービスが止まっています（コンテナで systemctl status $service を確認してください）")
+            if (r.code == 403) throw HaException("サーバーは家の中からだけ使えます")
             if (!r.isSuccessful) throw HaException("サーバーでエラーになりました (HTTP ${r.code})")
             JSONObject(r.body?.string().orEmpty())
+        }
+    }
+
+    /** サーバーの画像（カメラの記録など）を読む */
+    suspend fun serverBytes(path: String): ByteArray = withContext(Dispatchers.IO) {
+        serverHttp.newCall(Request.Builder().url(shServer.value + path).build()).execute().use { r ->
+            if (!r.isSuccessful) throw HaException("読めませんでした (HTTP ${r.code})")
+            r.body?.bytes() ?: ByteArray(0)
         }
     }
 
@@ -2201,6 +2529,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---- 電気の分析（サーバーが AiSEG2 から記録した時間ごと・回路ごとの電気） ----
     val energyHours = MutableStateFlow<List<EnergyHour>?>(null)
     val energyHoursStatus = MutableStateFlow<String?>(null)
+    /** 日ごとの天気・気温・お湯（サーバーが保存）。日付（日本時間）→ 値 */
+    val energyDaily = MutableStateFlow<Map<String, JSONObject>>(emptyMap())
 
     fun loadEnergyHours(days: Int) = viewModelScope.launch {
         energyHoursStatus.value = "読み込んでいます…"
@@ -2212,6 +2542,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 EnergyHour(h.optString("h"), h.optDouble("use", 0.0), h.optDouble("gen", 0.0), h.optDouble("buy", 0.0), h.optDouble("sell", 0.0),
                     c.keys().asSequence().associateWith { c.optDouble(it, 0.0) })
             }
+            j.optJSONObject("daily")?.let { d -> energyDaily.value = d.keys().asSequence().associateWith { d.optJSONObject(it) ?: JSONObject() } }
             energyHoursStatus.value = null
         } catch (e: CancellationException) {
             throw e
@@ -2232,6 +2563,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** サーバーに登録した AiSEG2 の状態（画面用） */
     val serverAiseg = MutableStateFlow<String?>(null)
     val nightStop = MutableStateFlow(false)
+    /** 夜止めの日に、目標の量まで夜に沸かしている途中 */
+    val nightPending = MutableStateFlow(false)
+    /** サーバーが記録した日ごとの値（お湯の使用量・天気・気温など）。日付（日本時間）→ 値 */
+    val serverDaily = MutableStateFlow<List<Pair<String, JSONObject>>>(emptyList())
     val serverAisegUrl = MutableStateFlow("")
 
     /** AiSEG2 の住所とパスワードをサーバーに登録する（パスワードはサーバーにだけ保存し、このタブレットには残さない） */
@@ -2314,6 +2649,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         serverAisegUrl.value = conf.optString("aiseg_url")
         serverConf.value = conf.keys().asSequence().associateWith { k -> conf.opt(k) }
         nightStop.value = j.optBoolean("night_stop")
+        nightPending.value = j.optBoolean("night_pending")
+        j.optJSONObject("daily")?.let { d -> serverDaily.value = d.keys().asSequence().sorted().map { it to (d.optJSONObject(it) ?: JSONObject()) }.toList() }
         // 画面の設定もサーバーの値に合わせる
         shEnabled.value = conf.optBoolean("enabled", shEnabled.value)
         shStart.value = conf.optInt("start_hour", shStart.value)

@@ -1,6 +1,20 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package jp.home.panel
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,8 +23,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -33,7 +45,8 @@ private val HELP = listOf(
         "🏠 ホーム画面",
         listOf(
             "上部に時計と天気（今日の最高・最低気温と数日分の予報）を表示します。",
-            "左上の表示で接続状態がわかります：「家の中」＝家のWi-Fi、「外出先（Cloud）」＝Home Assistant Cloud 経由。",
+            "左上の表示で接続状態がわかります：🏠＝家のWi-Fi、🌏＝外出先（Home Assistant Cloud 経由）。",
+            "時刻はすべて日本時間で表示し、1日の切り替わりも日本時間の0時です。",
         ),
     ),
     HelpSection(
@@ -125,6 +138,7 @@ private val HELP = listOf(
             "昼は売電の量をリアルタイムに見て（スマートメーターがあれば15秒ごと）、余っていれば沸き増しを始め、電気を買い始めたら自動に戻します。",
             "サーバーで動かすときは「夜の沸き上げの減らし方」で「夜は止める」を選べます。晴れの予報の夜は沸き上げを止め、昼に余った電気で沸かします（お湯が減りすぎたら止めるのをやめ、昼の終わりの2時間前にまだ少なければ沸かします）。",
             "エネルギーシフトを受け付けない機種では、晴れの予報の夜だけタンクの運転モードを「節約」にして夜の沸き上げを減らし、昼の時間帯のあと「標準」に戻します（残りのお湯が4割より少ないときは減らしません）。",
+            "「夜は止める」では、晴れの日の夜に沸かす量（何%まで沸かしたら止めるか）を選べます。リットルでも表示します。下に直近7日の使ったお湯の量が出るので、参考にしてください。",
             "「🩺 対応状況を調べる」で、エコキュートが外から変えられる項目と、夜の沸き上げを減らす方法が分かります。",
             "エコキュートとは ECHONET Lite で直接やりとりします。先に ⚙ 設定 →「ECHONET Lite」でエコキュートを見つけてください。",
             "ホーム画面の電気のカードの下に、残りのお湯・沸き上げの状態・直近1時間の売電の変化が出ます。「今すぐ沸き増し」で手動でも沸かせます。",
@@ -144,6 +158,8 @@ private val HELP = listOf(
             "⚙ 設定 →「エアコンの自動温度調整」で、エアコンごとに温度の範囲（下限〜上限）を決めると、範囲を外れたときに自動で冷房・暖房にします。",
             "温度のもとは、エアコンの室温か、部屋に置いた温度計（SwitchBot など）から選べます。",
             "手でエアコンを操作したときは、10分間はその設定を優先します。",
+            "動かす場所は「ホームパネルのサーバー（おすすめ）」と「このタブレット」から選べます。サーバーなら、タブレットの電源が切れていても動き続けます（最初に「サーバーに鍵を登録」を押してください）。",
+            "ホーム画面の上部の「❄ 自動調整」で、全体をすぐにオン/オフできます。エアコンの名前をタップすると、いまの様子・24時間の温度・自動で行った操作を見られます。",
         ),
     ),
     HelpSection(
@@ -158,6 +174,9 @@ private val HELP = listOf(
         listOf(
             "電気のカードの詳細、またはエコキュートの欄の「📊 電気の分析」で、時間ごと・回路ごとの電気の使い方を見られます（今日／昨日／7日間／30日間）。",
             "ホームパネルのサーバーが AiSEG2 から1分ごとに記録しています（⚙ 設定 →「おひさま沸き上げ」で AiSEG2 を登録）。",
+            "「日ごと（天気・気温）」では、日ごとの電気と一緒に、その日の天気・最高/最低気温・日照時間・雨・お湯の量を表示します（サーバーに保存）。",
+            "「回路の比較」では、選んだ回路（最大6つ）を1つのグラフに重ねて比べられます。",
+            "日の切り替わりは日本時間の0時です。",
         ),
     ),
     HelpSection(
@@ -170,7 +189,17 @@ private val HELP = listOf(
             "・高画質：なめらか・数秒の遅れ（HLS）　・簡易：どのカメラでも見られるがコマ数少なめ",
             "選んだ方式で再生できないときは、自動でほかの方式に切り替わります。",
             "⚙ 設定 →「カメラ（直接つなぐ）」で、Home Assistant を通さずにネットワークカメラ（RTSP）を追加できます。画質は「高画質／軽量」から選べます。",
+            "「🔍 カメラを探す」を押すと、家のネットワークの中のカメラ（ONVIF 対応・RTSP のポートが開いている機器）を探して、そのまま登録できます。",
             "表示されないときは、⚙ 設定 →「部屋と機器」の「表示する機器」で、カメラにチェックを付けてください。",
+        ),
+    ),
+    HelpSection(
+        "🎞 カメラの記録と動きの分析",
+        listOf(
+            "⚙ 設定 →「カメラ（直接つなぐ）」の「サーバーで記録・分析」でカメラを選ぶと、ホームパネルのサーバーが1分ごとに画像を保存し（2日分）、動きの量を記録します。",
+            "カメラの全画面の「🎞 記録」または設定画面の「動きを見る」で、48時間の動きのグラフと、その時刻の画像を見られます。",
+            "夜に動きがなくなった時刻を「寝た時刻」、朝に動き始めた時刻を「起きた時刻」として推定します（子ども部屋などで、何時に寝たかの目安になります）。",
+            "画像はサーバーの中だけに保存し、2日たつと自動で消します。",
         ),
     ),
     HelpSection(
@@ -198,6 +227,15 @@ private val HELP = listOf(
             "普段は管理者以外のユーザーで使うのがおすすめです（設定を壊される心配がありません）。",
             "自動化を作成・編集するときだけ、⚙ 設定 →「アカウント」で管理者ログインを追加します。",
             "使い終わったら「管理者ログインを解除」できます。",
+            "⚙ 設定 →「アカウント」で、このアプリが使っているアカウント（普段使い・管理者・サーバーの鍵・AiSEG2・カメラ）と、Home Assistant のユーザーの一覧（管理者ログインが必要）を見られます。パスワードは表示しません。",
+        ),
+    ),
+    HelpSection(
+        "📜 操作の記録",
+        listOf(
+            "⚙ 設定 →「操作の記録」で、だれが・いつ・何を操作したかを見られます（Home Assistant の記録から。24時間／3日／7日）。",
+            "人の名前は Home Assistant のユーザーです。自動化やサーバーが動かしたものは「自動」「サーバー」と表示します。",
+            "おひさま沸き上げ・エアコンの自動温度調整がサーバーで行った操作も一緒に表示します。",
         ),
     ),
     HelpSection(
@@ -234,28 +272,71 @@ private val HELP = listOf(
 
 @Composable
 fun HelpScreen(vm: MainViewModel, onClose: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+    var query by remember { mutableStateOf("") }
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val q = query.trim()
+    val shown = if (q.isEmpty()) HELP else HELP.mapNotNull { s ->
+        if (s.title.contains(q, ignoreCase = true)) s
+        else s.items.filter { it.contains(q, ignoreCase = true) }.takeIf { it.isNotEmpty() }?.let { HelpSection(s.title, it) }
+    }
+    // 目次の後ろに並ぶ見出しの位置（0：見出し、1：検索、2：目次）
+    val head = 3
+    LazyColumn(
+        state = list,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text("← 戻る") }
-            Text("使い方", style = MaterialTheme.typography.titleLarge)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onClose) { Text("← 戻る") }
+                Text("使い方", style = MaterialTheme.typography.titleLarge)
+            }
         }
-        HELP.forEach { s ->
+        item {
+            OutlinedTextField(
+                query, { query = it }, singleLine = true,
+                label = { Text("🔍 言葉で探す（例：エコキュート、カメラ、ログイン）") },
+                trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("✕") } },
+                modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
+            )
+        }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(if (q.isEmpty()) "目次（タップでその項目へ）" else "見つかった項目：${shown.size}件", style = MaterialTheme.typography.titleSmall)
+                    if (shown.isEmpty()) Text("「$q」を含む項目はありません", style = MaterialTheme.typography.bodyMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        shown.forEachIndexed { i, s ->
+                            AssistChip(onClick = { scope.launch { list.animateScrollToItem(head + i) } }, label = { Text(s.title) })
+                        }
+                    }
+                }
+            }
+        }
+        itemsIndexed(shown, key = { _, s -> s.title }) { _, s ->
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(s.title, style = MaterialTheme.typography.titleMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(s.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { scope.launch { list.animateScrollToItem(0) } }) { Text("↑ 目次") }
+                    }
                     s.items.forEach { Text("・$it", style = MaterialTheme.typography.bodyLarge) }
                 }
             }
         }
-        UpdateCard(vm, showWhenIdle = true)
-        Button(onClick = onClose, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("閉じる") }
-        Spacer(Modifier.size(24.dp))
+        item { UpdateCard(vm, showWhenIdle = true) }
+        item {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Button(onClick = onClose) { Text("閉じる") } }
+        }
+        item { Spacer(Modifier.size(24.dp)) }
     }
 }
 

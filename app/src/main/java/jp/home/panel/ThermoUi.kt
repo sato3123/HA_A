@@ -231,7 +231,7 @@ private fun Summary(pts: List<MainViewModel.Point>, unit: String) {
 
 /** 折れ線グラフ（横は時刻、縦は値） */
 @Composable
-private fun LineChart(pts: List<MainViewModel.Point>, hours: Int, color: Color, unit: String) {
+fun LineChart(pts: List<MainViewModel.Point>, hours: Int, color: Color, unit: String, band: Pair<Double, Double>? = null, stepped: Boolean = true) {
     val grid = MaterialTheme.colorScheme.outlineVariant
     val label = MaterialTheme.colorScheme.onSurfaceVariant
     val measurer = rememberTextMeasurer()
@@ -240,6 +240,8 @@ private fun LineChart(pts: List<MainViewModel.Point>, hours: Int, color: Color, 
     val start = end - hours * 3_600_000L
     var lo = pts.minOf { it.v }
     var hi = pts.maxOf { it.v }
+    band?.let { lo = minOf(lo, it.first); hi = maxOf(hi, it.second) }
+    val bandColor = color.copy(alpha = 0.12f)
     if (hi - lo < 2) { val c = (hi + lo) / 2; lo = c - 1; hi = c + 1 }
     lo = kotlin.math.floor(lo); hi = kotlin.math.ceil(hi)
     Canvas(Modifier.fillMaxWidth().height(180.dp)) {
@@ -247,6 +249,7 @@ private fun LineChart(pts: List<MainViewModel.Point>, hours: Int, color: Color, 
         val w = size.width - left; val h = bottom - top
         fun x(t: Long) = left + w * ((t - start).toFloat() / (end - start))
         fun y(v: Double) = top + h * (1f - ((v - lo) / (hi - lo)).toFloat())
+        band?.let { (b0, b1) -> drawRect(bandColor, Offset(left, y(b1)), androidx.compose.ui.geometry.Size(w, y(b0) - y(b1))) }
         // 横線と目盛り
         for (i in 0..4) {
             val v = lo + (hi - lo) * i / 4
@@ -275,10 +278,11 @@ private fun LineChart(pts: List<MainViewModel.Point>, hours: Int, color: Color, 
             val px = x(p.t.coerceAtLeast(start)); val py = y(p.v)
             if (i == 0) path.moveTo(px, py) else {
                 // 記録は変化したときだけなので、階段状に描く
-                path.lineTo(px, y(sorted[i - 1].v)); path.lineTo(px, py)
+                if (stepped) path.lineTo(px, y(sorted[i - 1].v))
+                path.lineTo(px, py)
             }
         }
-        path.lineTo(size.width, y(sorted.last().v))
+        if (stepped) path.lineTo(size.width, y(sorted.last().v))
         drawPath(path, color, style = Stroke(width = 2.dp.toPx()))
     }
 }

@@ -3,6 +3,8 @@
 package jp.home.panel
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -172,21 +174,30 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             if (method == "stop") {
+                val tank = view?.tankL
+                fun lit(p: Int) = if (tank != null && tank > 0) "$p%（約${tank * p / 100}L）" else "$p%"
                 @Composable
                 fun pctRow(label: String, key: String, def: Int, options: List<Int>) {
                     val cur = (sc[key] as? Number)?.toInt() ?: def
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(end = 8.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(label + "：" + lit(cur), style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            options.forEach { v -> FilterChip(selected = cur == v, onClick = { vm.setServerConf(key, v) }, label = { Text("$v%") }, colors = chipColors) }
+                            options.forEach { v ->
+                                FilterChip(selected = cur == v, onClick = { vm.setServerConf(key, v) },
+                                    label = { Text(if (tank != null && tank > 0) "$v%・${tank * v / 100}L" else "$v%") }, colors = chipColors)
+                            }
                         }
                     }
                 }
-                pctRow("夜に止めるのは、残りがこれ以上のとき", "stop_min_pct", 50, listOf(30, 40, 50, 60, 70))
-                pctRow("夜中に残りがこれより減ったら沸かす", "safety_pct", 30, listOf(20, 30, 40))
+                pctRow("晴れの日の夜に沸かす量（ここまで沸かしたら止めて、残りは昼に沸かす）", "night_heat_pct", 50, listOf(0, 20, 30, 40, 50, 60, 70, 80))
+                Text("夜の初めにすでにこの量以上残っていれば、夜は沸かしません。0% にすると夜はまったく沸かしません。", style = MaterialTheme.typography.bodySmall)
+                pctRow("夜中に残りがこれより減ったら沸かす（お湯切れ防止）", "safety_pct", 30, listOf(10, 20, 30, 40))
                 pctRow("昼の終わりの2時間前に、これより少なければ沸かす", "ensure_pct", 60, listOf(40, 50, 60, 70, 80))
                 val ns by vm.nightStop.collectAsState()
+                val np by vm.nightPending.collectAsState()
                 if (ns) Text("いまは夜の沸き上げを止めています（昼に沸かします）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                if (np) Text("いまは夜の沸き上げの途中です（${lit((sc["night_heat_pct"] as? Number)?.toInt() ?: 50)} まで沸かしたら止めます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                HotWaterDaily(vm, tank)
             }
 
             // AiSEG2 から売電・買電を読む（スマートメーターの代わり）
@@ -426,4 +437,46 @@ private fun SurplusChart(pts: List<Pair<Long, Double>>, modifier: Modifier) {
             }
         }
     }
+}
+
+/** 直近の日ごとのお湯の使用量・沸かした量（サーバーが残りの湯量の変化から記録）。夜に沸かす量を決める参考にする */
+@Composable
+fun HotWaterDaily(vm: MainViewModel, tankL: Int?) {
+    val daily by vm.serverDaily.collectAsState()
+    val rows = daily.filter { it.second.has("hot_use_l") || it.second.has("hot_heat_l") }.takeLast(7)
+    Text("直近の日ごとのお湯（参考）", style = MaterialTheme.typography.labelLarge)
+    if (rows.isEmpty()) {
+        Text("まだ記録がありません（サーバーがお湯の残りの変化から毎日記録します）", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val tank = tankL ?: rows.lastOrNull()?.second?.optInt("hot_tank_l")?.takeIf { it > 0 }
+    val maxL = rows.maxOf { maxOf(it.second.optDouble("hot_use_l", 0.0), it.second.optDouble("hot_heat_l", 0.0)) }.coerceAtLeast(1.0)
+    val bar = MaterialTheme.colorScheme.primary
+    val bar2 = MaterialTheme.colorScheme.tertiary
+    rows.forEach { (d, v) ->
+        val use = v.optDouble("hot_use_l", 0.0)
+        val heat = v.optDouble("hot_heat_l", 0.0)
+        val date = runCatching { java.time.LocalDate.parse(d) }.getOrNull()
+        val label = date?.let { "${it.monthValue}/${it.dayOfMonth}（${"月火水木金土日"[it.dayOfWeek.value - 1]}）" } ?: d
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(78.dp))
+            Column(Modifier.weight(1f)) {
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth((use / maxL).toFloat().coerceIn(0.01f, 1f)).height(8.dp)
+                    .background(bar, androidx.compose.foundation.shape.RoundedCornerShape(3.dp)))
+                androidx.compose.foundation.layout.Box(Modifier.padding(top = 2.dp).fillMaxWidth((heat / maxL).toFloat().coerceIn(0.01f, 1f)).height(5.dp)
+                    .background(bar2, androidx.compose.foundation.shape.RoundedCornerShape(3.dp)))
+            }
+            Text(
+                "使った ${use.toInt()}L" + (tank?.let { "（${(use * 100 / it).toInt()}%）" } ?: "") + "・沸かした ${heat.toInt()}L",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp).width(190.dp),
+            )
+        }
+    }
+    val avg = rows.map { it.second.optDouble("hot_use_l", 0.0) }.average()
+    Text(
+        "1日の平均の使用量：約${avg.toInt()}L" + (tank?.let { "（タンクの${(avg * 100 / it).toInt()}%）" } ?: "") +
+            "。夜に沸かす量は、これより少し多めにしておくと、曇っても湯切れしにくくなります。" +
+            "（濃い線＝使った量、薄い線＝沸かした量。日の切り替わりは日本時間の0時です）",
+        style = MaterialTheme.typography.bodySmall,
+    )
 }

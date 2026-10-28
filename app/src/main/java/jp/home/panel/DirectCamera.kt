@@ -137,6 +137,8 @@ class CameraAuthenticator(private val user: String, private val password: String
 fun DirectCameraSettings(vm: MainViewModel) {
     val list by vm.ipCameras.collectAsState()
     var editing by remember { mutableStateOf<IpCamera?>(null) }
+    var editingPass by remember { mutableStateOf<String?>(null) }
+    var finding by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             "Home Assistant を通さずに、家の Wi-Fi の中のネットワークカメラ（RTSP 対応）に直接つなぎます。" +
@@ -155,7 +157,10 @@ fun DirectCameraSettings(vm: MainViewModel) {
                 }
             }
         }
-        Button(onClick = { editing = IpCamera(java.util.UUID.randomUUID().toString().take(8), "", "") }) { Text("＋ カメラを追加") }
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { finding = true }) { Text("🔍 カメラを探す") }
+            androidx.compose.material3.OutlinedButton(onClick = { editingPass = null; editing = IpCamera(java.util.UUID.randomUUID().toString().take(8), "", "") }) { Text("＋ 手で追加") }
+        }
         Text(
             "RTSP の URL の例（カメラの説明書や設定アプリで確認できます）：\n" +
                 "・TP-Link Tapo：rtsp://192.168.1.x:554/stream1（軽量は stream2）\n" +
@@ -166,20 +171,21 @@ fun DirectCameraSettings(vm: MainViewModel) {
             style = MaterialTheme.typography.bodySmall,
         )
     }
-    editing?.let { c -> EditCameraDialog(vm, c, onDismiss = { editing = null }) }
+    editing?.let { c -> EditCameraDialog(vm, c, editingPass, onDismiss = { editing = null; editingPass = null }) }
+    if (finding) FindCamerasDialog(onPick = { c, pw -> finding = false; editingPass = pw; editing = c }, onDismiss = { finding = false })
 }
 
 private fun hostOf(url: String) = url.substringAfter("://").substringAfter('@').substringBefore('/')
 
 @Composable
-private fun EditCameraDialog(vm: MainViewModel, c: IpCamera, onDismiss: () -> Unit) {
+private fun EditCameraDialog(vm: MainViewModel, c: IpCamera, initialPass: String? = null, onDismiss: () -> Unit) {
     val isNew = vm.ipCameras.value.none { it.id == c.id }
     var name by remember { mutableStateOf(c.name) }
     var main by remember { mutableStateOf(c.mainUrl) }
     var sub by remember { mutableStateOf(c.subUrl) }
     var snap by remember { mutableStateOf(c.snapshotUrl) }
     var user by remember { mutableStateOf(c.user) }
-    var pass by remember { mutableStateOf(if (isNew) "" else vm.ipCameraPassword(c.id)) }
+    var pass by remember { mutableStateOf(initialPass ?: if (isNew) "" else vm.ipCameraPassword(c.id)) }
     var tcp by remember { mutableStateOf(c.tcp) }
     var confirmDelete by remember { mutableStateOf(false) }
     val ok = name.isNotBlank() && main.startsWith("rtsp", ignoreCase = true)

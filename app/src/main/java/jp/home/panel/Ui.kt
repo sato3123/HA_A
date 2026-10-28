@@ -254,6 +254,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 if (profiles.size > 1) ProfileSwitcher(profiles, profile) { vm.switchProfile(it) }
                 Spacer(Modifier.weight(1f))
                 CtlModeButton(vm, compact)
+                ClimateQuickButton(vm, compact)
                 if (!clockShown) mic()
                 TopButton("？", "使い方", compact) { showHelp = true }
                 TopButton("⏱", "タイマー", compact) { showTimers = true }
@@ -369,6 +370,50 @@ private fun TopButton(icon: String, label: String, compact: Boolean, onClick: ()
 }
 
 /** 操作の経路の切り替え（対応付けた機器があるときだけ出す） */
+@Composable
+private fun ClimateQuickButton(vm: MainViewModel, compact: Boolean) {
+    val rules by vm.climateRules.collectAsState()
+    val enabled by vm.climateEnabled.collectAsState()
+    val all by vm.allEntities.collectAsState()
+    val onServer by vm.climateOnServer.collectAsState()
+    val server by vm.climateServer.collectAsState()
+    val local by vm.climateStatus.collectAsState()
+    val active = rules.filter { it.enabled }
+    if (active.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    var detail by remember { mutableStateOf<String?>(null) }
+    TextButton(onClick = { open = true; if (onServer) vm.loadClimateServer() }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+        Text(if (compact) (if (enabled) "❄" else "❄✕") else "❄ 自動調整：" + if (enabled) "オン" else "オフ",
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (open) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("エアコンの自動温度調整") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("全体", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text(if (enabled) "オン" else "オフ", modifier = Modifier.padding(end = 8.dp))
+                        androidx.compose.material3.Switch(checked = enabled, onCheckedChange = { vm.setClimateEnabled(it) })
+                    }
+                    active.forEach { r ->
+                        val e = all.firstOrNull { it.entityId == r.entityId }
+                        val st = if (onServer) server?.optJSONObject("state")?.optJSONObject(r.entityId)?.optString("status") else local[r.entityId]
+                        Column(Modifier.fillMaxWidth().clickable { detail = r.entityId }.padding(vertical = 4.dp)) {
+                            Text("${e?.name ?: r.entityId}　${fmt(r.min)}〜${fmt(r.max)}℃　›", style = MaterialTheme.typography.bodyLarge)
+                            Text(st?.takeIf { it.isNotBlank() } ?: modeName(e?.state), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { open = false }) { Text("閉じる") } },
+        )
+    }
+    detail?.let { ClimateDetailDialog(vm, it) { detail = null } }
+}
+
 @Composable
 private fun CtlModeButton(vm: MainViewModel, compact: Boolean) {
     val links by vm.elLinks.collectAsState()

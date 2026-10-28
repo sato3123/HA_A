@@ -143,9 +143,13 @@ fun CameraViewer(vm: MainViewModel) {
     var play by remember(entityId, mode) { mutableStateOf<Pair<Play, String>?>(null) }
     var note by remember(entityId, mode) { mutableStateOf<String?>(null) }
     var showModes by remember(entityId) { mutableStateOf(false) }
+    var showMotion by remember(entityId) { mutableStateOf(false) }
+    val recording by vm.camRecording.collectAsState()
     // 失敗した方式（次はとばす）
     val failed = remember(entityId, mode) { mutableSetOf<Play>() }
     var retry by remember(entityId, mode) { mutableStateOf(0) }
+
+    if (showMotion) MotionDialog(vm, entityId, name) { showMotion = false }
 
     LaunchedEffect(entityId, mode, retry) {
         play = null
@@ -199,6 +203,7 @@ fun CameraViewer(vm: MainViewModel) {
                             Text("画質：" + (if (direct != null) DIRECT_MODES.first { it.first == mode }.second else label(p.first)) + " ▾", color = Color.White)
                         }
                     }
+                    if (recording.any { it.entity == entityId }) TextButton(onClick = { showMotion = true }) { Text("🎞 記録", color = Color.White) }
                     TextButton(onClick = { vm.closeCamera() }) { Text("✕ 閉じる", color = Color.White) }
                 }
                 if (showModes) {

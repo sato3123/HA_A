@@ -666,11 +666,12 @@
   // ================= 時計と天気 =================
   const DOW = ["日", "月", "火", "水", "木", "金", "土"];
   function renderClock() {
-    const now = new Date();
+    // いつも日本時間で表示する（端末の時刻の設定にかかわらず）
+    const p = jstParts(Date.now());
     const t = $("#time"), d = $("#date");
     if (!t) return;
-    t.textContent = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
-    d.textContent = `${now.getMonth() + 1}月${now.getDate()}日（${DOW[now.getDay()]}）`;
+    t.textContent = `${p.hour}:${p.minute}`;
+    d.textContent = `${p.month}月${p.day}日（${p.weekday}）`;
   }
 
   function weatherEntity() {
@@ -1323,6 +1324,25 @@
       "新しいバージョンが出ると、画面上部に「更新する」ボタンが表示されます。押すと Home Assistant が自動で新しいファイルに入れ替えて、画面を読み込み直します。",
       "この機能には Home Assistant 側に shell_command.update_homepanel の設定が必要です（README 参照）。",
     ]],
+    ["❄ エアコンの自動温度調整", [
+      "ホームパネルのサーバーが、部屋の温度を決めた範囲に保つよう、エアコンを自動で冷房・暖房にします（iPad を閉じていても動きます）。",
+      "上部の「❄ 自動調整」か ⚙ 設定 →「エアコンの自動温度調整」で、全体をすぐにオン/オフできます。「詳しく」で、いまの様子・24時間の温度・自動で行った操作を見られます。",
+      "エアコンごとの温度の範囲は、Android 版の ⚙ 設定 →「エアコンの自動温度調整」で決めます。",
+    ]],
+    ["🛁 エコキュート（おひさま沸き上げ）", [
+      "ホーム画面の電気のカードの下に、サーバーで管理しているエコキュートの残りのお湯と、おひさま沸き上げの様子が出ます。",
+      "「夜は止める」方式のときは、晴れの日の夜に沸かす量（%・リットル）を選べます。直近7日の使ったお湯の量も表示します。",
+    ]],
+    ["🎞 カメラの記録と動きの分析", [
+      "⚙ 設定 →「カメラの記録と動き」でカメラを選ぶと、サーバーが1分ごとに画像を保存し（2日分）、動きの量を記録します。",
+      "「動きを見る」で48時間の動きのグラフと、寝た・起きた時刻の目安が分かります。棒をタップすると、その時刻の画像が出ます。",
+    ]],
+    ["📜 操作の記録", [
+      "⚙ 設定 →「操作の記録」で、だれが・いつ・何を操作したか（Home Assistant の記録）と、サーバーが行った操作を見られます。",
+    ]],
+    ["🕘 時刻", [
+      "時刻はすべて日本時間で表示し、1日の切り替わりも日本時間の0時です。",
+    ]],
     ["❓ 困ったとき", [
       "接続できない：Home Assistant が動いているか、ネットワークにつながっているか確認してください。",
       "「呼びかけ検知が設定されていません」：Home Assistant の音声アシスタントでウェイクワードを設定してください。",
@@ -1335,10 +1355,20 @@
   ];
   function helpHTML() {
     return `<div class="wrap help"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>使い方</h2></div>
-      ${HELP.map(([t, items]) => `<div class="card"><h4>${esc(t)}</h4><ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>`).join("")}
+      <input class="search" type="search" data-set="helpQuery" placeholder="🔍 言葉で探す（例：エコキュート、カメラ、ログイン）">
+      <div id="helpList">${helpListHTML("")}</div>
       <div data-update-slot></div>
       <div style="text-align:center;margin:20px 0 40px"><button class="btn" data-set="close">閉じる</button></div></div>`;
   }
+  function helpListHTML(q) {
+    q = (q || "").trim().toLowerCase();
+    const list = HELP.map(([t, items], i) => [i, t, q && !t.toLowerCase().includes(q) ? items.filter((x) => x.toLowerCase().includes(q)) : items]).filter(([, , items]) => items.length);
+    return `<div class="card"><h4>${q ? `見つかった項目：${list.length}件` : "目次（タップでその項目へ）"}</h4>
+        ${list.length ? `<div class="chips">${list.map(([i, t]) => `<button class="chip" data-set="helpGo" data-id="${i}">${esc(t)}</button>`).join("")}</div>` : `<div class="note">見つかりませんでした</div>`}</div>
+      ${list.map(([i, t, items]) => `<div class="card" id="help-${i}"><div class="brow" style="align-items:center"><h4 style="flex:1;margin:0">${esc(t)}</h4><button class="tbtn" data-set="helpTop">↑ 目次</button></div>
+        <ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("")}`;
+  }
+  function renderHelpList(q) { const b = $("#helpList"); if (b) b.innerHTML = helpListHTML(q); }
 
   function openPage(name) {
     S.page = name;
@@ -1348,7 +1378,7 @@
     if (name === "auto") { S.edit = null; S.autoMsg = null; renderAuto(); loadRules(); return; }
     if (name === "timers") { page.innerHTML = timersHTML(); renderTimers(); return; }
     page.innerHTML = name === "settings" ? settingsHTML() : helpHTML();
-    if (name === "settings") renderSelList();
+    if (name === "settings") { renderSelList(); fillExtra(); afterSettingsOpen(); }
     renderUpdate();
     if (name === "settings" && !S.settingsPage) page.scrollTop = 0;
   }
@@ -1359,6 +1389,7 @@
     const y = page.scrollTop;
     page.innerHTML = settingsHTML();
     renderSelList();
+    fillExtra();
     renderUpdate();
     page.scrollTop = y;
   }
@@ -2241,9 +2272,12 @@
     ["voice", "🎤", "音声と AI", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"],
     ["screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間"],
     ["calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"],
+    ["climate", "❄", "エアコンの自動温度調整", "サーバーでの調整の様子、全体のオン/オフ"],
     ["cameras", "📷", "カメラ", "画質の選び方"],
+    ["camrec", "🎞", "カメラの記録と動き", "2日分の記録、動きのある時間・寝た時刻の目安"],
+    ["oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか"],
     ["connection", "🌐", "接続", "このアプリのアドレス"],
-    ["account", "👤", "アカウント", "管理者ログイン、ログアウト"],
+    ["account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト"],
     ["system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"],
   ];
 
@@ -2643,9 +2677,296 @@
       ${e.remain != null ? `<div>残りのお湯 <b style="font-size:22px">${e.remain}L</b>${e.tank ? ` ／ ${e.tank}L（${pct}%）` : ""}</div>${pct !== null ? `<div class="bar"><div style="height:100%;width:${pct}%;background:var(--primary)"></div></div>` : ""}` : ""}
       <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
       ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.message.startsWith("⚠") ? "" : p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
+      ${nightHeatHTML(j)}
       ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
       <div class="brow">${p && !p.ok ? `<button class="btn" data-set="solarRetry">もう一度設定</button>` : `<button class="tbtn" data-set="solarRetry">設定し直す</button>`}
         ${e.can_manual ? `<button class="btn outline" data-set="solarHeat" data-id="start">今すぐ沸き増し</button>${e.manual ? `<button class="tbtn" data-set="solarHeat" data-id="auto">自動に戻す</button>` : ""}` : ""}</div></div>`;
+  }
+
+  // ================= 日本時間の表示 =================
+  const JST = "Asia/Tokyo";
+  const jstParts = (ms) => {
+    const o = {};
+    new Intl.DateTimeFormat("ja-JP", { timeZone: JST, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit", weekday: "short", hourCycle: "h23" })
+      .formatToParts(new Date(ms)).forEach((p) => { o[p.type] = p.value; });
+    return o;
+  };
+  const jstTime = (ms) => { const p = jstParts(ms); return `${p.month}/${p.day} ${p.hour}:${p.minute}`; };
+  const jstDay = (ms) => { const p = jstParts(ms); return `${p.month}/${p.day}（${p.weekday}）`; };
+  const jstHM = (ms) => { const p = jstParts(ms); return `${p.hour}:${p.minute}`; };
+  const dayLabel = (iso) => { const [y, m, d] = iso.split("-").map(Number); return `${m}/${d}（${"日月火水木金土"[new Date(y, m - 1, d).getDay()]}）`; };
+
+  // ================= サーバーの機能（エアコンの自動温度調整・カメラの記録・操作の記録など） =================
+  async function camApi(path, body) {
+    const r = await fetch("/camera-api" + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+  const modeName = (m) => ({ cool: "冷房", heat: "暖房", dry: "除湿", fan_only: "送風", auto: "自動", heat_cool: "自動", off: "停止", unavailable: "つながっていません" }[m] || m || "不明");
+
+  async function loadClimate() {
+    if (!SERVER_MODE) return;
+    try { S.climate = await solarApi("/climate"); S.climateErr = null; } catch (e) { S.climateErr = "サーバーから読めませんでした：" + e.message; }
+    renderClimateBtn();
+    if (S.page === "settings" && S.settingsPage === "climate") fillExtra();
+  }
+  function renderClimateBtn() {
+    const b = $("#btnClimate");
+    if (!b) return;
+    const c = S.climate;
+    const has = c && (c.rules || []).some((r) => r.enabled);
+    b.classList.toggle("hidden", !has);
+    if (has) b.innerHTML = `<span class="ti">❄</span><span class="tl"> 自動調整：${c.enabled ? "オン" : "オフ"}</span>`;
+    b.style.opacity = c && c.enabled ? "1" : "0.6";
+  }
+  function climateHTML() {
+    const c = S.climate;
+    if (!SERVER_MODE) return `<div class="note">ホームパネルのサーバーから開いたときだけ使えます。</div>`;
+    if (!c) return `<div class="note">${esc(S.climateErr || "読んでいます…")}</div>`;
+    const rules = c.rules || [], st = c.state || {};
+    const name = (eid) => (S.ha && S.ha.states[eid] ? nameOf(S.ha.states[eid]) : (st[eid] && st[eid].name) || eid);
+    let h = `<div class="note">ホームパネルのサーバーが、部屋の温度を決めた範囲に保つよう、Home Assistant を通してエアコンを自動で冷房・暖房にします（1分ごと）。タブレットの電源が切れていても動き続けます。</div>
+      <label class="row"><span class="rt"><b>自動温度調整（全体）</b><div class="sub">${c.enabled ? "オン：下のエアコンを自動で調整します" : "オフ：どのエアコンも自動では動かしません"}</div></span>
+        <input type="checkbox" data-set="climEnabled" ${c.enabled ? "checked" : ""}></label>
+      ${c.ha_token_set ? "" : `<div class="warn">サーバーに Home Assistant の鍵（トークン）が登録されていません。Android 版の「エアコンの自動温度調整」で「サーバーに鍵を登録」を押してください。</div>`}
+      ${S.climateErr ? `<div class="warn">${esc(S.climateErr)}</div>` : ""}`;
+    if (!rules.length) h += `<div class="note">まだエアコンの範囲が登録されていません。範囲の設定は Android 版の ⚙ 設定 →「エアコンの自動温度調整」で行います。</div>`;
+    for (const r of rules) {
+      const s = st[r.entity] || {};
+      const open = S.climDetail === r.entity;
+      h += `<div class="card"><div class="brow" style="align-items:center"><b style="flex:1">❄ ${esc(name(r.entity))}</b><span class="note">${r.enabled ? `${fmt(r.min)}〜${fmt(r.max)}℃` : "オフ"}</span>
+          <button class="tbtn" data-set="climDetail" data-id="${esc(r.entity)}">${open ? "閉じる" : "詳しく"}</button></div>
+        <div class="note">${esc(s.status || (r.enabled ? "確かめています…" : "この部屋の自動温度調整はオフです"))}</div>`;
+      if (open) {
+        const e = S.ha && S.ha.states[r.entity];
+        const a = (e && e.attributes) || {};
+        h += `<div class="note">運転：${esc(modeName(e ? e.state : s.mode))}${a.temperature != null ? `・設定 ${fmt(a.temperature)}℃` : ""}${a.current_temperature != null ? `・エアコンの室温 ${fmt(a.current_temperature)}℃` : ""}</div>
+          <div class="note">温度のもと：${esc(s.source_name || (r.source ? r.source : "エアコンの室温"))}・${r.cool ? "冷房" : ""}${r.heat ? "・暖房" : ""}${r.off ? "・真ん中で停止" : ""}${s.at ? `・最後に確かめた時刻 ${jstTime(s.at * 1000)}` : ""}</div>`;
+        const pts = (s.temps || []).filter((p) => p[1] != null).map((p) => ({ t: p[0] * 1000, v: p[1] }));
+        h += pts.length >= 2 ? `<div class="fl">24時間の温度（範囲 ${fmt(r.min)}〜${fmt(r.max)}℃）</div>${chartSVG(pts, 24, "#4fc3f7", "℃")}` : `<div class="note">温度の記録はまだありません（10分ごとに記録します）</div>`;
+        const acts = s.actions || [];
+        h += `<div class="fl">自動で行った操作</div>` + (acts.length ? acts.slice(0, 20).map((x) => `<div class="note">${jstTime(x[0] * 1000)}　${esc(x[1])}</div>`).join("") : `<div class="note">まだありません</div>`);
+      }
+      h += `</div>`;
+    }
+    return h;
+  }
+
+  // ---- エコキュート：夜に沸かす量・日ごとのお湯 ----
+  function nightHeatHTML(j) {
+    const c = j.config || {}, e = j.eco || {};
+    if (c.night_method !== "stop") return "";
+    const tank = e.tank || (Object.values(j.daily || {}).reverse().find((d) => d.hot_tank_l) || {}).hot_tank_l;
+    const lit = (p) => (tank ? `${p}%（約${Math.round(tank * p / 100)}L）` : `${p}%`);
+    const cur = c.night_heat_pct ?? 50;
+    const days = Object.entries(j.daily || {}).filter(([, v]) => v.hot_use_l != null || v.hot_heat_l != null).slice(-7);
+    const max = Math.max(1, ...days.map(([, v]) => Math.max(v.hot_use_l || 0, v.hot_heat_l || 0)));
+    const avg = days.length ? days.reduce((s, [, v]) => s + (v.hot_use_l || 0), 0) / days.length : null;
+    return `<div class="fl" style="margin-top:6px">晴れの日の夜に沸かす量：${lit(cur)}${j.night_pending ? "（いま夜の沸き上げ中）" : j.night_stop ? "（いま夜の沸き上げを止めています）" : ""}</div>
+      <div class="chips">${[0, 20, 30, 40, 50, 60, 70, 80].map((p) => `<button class="chip${p === cur ? " sel" : ""}" data-set="nightPct" data-id="${p}">${p}%${tank ? "・" + Math.round(tank * p / 100) + "L" : ""}</button>`).join("")}</div>
+      ${days.length ? `<details><summary class="fl" style="cursor:pointer">直近の日ごとのお湯（参考・1日平均 約${Math.round(avg)}L）</summary>` + days.map(([d, v]) => `<div class="hwrow"><span style="width:84px">${dayLabel(d)}</span>
+        <span class="hwbars"><span class="hwb" style="width:${Math.max(1, (v.hot_use_l || 0) * 100 / max)}%"></span><span class="hwb h" style="width:${Math.max(1, (v.hot_heat_l || 0) * 100 / max)}%"></span></span>
+        <span class="note">使った ${Math.round(v.hot_use_l || 0)}L${tank ? `（${Math.round((v.hot_use_l || 0) * 100 / tank)}%）` : ""}・沸かした ${Math.round(v.hot_heat_l || 0)}L</span></div>`).join("")
+        + `<div class="note">1日の平均の使用量：約${Math.round(avg)}L${tank ? `（タンクの${Math.round(avg * 100 / tank)}%）` : ""}。夜に沸かす量は、これより少し多めにしておくと曇っても湯切れしにくくなります。</div></details>` : ""}`;
+  }
+
+  // ---- カメラの記録と動き ----
+  async function loadCamRec() {
+    try { S.camRec = await camApi("/status"); S.camRecErr = null; } catch (e) { S.camRecErr = "サーバーから読めませんでした：" + e.message; }
+    fillExtra();
+  }
+  async function loadMotion(cam) {
+    S.motion = { cam, data: null, sel: null };
+    fillExtra();
+    try { S.motion.data = await camApi(`/motion?cam=${encodeURIComponent(cam)}&hours=48`); } catch (e) { S.motion.err = e.message; }
+    fillExtra();
+  }
+  const camIdOf = (eid) => eid.split(".").slice(1).join(".").replace(/[^A-Za-z0-9_]/g, "_");
+  function motionSVG(m, th, sel) {
+    const W = 640, H = 150, B = 18, end = Date.now(), start = end - 48 * 3600000, bin = 600000, n = 48 * 6;
+    const bins = new Array(n).fill(-1);
+    m.forEach(([t, v]) => { const i = Math.floor((t * 1000 - start) / bin); if (i >= 0 && i < n) bins[i] = Math.max(bins[i], v); });
+    const top = Math.max(1, Math.min(th * 6, Math.max(th * 3, ...bins)));
+    const x = (t) => (W * (t - start)) / (end - start);
+    let g = "";
+    // 夜（19時〜翌7時）の帯
+    for (let d = new Date(start - 86400000); d.getTime() < end; d.setDate(d.getDate() + 1)) {
+      const a = new Date(d); a.setHours(19, 0, 0, 0); const b = new Date(a.getTime() + 12 * 3600000);
+      const xa = x(Math.max(start, a.getTime())), xb = x(Math.min(end, b.getTime()));
+      if (xb > xa) g += `<rect x="${xa}" y="0" width="${xb - xa}" height="${H - B}" class="night"/>`;
+    }
+    const bw = W / n;
+    bins.forEach((v, i) => {
+      if (v < 0) return;
+      const h = Math.max(0.02, Math.min(1, v / top)) * (H - B);
+      g += `<rect x="${i * bw}" y="${H - B - h}" width="${Math.max(1, bw * 0.85)}" height="${h}" class="${v >= th ? "mv" : "mv weak"}" data-set="motionPick" data-id="${Math.round((start + i * bin + bin / 2) / 1000)}"/>`;
+    });
+    const yt = H - B - (th / top) * (H - B);
+    g += `<line x1="0" x2="${W}" y1="${yt}" y2="${yt}" class="grid"/>`;
+    const tk = new Date(start); tk.setMinutes(0, 0, 0); tk.setHours(tk.getHours() + (6 - (tk.getHours() % 6)));
+    for (; tk.getTime() < end; tk.setHours(tk.getHours() + 6)) g += `<text x="${x(tk.getTime())}" y="${H - 4}" class="lbl" text-anchor="middle">${tk.getHours() === 0 ? `${tk.getMonth() + 1}/${tk.getDate()}` : tk.getHours() + "時"}</text>`;
+    if (sel) g += `<line x1="${x(sel * 1000)}" x2="${x(sel * 1000)}" y1="0" y2="${H - B}" stroke="var(--error)" stroke-width="2"/>`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="chart motion">${g}</svg>`;
+  }
+  function camRecHTML() {
+    if (!SERVER_MODE) return `<div class="note">ホームパネルのサーバーから開いたときだけ使えます。</div>`;
+    const s = S.camRec;
+    let h = `<div class="note">選んだカメラの画像を、ホームパネルのサーバーが1分ごとに保存し（2日分。古いものは自動で消します）、動きの量を記録します。動きのある時間・ない時間と、夜に動きがなくなった時刻（寝た時刻の目安）が分かります。</div>`;
+    if (S.camRecErr) h += `<div class="warn">${esc(S.camRecErr)}</div>`;
+    if (!s) return h + `<div class="note">読んでいます…</div>`;
+    if (!s.ffmpeg) h += `<div class="warn">サーバーに ffmpeg が入っていません。サーバーのセットアップ（setup.sh）をやり直してください。</div>`;
+    if (!s.ha_token_set) h += `<div class="note">※ Home Assistant のカメラを記録するには、Android 版の「カメラ」設定で「サーバーに鍵を登録」を押してください。</div>`;
+    const rec = new Map((s.cameras || []).map((c) => [c.id, c]));
+    const haCams = S.ha ? Object.values(S.ha.states).filter((e) => dom(e) === "camera").sort((a, b) => nameOf(a).localeCompare(nameOf(b), "ja")) : [];
+    const rows = haCams.map((e) => ({ id: camIdOf(e.entity_id), name: nameOf(e), entity: e.entity_id, kind: "ha" }));
+    (s.cameras || []).forEach((c) => { if (!rows.some((r) => r.id === c.id)) rows.push({ id: c.id, name: c.name, entity: c.entity, kind: c.kind }); });
+    for (const r of rows) {
+      const c = rec.get(r.id), st = c && c.status;
+      h += `<div class="card"><label class="row" style="padding:0"><span class="rt"><b>📷 ${esc(r.name)}</b><div class="sub">${r.kind === "rtsp" ? "直接つなぐカメラ（Android 版で登録）" : "Home Assistant のカメラ"}</div></span>
+          <input type="checkbox" data-set="camRecToggle" data-id="${esc(r.id)}" data-entity="${esc(r.entity || "")}" data-name="${esc(r.name)}" ${c ? "checked" : ""} ${r.kind === "rtsp" && !c ? "disabled" : ""}></label>
+        ${c ? `<div class="note">${!st ? "記録を待っています" : st.error ? "✕ 記録できません：" + esc(st.error) : `✓ 記録中・最後に記録した時刻 ${jstHM(st.at * 1000)}・動きの量 ${st.score}%`}</div>
+          <div class="brow"><button class="btn outline" data-set="motionOpen" data-id="${esc(r.id)}">🎞 動きを見る</button></div>` : ""}`;
+      const mo = S.motion;
+      if (mo && mo.cam === r.id) {
+        const d = mo.data;
+        if (mo.err) h += `<div class="warn">${esc(mo.err)}</div>`;
+        else if (!d) h += `<div class="note">読んでいます…</div>`;
+        else {
+          h += `<div class="fl">寝た・起きた時刻の目安</div>` + ((d.sleep || []).length ? d.sleep.map((n) => `<div style="font-size:17px">🌙 ${dayLabel(n.night)}の夜：寝た ${n.slept || "－"}　☀ 起きた ${n.woke || "－"}</div>`).join("") : `<div class="note">まだ分かりません（夜の記録がたまると表示します）</div>`);
+          h += (d.motion || []).length ? motionSVG(d.motion, d.threshold || 2, mo.sel) + `<div class="note">濃い棒＝動きあり（${d.threshold}% 以上）、灰色の帯＝夜（19時〜7時）。棒をタップすると、その時刻の画像を出します。</div>` : `<div class="note">まだ記録がありません</div>`;
+          if (mo.sel) h += `<div class="fl">${jstTime(mo.sel * 1000)} ごろの画像</div><img class="motionimg" alt="" src="/camera-api/frame?cam=${encodeURIComponent(r.id)}&t=${mo.sel}">`;
+        }
+      }
+      h += `</div>`;
+    }
+    return h;
+  }
+
+  // ---- 操作の記録 ----
+  async function loadOpLog() {
+    S.oplog = { hours: (S.oplog && S.oplog.hours) || 24, kind: (S.oplog && S.oplog.kind) || "all", rows: null };
+    fillExtra();
+    try {
+      const names = {};
+      Object.values(S.ha.states).filter((e) => dom(e) === "person" && e.attributes.user_id).forEach((p) => { names[p.attributes.user_id] = nameOf(p); });
+      if (S.user && S.user.isAdmin) {
+        try { (await S.ha.send({ type: "config/auth/list" })).forEach((u) => { names[u.id] = names[u.id] || u.name; }); } catch (e) { /* 名前は人から */ }
+      }
+      const start = new Date(Date.now() - S.oplog.hours * 3600000).toISOString();
+      const arr = await restGet("/api/logbook/" + encodeURIComponent(start));
+      const tr = (m) => ({ "turned on": "オンにしました", "turned off": "オフにしました", triggered: "実行しました", opened: "開けました", closed: "閉めました" }[(m || "").trim()] || String(m || "").replace("changed to ", "→ ").replace("triggered by ", "きっかけ："));
+      const rows = [];
+      for (const e of arr || []) {
+        let kind, who;
+        if (e.context_user_id) { kind = "user"; who = names[e.context_user_id] || "ユーザー"; }
+        else if (e.context_event_type === "automation_triggered") { kind = "auto"; who = "自動化" + (e.context_name ? `「${e.context_name}」` : ""); }
+        else if (e.context_event_type === "script_started") { kind = "auto"; who = "スクリプト" + (e.context_name ? `「${e.context_name}」` : ""); }
+        else if (e.domain === "automation") { kind = "auto"; who = "自動化"; }
+        else continue;
+        rows.push({ at: Date.parse(e.when), who, kind, what: `${e.name || e.entity_id}：${tr(e.message || e.state)}` });
+      }
+      try {
+        const s = await solarApi("/status");
+        const now = Date.now(), y = new Date().getFullYear();
+        (s.log || []).forEach((l) => {
+          const m = /^(\d{2})\/(\d{2}) (\d{1,2}):(\d{2})[\s　]*(.*)$/.exec(l);
+          if (!m) return;
+          let t = new Date(y, +m[1] - 1, +m[2], +m[3], +m[4]).getTime();
+          if (t > now + 86400000) t = new Date(y - 1, +m[1] - 1, +m[2], +m[3], +m[4]).getTime();
+          if (t >= now - S.oplog.hours * 3600000) rows.push({ at: t, who: "サーバー", kind: "server", what: m[5] });
+        });
+      } catch (e) { /* サーバーなし */ }
+      S.oplog.rows = rows.sort((a, b) => b.at - a.at);
+    } catch (e) { S.oplog.err = e.message; }
+    fillExtra();
+  }
+  function opLogHTML() {
+    const o = S.oplog || { hours: 24, kind: "all" };
+    const ch = (set, v, cur, l) => `<button class="chip${cur === v ? " sel" : ""}" data-set="${set}" data-id="${v}">${l}</button>`;
+    let h = `<div class="note">Home Assistant の記録から、人・自動化が操作したものと、ホームパネルのサーバーが行った操作を新しい順に表示します。</div>
+      <div class="chips">${ch("opHours", 24, o.hours, "24時間")}${ch("opHours", 72, o.hours, "3日")}${ch("opHours", 168, o.hours, "7日")}　
+        ${ch("opKind", "all", o.kind, "すべて")}${ch("opKind", "user", o.kind, "👤 人")}${ch("opKind", "auto", o.kind, "⚙ 自動化")}${ch("opKind", "server", o.kind, "🖥 サーバー")}</div>`;
+    if (o.err) return h + `<div class="warn">読めませんでした：${esc(o.err)}</div>`;
+    if (!o.rows) return h + `<div class="note">読んでいます…</div>`;
+    const rows = o.rows.filter((r) => o.kind === "all" || r.kind === o.kind);
+    if (!rows.length) h += `<div class="note">この期間の操作はありません</div>`;
+    let last = "";
+    rows.slice(0, 400).forEach((r) => {
+      const d = jstDay(r.at);
+      if (d !== last) { h += `<div class="fl" style="margin-top:8px">${d}</div>`; last = d; }
+      h += `<div class="oprow"><span class="opt">${jstHM(r.at)}</span><span class="opw">${{ user: "👤 ", server: "🖥 " }[r.kind] || "⚙ "}${esc(r.who)}</span><span>${esc(r.what)}</span></div>`;
+    });
+    return h + `<div class="note">※ 人の名前は Home Assistant のユーザー（人に結びついたもの）です。</div>`;
+  }
+
+  // ---- アカウントの一覧 ----
+  async function loadAccounts() {
+    S.acc = { solar: null, cam: null, users: null };
+    try { S.acc.solar = await solarApi("/status"); } catch (e) { /* なし */ }
+    try { S.acc.cam = await camApi("/status"); } catch (e) { /* なし */ }
+    if (S.user && S.user.isAdmin) { try { S.acc.users = await S.ha.send({ type: "config/auth/list" }); } catch (e) { /* なし */ } }
+    fillExtra();
+  }
+  function accountListHTML() {
+    const a = S.acc;
+    if (!a) return `<div class="note">読んでいます…</div>`;
+    const line = (l, v, ok) => `<div class="accrow"><span class="accl">${esc(l)}</span><span>${ok ? "✓ " : "－ "}${esc(v)}</span></div>`;
+    const c = (a.solar && a.solar.config) || {};
+    let h = `<div class="note">このアプリとホームパネルのサーバーが使っているアカウントです。パスワードや鍵の中身は表示しません。</div>
+      <div class="card"><div class="fl">📱 このアプリ（Home Assistant）</div>${line("普段使いのユーザー", S.user ? S.user.name + (S.user.isAdmin ? "（管理者）" : "（管理者以外）") : "確認中", !!S.user)}
+        ${line("管理者ログイン", store.get("admin_user") || (S.user && S.user.isAdmin ? "普段使いのユーザーが管理者" : "なし"), !!store.get("admin_user") || (S.user && S.user.isAdmin))}</div>
+      <div class="card"><div class="fl">🖥 ホームパネルのサーバー</div>
+        ${a.solar || a.cam ? line("Home Assistant の鍵（温度調整）", c.ha_token_set ? "登録あり" : "なし", c.ha_token_set) + line("Home Assistant の鍵（カメラの記録）", a.cam && a.cam.ha_token_set ? "登録あり" : "なし", a.cam && a.cam.ha_token_set)
+          + line("AiSEG2", c.aiseg_url ? `${c.aiseg_url}・パスワード${c.aiseg_password_set ? "登録あり" : "なし"}` : "なし", !!c.aiseg_url) + line("記録しているカメラ", ((a.cam && a.cam.cameras) || []).length + "台", ((a.cam && a.cam.cameras) || []).length > 0)
+          : `<div class="note">サーバーにつながりません</div>`}</div>`;
+    const tt = S.ha ? Object.keys(S.ha.states).filter((k) => k.startsWith("calendar.timetree")).length : 0;
+    h += `<div class="card"><div class="fl">📅 その他のサービス</div>${line("TimeTree", tt ? `Home Assistant に登録（カレンダー${tt}個）` : "なし", tt > 0)}</div>`;
+    h += `<div class="card"><div class="fl">👥 Home Assistant のユーザー</div>`;
+    if (!a.users) h += `<div class="note">ユーザーの一覧は、管理者のユーザーで使っているときに表示します（Android 版では管理者ログインでも見られます）。</div>`;
+    else {
+      const people = a.users.filter((u) => !u.system_generated);
+      h += people.map((u) => line(u.name, [u.is_owner ? "所有者" : null, (u.group_ids || []).includes("system-admin") ? "管理者" : "ユーザー", u.local_only ? "家の中だけ" : null, u.is_active === false ? "無効" : null, u.username ? "ログイン名：" + u.username : null].filter(Boolean).join("・"), u.is_active !== false)).join("");
+      if (a.users.length > people.length) h += `<div class="note">ほかに、Home Assistant が自動で作ったユーザーが${a.users.length - people.length}個あります。</div>`;
+    }
+    return h + `</div>`;
+  }
+
+  /** 設定ページのうち、サーバーから読むものを描き直す */
+  function fillExtra() {
+    const box = $("#extraBox");
+    if (!box) return;
+    const p = S.settingsPage;
+    box.innerHTML = p === "climate" ? climateHTML() : p === "camrec" ? camRecHTML() : p === "oplog" ? opLogHTML() : p === "account" ? accountListHTML() : "";
+  }
+  function afterSettingsOpen() {
+    const p = S.page === "settings" && S.settingsPage;
+    if (p === "climate") loadClimate();
+    else if (p === "camrec") loadCamRec();
+    else if (p === "oplog") loadOpLog();
+    else if (p === "account") loadAccounts();
+  }
+  async function onServerSetting(el) {
+    const id = el.dataset.id;
+    switch (el.dataset.set) {
+      case "climEnabled":
+        try { await solarApi("/config", { climate_enabled: el.checked }); } catch (e) { S.climateErr = "サーバーに送れませんでした：" + e.message; }
+        loadClimate(); return true;
+      case "climDetail": S.climDetail = S.climDetail === id ? null : id; fillExtra(); return true;
+      case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
+      case "camRecToggle": {
+        const cams = ((S.camRec && S.camRec.cameras) || []).map((c) => ({ id: c.id, name: c.name, kind: c.kind, entity: c.entity })).filter((c) => c.id !== id);
+        if (el.checked) cams.push({ id, name: el.dataset.name, kind: "ha", entity: el.dataset.entity });
+        try { S.camRec = await camApi("/config", { cameras: cams }); S.camRecErr = null; } catch (e) { S.camRecErr = "サーバーに送れませんでした：" + e.message; }
+        fillExtra(); return true;
+      }
+      case "motionOpen": if (S.motion && S.motion.cam === id) { S.motion = null; fillExtra(); } else loadMotion(id); return true;
+      case "motionPick": if (S.motion) { S.motion.sel = Number(id); fillExtra(); } return true;
+      case "opHours": S.oplog = Object.assign(S.oplog || {}, { hours: Number(id) }); loadOpLog(); return true;
+      case "opKind": S.oplog = Object.assign(S.oplog || {}, { kind: id }); fillExtra(); return true;
+      case "helpGo": { const t = document.getElementById("help-" + id); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }
+      case "helpTop": { const p = $("#page"); if (p) p.scrollTo({ top: 0, behavior: "smooth" }); return true; }
+      default: return false;
+    }
   }
 
   // ================= カメラ =================
@@ -2893,7 +3214,10 @@
         ${SERVER_MODE ? "家の中の専用サーバー（Proxmox のコンテナ）から https で配信し、Home Assistant に中継しています。家の中だけで使え、音声入力も使えます。"
           : location.protocol === "https:" ? "家の外からもこのアドレスで使えます。" : "http のアドレスです。音声入力と外出先での利用には https のアドレス（Home Assistant Cloud のリモートURL）で開いてください。"}</div>
         <div class="note">※ ECHONET Lite の機器を Home Assistant を通さずに操作する機能と、おひさま沸き上げ（エコキュート）は、ブラウザでは使えないため Android 版だけです。</div>`;
-      case "account": return `<div class="sec">アカウント</div>${accountHTML()}`;
+      case "account": return `<div class="sec">アカウント</div>${accountHTML()}<div class="sec">アカウントの一覧</div><div id="extraBox"></div>`;
+      case "climate": return `<div class="sec">エアコンの自動温度調整</div><div id="extraBox"></div>`;
+      case "camrec": return `<div class="sec">カメラの記録と動きの分析（2日分）</div><div id="extraBox"></div>`;
+      case "oplog": return `<div class="sec">操作の記録</div><div id="extraBox"></div>`;
       case "system": return `<div class="sec">アプリの更新</div><div data-update-slot></div>
         <div class="sec">設定の保存</div>
         <div class="note">表示する機器・部屋・配色・家族ごとの表示などの設定をファイルに書き出し、別の iPad や作り直したときに読み込めます。ログインの情報は含めません。</div>
@@ -2983,7 +3307,7 @@
       case "popClose": S.popupHidden = S.voice; renderPopup(); return true;
       case "solarRetry": loadSolar("/retry", {}); return true;
       case "solarHeat": loadSolar("/heat", { action: id }); return true;
-      default: return false;
+      default: return onServerSetting(el);
     }
   }
 
@@ -3024,7 +3348,7 @@
   function buildMain() {
     $("#app").innerHTML = `<div class="wrap">
       <div class="top"><span class="badge" id="badge"></span><span class="profbar" id="profileBar"></span><span class="sp"></span>
-        <button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
+        <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
       <div class="msg hidden" id="msg"></div>
       <div id="home">
@@ -3058,6 +3382,7 @@
     $("#sheetBg").onclick = closeSheet;
     $("#sheetClose").onclick = closeSheet;
     $("#btnHelp").onclick = () => openPage("help");
+    $("#btnClimate").onclick = () => { S.settingsPage = "climate"; openPage("settings"); };
     $("#btnSettings").onclick = () => openPage("settings");
     $("#btnAuto").onclick = () => openPage("auto");
     $("#btnTimers").onclick = () => { unlockAlarm(); openPage("timers"); };
@@ -3078,6 +3403,7 @@
       const el = ev.target;
       if (!el.dataset) return;
       if (el.dataset.set === "query") renderSelList();
+      if (el.dataset.set === "helpQuery") renderHelpList(el.value);
       if (el.dataset.set === "ruleName" && S.edit) S.edit.name = el.value;
       if (el.dataset.set === "actParam" && S.edit) {
         const l = el.parentElement.querySelector(".rl");
@@ -3109,6 +3435,8 @@
     setInterval(loadEnergy, 10 * 60 * 1000);
     loadSolar();
     setInterval(() => loadSolar(), 30000);
+    loadClimate();
+    setInterval(() => loadClimate(), 60000);
     setInterval(loadEvents, 15 * 60 * 1000);
     setInterval(checkTimers, 500);
     setInterval(checkIdle, 2000);

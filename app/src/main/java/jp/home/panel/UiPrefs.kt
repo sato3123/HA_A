@@ -177,6 +177,18 @@ class UiPrefs(context: Context) {
     var climateRulesJson: String?
         get() = p.getString("climate_rules", null)
         set(v) = p.edit().putString("climate_rules", v).apply()
+    /** 自動温度調整の全体のオン/オフ */
+    var climateEnabled: Boolean
+        get() = p.getBoolean("climate_enabled", true)
+        set(v) = p.edit().putBoolean("climate_enabled", v).apply()
+    /** 自動温度調整を動かす場所：server（ホームパネルのサーバー）/ local（このタブレット） */
+    var climateWhere: String
+        get() = p.getString("climate_where", "server") ?: "server"
+        set(v) = p.edit().putString("climate_where", v).apply()
+    /** ホームパネルのサーバーで記録・分析するカメラ（JSON。パスワードは入れない） */
+    var camServerJson: String?
+        get() = p.getString("cam_server", null)
+        set(v) = p.edit().putString("cam_server", v).apply()
 
     /** 部屋の並び順（部屋の key の並び） */
     var roomOrder: List<String>

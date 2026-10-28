@@ -26,6 +26,10 @@ import urllib.request
 from datetime import datetime, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 時刻はすべて日本時間（1日の切り替わりも日本時間の 0:00）
+os.environ["TZ"] = "Asia/Tokyo"
+time.tzset()
+
 DIR = os.environ.get("SOLAR_DIR", "/var/lib/homepanel-solar")
 CONF_PATH = os.path.join(DIR, "config.json")
 STATE_PATH = os.path.join(DIR, "state.json")
@@ -51,8 +55,12 @@ DEFAULT_CONF = {
     "lat": None, "lon": None,               # 天気予報の場所（Home Assistant の自宅の位置を画面から送る）
     # AiSEG2（Panasonic の HEMS）から、いまの発電・消費を読む（スマートメーターの代わり。こちらが優先）
     "aiseg_url": "", "aiseg_user": "aiseg", "aiseg_password": "",
+    "night_heat_pct": 50,                   # 夜止め：夜はこの残量（%）まで沸かしたら止める
+    "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
+    "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
+    "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
 }
-SECRET_CONF = {"aiseg_password"}
+SECRET_CONF = {"aiseg_password", "ha_token"}
 
 EPC_NAME = {0xB0: "沸き上げ自動設定", 0xC0: "昼間沸き増し許可", 0xC7: "エネルギーシフト参加", 0xC9: "エネルギーシフト回数", 0xCA: "昼間沸き上げシフト時刻",
             0xB6: "タンク運転モード"}
@@ -92,7 +100,7 @@ def log(msg):
     print(line, flush=True)
     with lock:
         state["log"] = ([line] + state["log"])[:80]
-        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop")})
+        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending")})
 
 
 # ================= ECHONET Lite =================
@@ -475,9 +483,177 @@ def energy_loop():
 def energy_report(days):
     days = max(1, min(40, int(days)))
     start = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%dT00")
+    dstart = start[:10]
     with lock:
         hours = [dict(v, h=k) for k, v in sorted(energy["hours"].items()) if k >= start]
-    return {"hours": hours, "days": days}
+        daily = {k: v for k, v in sorted(energy.get("days", {}).items()) if k >= dstart}
+    return {"hours": hours, "days": days, "daily": daily}
+
+
+# ---- 日ごとの天気・気温（Open-Meteo。過去2日と今日・明日。3時間ごとに更新して保存） ----
+def weather_loop():
+    while True:
+        try:
+            lat, lon = conf.get("lat"), conf.get("lon")
+            if lat is not None and lon is not None:
+                q = urllib.parse.urlencode({"latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "past_days": 2, "forecast_days": 2,
+                                            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,sunshine_duration"})
+                with urllib.request.urlopen("https://api.open-meteo.com/v1/forecast?" + q, timeout=20) as r:
+                    j = json.load(r).get("daily", {})
+                with lock:
+                    days = energy.setdefault("days", {})
+                    for i, d in enumerate(j.get("time", [])):
+                        day = days.setdefault(d, {})
+                        pick = lambda k: (j.get(k) or [None] * 99)[i]
+                        day["weather_code"] = pick("weather_code")
+                        day["tmax"] = pick("temperature_2m_max")
+                        day["tmin"] = pick("temperature_2m_min")
+                        day["rain_mm"] = pick("precipitation_sum")
+                        sun = pick("sunshine_duration")
+                        day["sun_h"] = round(sun / 3600, 1) if sun is not None else None
+                    cut = (date.today() - timedelta(days=60)).isoformat()
+                    for k in [k for k in days if k < cut]:
+                        del days[k]
+                    save_json(ENERGY_PATH, energy)
+        except Exception as e:
+            print("天気の記録でエラー:", e, flush=True)
+        time.sleep(3 * 3600)
+
+
+# ================= エアコンの自動温度調整（Home Assistant 経由） =================
+climate_state = {}
+
+
+def ha_req(method, path, body=None):
+    base = str(conf.get("ha_url") or "").rstrip("/")
+    tok = conf.get("ha_token") or ""
+    if not base or not tok:
+        raise RuntimeError("Home Assistant のトークンが登録されていません（アプリの「エアコンの自動温度調整」で登録してください）")
+    req = urllib.request.Request(base + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        t = r.read().decode("utf-8", "replace")
+        return json.loads(t) if t else None
+
+
+def ha_state(eid):
+    return ha_req("GET", "/api/states/" + eid)
+
+
+def ha_call(domain, service, data):
+    return ha_req("POST", f"/api/services/{domain}/{service}", data)
+
+
+def climate_tick():
+    if not conf.get("climate_enabled"):
+        for cs in climate_state.values():
+            cs["status"] = "自動温度調整は全体がオフです"
+        return
+    now = time.time()
+    for r in conf.get("climate_rules") or []:
+        eid = r.get("entity")
+        if not eid:
+            continue
+        cs = climate_state.setdefault(eid, {"actions": [], "temps": [], "last_cmd": 0, "last_mode": None, "last_target": None,
+                                            "manual_until": 0, "out_since": 0, "boost": 0, "by_us": False})
+        if not r.get("enabled"):
+            cs["status"] = "この部屋の自動温度調整はオフです"
+            continue
+        try:
+            ac = ha_state(eid)
+            src = r.get("source") or ""
+            if src:
+                sv = ha_state(src)
+                temp = float(sv["state"]) if sv and sv.get("state") not in ("unknown", "unavailable", None) else None
+                src_name = (sv.get("attributes") or {}).get("friendly_name", src) if sv else src
+            else:
+                temp = (ac.get("attributes") or {}).get("current_temperature")
+                src_name = "エアコンの室温"
+        except Exception as e:
+            cs["status"] = f"Home Assistant から読めませんでした：{e}"
+            continue
+        a = ac.get("attributes") or {}
+        mode, target = ac.get("state"), a.get("temperature")
+        cs.update(name=a.get("friendly_name", eid), mode=mode, target=target, temp=temp, source_name=src_name, at=now)
+        if temp is None:
+            cs["status"] = f"温度（{src_name}）が読めません"
+            continue
+        temp = float(temp)
+        cs["temps"] = [p for p in cs["temps"] if p[0] > now - 86400]
+        if not cs["temps"] or now - cs["temps"][-1][0] >= 600:
+            cs["temps"].append([now, temp, mode, target])
+        if cs["last_cmd"] and now - cs["last_cmd"] > 120 and (mode != cs["last_mode"] or (target is not None and cs["last_target"] is not None and target != cs["last_target"])):
+            cs["manual_until"] = now + 600
+            cs["last_cmd"] = 0
+            cs["by_us"] = False
+            cs["actions"] = ([[now, "手で操作されたので10分間はそのままにします"]] + cs["actions"])[:50]
+        if now < cs["manual_until"]:
+            cs["status"] = f"いま {temp:.1f}℃（{src_name}）・手で操作されたのでそのままにしています"
+            continue
+        lo, hi = float(r.get("min", 20)), float(r.get("max", 27))
+        modes = a.get("hvac_modes") or ["cool", "heat", "off"]
+
+        def cmd(new_mode, new_target, what):
+            if cs["last_cmd"] and now - cs["last_cmd"] < 300:
+                return
+            if new_mode is None:
+                ha_call("climate", "turn_off", {"entity_id": eid})
+            else:
+                if mode != new_mode:
+                    ha_call("climate", "set_hvac_mode", {"entity_id": eid, "hvac_mode": new_mode})
+                if new_target is not None and target != new_target:
+                    ha_call("climate", "set_temperature", {"entity_id": eid, "temperature": new_target})
+            cs["last_cmd"], cs["last_mode"] = now, new_mode or "off"
+            cs["last_target"] = new_target if new_target is not None else target
+            msg = f"{what}（{temp:.1f}℃・{src_name}）"
+            cs["actions"] = ([[now, msg]] + cs["actions"])[:50]
+            log(f"温度調整：{cs['name']} を{msg}")
+
+        try:
+            if temp > hi + 0.5 and r.get("cool", True) and "cool" in modes:
+                cs["out_since"] = cs["out_since"] or now
+                if src and now - cs["out_since"] > 1200 and cs["boost"] < 3 and mode == "cool":
+                    cs["boost"] += 1
+                    cs["out_since"] = now
+                t = hi - cs["boost"]
+                cmd("cool", t, f"冷房 {t:g}℃ にしました")
+                cs["by_us"] = True
+                cs["status"] = f"いま {temp:.1f}℃（{src_name}）：上限 {hi:g}℃ を超えたので冷房中（設定 {t:g}℃）"
+            elif temp < lo - 0.5 and r.get("heat", True) and "heat" in modes:
+                cs["out_since"] = cs["out_since"] or now
+                if src and now - cs["out_since"] > 1200 and cs["boost"] < 3 and mode == "heat":
+                    cs["boost"] += 1
+                    cs["out_since"] = now
+                t = lo + cs["boost"]
+                cmd("heat", t, f"暖房 {t:g}℃ にしました")
+                cs["by_us"] = True
+                cs["status"] = f"いま {temp:.1f}℃（{src_name}）：下限 {lo:g}℃ を下回ったので暖房中（設定 {t:g}℃）"
+            else:
+                cs["out_since"] = 0
+                cs["boost"] = 0
+                if r.get("off") and cs["by_us"] and mode != "off" and abs(temp - (lo + hi) / 2) <= (hi - lo) / 4:
+                    cmd(None, None, "止めました（範囲の真ん中に戻ったため）")
+                    cs["by_us"] = False
+                cs["status"] = f"いま {temp:.1f}℃（{src_name}）：範囲（{lo:g}〜{hi:g}℃）の中です"
+        except Exception as e:
+            cs["status"] = f"エアコンを操作できませんでした：{e}"
+
+
+def climate_loop():
+    while True:
+        try:
+            climate_tick()
+        except Exception as e:
+            print("温度調整でエラー:", e, flush=True)
+        time.sleep(60)
+
+
+def climate_public():
+    out = {}
+    for eid, cs in climate_state.items():
+        out[eid] = {k: cs.get(k) for k in ("status", "name", "mode", "target", "temp", "source_name", "at", "actions", "temps")}
+    return {"enabled": bool(conf.get("climate_enabled")), "rules": conf.get("climate_rules") or [], "state": out,
+            "ha_token_set": bool(conf.get("ha_token"))}
 
 
 def read_surplus():
@@ -554,7 +730,7 @@ def run_plan(manual=False):
         res.update(set_each([pp for pp in props if pp[0] == 0xC7]))
         if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
             state["shift_unsupported"] = True
-            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop")})
+            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending")})
             log("エネルギーシフトを受け付けない機種のため、タンクの運転モードで夜の沸き上げを調整します（エコキュートの応答：" + res[0xC7] + "）")
             return tank_plan(sunny, name, eco, result)
     if res.get(0xC7):
@@ -599,6 +775,28 @@ def tank_plan(sunny, name, eco, result):
     return result(True, f"{name}は晴れない予報：タンクの運転モードを「標準」にして、いつもどおり夜に沸かします", False)
 
 
+# ---- お湯の使用量（残りのお湯の減り方から、日ごとに積み上げる） ----
+hot_last = {"remain": None}
+
+
+def hot_water_track(eco):
+    r = (eco or {}).get("remain")
+    if r is None:
+        return
+    prev = hot_last["remain"]
+    hot_last["remain"] = r
+    if prev is None:
+        return
+    d = date.today().isoformat()
+    with lock:
+        day = energy.setdefault("days", {}).setdefault(d, {})
+        if r < prev:
+            day["hot_use_l"] = day.get("hot_use_l", 0) + (prev - r)
+        elif r > prev:
+            day["hot_heat_l"] = day.get("hot_heat_l", 0) + (r - prev)
+        day["hot_tank_l"] = (eco or {}).get("tank")
+
+
 def remain_pct(eco):
     r, t = (eco or {}).get("remain"), (eco or {}).get("tank")
     return r * 100 // t if r is not None and t else None
@@ -612,12 +810,23 @@ def stop_plan(sunny, name, eco, result):
         return result(True, "⚠ このエコキュートは、沸き上げの自動・停止を外から変えられない機種です（夜の沸き上げを止められません）", sunny)
     pct = remain_pct(eco)
     if not sunny:
+        state["night_pending"] = False
         if state.get("night_stop"):
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
             state["night_stop"] = False
         return result(True, f"{name}は晴れない予報：夜はいつもどおり沸かします（沸き上げ：自動）", False)
-    if pct is not None and pct < conf.get("stop_min_pct", 50):
-        return result(True, f"{name}は晴れの予報ですが、残りのお湯が少ない（{pct}%）ため、夜はいつもどおり沸かします", True)
+    target_pct = int(conf.get("night_heat_pct", 50))
+    tank = (eco or {}).get("tank")
+    lit = lambda q: f"{q}%（約{tank * q // 100}L）" if tank else f"{q}%"
+    if pct is not None and pct < target_pct:
+        # まだ少ないので、夜は目標の量まで沸かしてから止める
+        el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
+        with lock:
+            state["night_pending"] = True
+            state["night_stop"] = False
+            state["plan_method"] = "stop"
+        return result(True, f"{name}は晴れの予報：夜は {lit(target_pct)} まで沸かしたら止めます（いま {lit(pct)}）。"
+                            f"昼の{conf['start_hour']}時から余った電気で沸かし、{conf['end_hour']}時に自動に戻します", True)
     err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
     if err:
         return result(False, f"夜の沸き上げを止められませんでした（{EPC_NAME[0xB0]}：{err}）（10分後にもう一度試します）", True)
@@ -705,12 +914,22 @@ def tick():
             cut = time.time() - 3600
             state["history"] = [p for p in state["history"] if p[0] >= cut]
             state["surplus_w"] = surplus
+    hot_water_track(eco)
     if not conf["enabled"]:
         state["status"] = "おひさま沸き上げはオフです"
         return
     if not conf["eco_ip"]:
         state["status"] = "エコキュートの IP アドレスが設定されていません"
         return
+
+    # 夜止め：目標の量まで沸いたら止める
+    pct0 = remain_pct(eco)
+    if state.get("night_pending") and not in_window and pct0 is not None and pct0 >= int(conf.get("night_heat_pct", 50)):
+        if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43"):
+            state["night_pending"] = False
+            state["night_stop"] = True
+            tank = (eco or {}).get("tank")
+            log(f"夜の沸き上げを止めました（{pct0}%" + (f"・約{tank * pct0 // 100}L" if tank else "") + " まで沸きました）")
 
     # 1. 毎日の設定
     plan = state.get("plan") or {}
@@ -810,7 +1029,9 @@ def public_state():
     with lock:
         c = {k: v for k, v in conf.items() if k not in SECRET_CONF}
         c["aiseg_password_set"] = bool(conf.get("aiseg_password"))
-        return {"night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
+        c["ha_token_set"] = bool(conf.get("ha_token"))
+        return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
+                "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}
 
@@ -838,6 +1059,8 @@ class Api(BaseHTTPRequestHandler):
         p = self._path()
         if p in ("/", "/status"):
             return self._ok(public_state())
+        if p == "/climate":
+            return self._ok(climate_public())
         if p == "/energy":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._ok(energy_report((q.get("days") or ["7"])[0]))
@@ -892,6 +1115,8 @@ def main():
     el = Echonet()
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=energy_loop, daemon=True).start()
+    threading.Thread(target=weather_loop, daemon=True).start()
+    threading.Thread(target=climate_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

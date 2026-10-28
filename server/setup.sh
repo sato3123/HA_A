@@ -19,7 +19,11 @@ CA_DIR=/srv/homepanel-ca
 echo "== 必要なソフトを入れています"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 >/dev/null
+apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 tzdata >/dev/null
+# 時刻は日本時間に
+ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime && echo "Asia/Tokyo" > /etc/timezone
+# カメラの記録・動きの分析に使う（入らなくても、ほかの機能は動く）
+apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null || echo "注意：ffmpeg を入れられませんでした（カメラの記録は使えません）"
 
 echo "== 更新用スクリプトを作っています"
 mkdir -p "$WEB" "$CA_DIR"
@@ -38,11 +42,21 @@ if ! cmp -s "\$TMP/new/version.json" "$WEB/version.json"; then
   chmod -R a+rX "$WEB"
   echo "更新しました: \$(cat "$WEB/version.json")"
 fi
+# カメラの記録のサービスも新しくする
+if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-camera.py" -o "\$TMP/camera.py" && python3 -m py_compile "\$TMP/camera.py"; then
+  if ! cmp -s "\$TMP/camera.py" /usr/local/bin/homepanel-camera; then
+    install -m 755 "\$TMP/camera.py" /usr/local/bin/homepanel-camera
+    systemctl restart homepanel-camera.service 2>/dev/null || true
+    echo "カメラの記録のサービスを更新しました"
+  fi
+fi
 # おひさま沸き上げのサービスも新しくする
 if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o "\$TMP/solar.py" && python3 -m py_compile "\$TMP/solar.py"; then
   if ! cmp -s "\$TMP/solar.py" /usr/local/bin/homepanel-solar; then
     install -m 755 "\$TMP/solar.py" /usr/local/bin/homepanel-solar
-    systemctl restart homepanel-solar.service 2>/dev/null || true
+    systemctl restart homepanel-solar.service
+systemctl enable --now homepanel-camera.service >/dev/null
+systemctl restart homepanel-camera.service 2>/dev/null || true
     echo "おひさま沸き上げのサービスを更新しました"
   fi
 fi
@@ -167,6 +181,28 @@ Restart=always
 RestartSec=10
 DynamicUser=yes
 StateDirectory=homepanel-solar
+Environment=TZ=Asia/Tokyo
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+echo "== カメラの記録（2日分）と動きの分析のサービスを用意しています"
+curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-camera.py" -o /usr/local/bin/homepanel-camera
+chmod 755 /usr/local/bin/homepanel-camera
+cat > /etc/systemd/system/homepanel-camera.service <<'UNITEOF'
+[Unit]
+Description=ホームパネル カメラの記録と動きの分析
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/homepanel-camera
+Restart=always
+RestartSec=10
+DynamicUser=yes
+StateDirectory=homepanel-camera
+Environment=TZ=Asia/Tokyo
 
 [Install]
 WantedBy=multi-user.target
@@ -189,6 +225,12 @@ http://$SELF_IP {
 		@outside not remote_ip private_ranges
 		respond @outside 403
 		reverse_proxy 127.0.0.1:8098
+	}
+	# カメラの記録・動きの分析（家の中のネットワークからだけ）
+	handle /camera-api/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		reverse_proxy 127.0.0.1:8097
 	}
 	handle /ca.crt {
 		root * $CA_DIR
@@ -219,6 +261,12 @@ https://$SELF_IP {
 		@outside not remote_ip private_ranges
 		respond @outside 403
 		reverse_proxy 127.0.0.1:8098
+	}
+	# カメラの記録・動きの分析（家の中のネットワークからだけ）
+	handle /camera-api/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		reverse_proxy 127.0.0.1:8097
 	}
 
 	# スクリーンセーバーの写真一覧（このサーバーの中のサービス）

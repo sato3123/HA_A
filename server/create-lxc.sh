@@ -31,8 +31,8 @@ fi
 echo "== コンテナ $CTID（$IP）を作成しています"
 pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$TEMPLATE" \
   --hostname homepanel \
-  --cores 1 --memory 256 --swap 256 \
-  --rootfs "$STORAGE:2" \
+  --cores 1 --memory 512 --swap 512 \
+  --rootfs "$STORAGE:8" \
   --net0 "name=eth0,bridge=$BRIDGE,ip=$IP/$CIDR,gw=$GATEWAY" \
   --nameserver "$GATEWAY" \
   --unprivileged 1 --features nesting=1 \

@@ -11,6 +11,8 @@ import java.io.File
 class HomePanelApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        // 時刻はすべて日本時間で表示し、1日の切り替わりも日本時間の0:00にする
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Tokyo"))
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching {

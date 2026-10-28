@@ -290,3 +290,21 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .conn { display: inline-flex; align-items: center; gap: 6px; border-radius: 16px; padding: 3px 10px; font-size: 14px; font-weight: 600; }
 .conn .ci { font-size: 20px; }
 @media (max-width: 600px) { .conn .cl { display: none; } }
+
+/* ---- エコキュートの日ごとのお湯 ---- */
+.hwrow { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.hwbars { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 60px; }
+.hwb { display: block; height: 8px; border-radius: 3px; background: var(--primary); }
+.hwb.h { height: 5px; opacity: 0.45; }
+/* ---- カメラの動き ---- */
+.chart.motion .night { fill: currentColor; opacity: 0.07; }
+.chart.motion .mv { fill: var(--primary); cursor: pointer; }
+.chart.motion .mv.weak { opacity: 0.35; }
+.motionimg { width: 100%; max-width: 640px; border-radius: 8px; display: block; margin-top: 4px; }
+/* ---- 操作の記録・アカウント ---- */
+.oprow { display: flex; gap: 8px; padding: 3px 0; font-size: 15px; border-bottom: 1px solid var(--outline); }
+.oprow .opt { width: 48px; flex: none; }
+.oprow .opw { width: 150px; flex: none; }
+.accrow { display: flex; gap: 8px; padding: 3px 0; font-size: 15px; }
+.accrow .accl { width: 210px; flex: none; }
+@media (max-width: 600px) { .oprow .opw, .accrow .accl { width: 110px; } }

@@ -265,6 +265,8 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
         if (page == "cameras") {
             item { SectionTitle("カメラ（直接つなぐ）") }
             item { DirectCameraSettings(vm) }
+            item { SectionTitle("サーバーで記録・分析（2日分）") }
+            item { CameraRecordingSettings(vm) }
         }
 
         if (page == "echonet") {
@@ -313,6 +315,13 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             // ---- アカウント ----
             item { SectionTitle("アカウント") }
             item { AccountSection(vm, onLogout = { confirmLogout = true }) }
+            item { SectionTitle("アカウントの一覧") }
+            item { AccountList(vm) }
+        }
+
+        if (page == "oplog") {
+            item { SectionTitle("操作の記録") }
+            item { OperationLogScreen(vm) }
         }
 
         if (page == "system") {
@@ -583,10 +592,11 @@ val SETTINGS_MENU = listOf(
     MenuItem("calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"),
     MenuItem("climate","❄","エアコンの自動温度調整","温度の範囲を決めて、自動で冷房・暖房"),
     MenuItem("solar","☀","おひさま沸き上げ","太陽光で余った電気でエコキュートを沸かす"),
-    MenuItem("cameras","📷","カメラ（直接つなぐ）","Home Assistant を通さずに見るネットワークカメラ"),
+    MenuItem("cameras","📷","カメラ","カメラを探して登録、2日分の記録と動きの分析"),
     MenuItem("echonet", "📡", "ECHONET Lite", "Home Assistant を通さずに直接つなぐ機器"),
     MenuItem("connection", "🌐", "外出先からの接続", "Home Assistant Cloud のリモートURL"),
-    MenuItem("account", "👤", "アカウント", "管理者ログイン、ログアウト"),
+    MenuItem("account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト"),
+    MenuItem("oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか"),
     MenuItem("system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"),
 )
 
