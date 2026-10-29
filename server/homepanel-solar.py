@@ -59,6 +59,11 @@ DEFAULT_CONF = {
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
     "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
     "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
+    # 電気料金：電力会社のプラン（tariffs.json の plan id、または custom）と契約の大きさ（A・kVA・kW）
+    "tariff_plan": "", "tariff_contract": 30,
+    "tariff_fuel": 0.0,                     # 燃料費調整額（円/kWh。毎月の検針票の値。マイナスもある）
+    "tariff_sell": 0.0,                     # 売電の単価（円/kWh）
+    "tariff_custom": {},                    # 自分で入力：{basic, day_rate, night_rate, night_start, night_end}
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -424,6 +429,54 @@ def aiseg_circuits():
 # ---- 時間ごと・回路ごとの電気の記録（AiSEG2 から1分ごとに読んで積み上げる） ----
 energy = load_json(ENERGY_PATH, {"hours": {}})
 energy_last = {"t": None}
+ENERGY5_PATH = os.path.join(DIR, "energy5.json")
+energy5 = load_json(ENERGY5_PATH, {})
+eco_power = {"ok": None, "checked": 0}
+
+
+def eco_power_w():
+    """エコキュートのいまの消費電力（W）。ECHONET Lite の瞬時消費電力（0x84）。対応していない機種は None"""
+    if eco_power["ok"] is False and time.time() - eco_power["checked"] < 3600:
+        return None
+    try:
+        v = el.get(conf["eco_ip"], conf["eco_eoj"], [0x84], timeout=3)
+    except Exception:
+        v = None
+    eco_power["checked"] = time.time()
+    if not v or 0x84 not in v or len(v[0x84]) < 2:
+        eco_power["ok"] = False
+        return None
+    w = int.from_bytes(v[0x84][:2], "big")
+    if w >= 0xFFFE:
+        eco_power["ok"] = False
+        return None
+    eco_power["ok"] = True
+    return float(w)
+
+
+def aiseg_circuit_pages():
+    """回路の一覧の確認用：AiSEG2 の回路のページごとの名前と、いまの電力"""
+    import re
+    out = []
+    zen = str.maketrans("０１２３４５６７８９．，", "0123456789.,")
+    prev = None
+    for page in range(1, 21):
+        html = aiseg_open(f"/page/electricflow/1113?id={page}")
+        rows = []
+        for val, dev in re.findall(r'<div class="c_value">(.*?)</div>\s*<div class="c_device">(.*?)</div>', html, re.S):
+            name = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", dev).replace("\u3000", " ")).strip()
+            rows.append({"name": name, "value": re.sub(r"<[^>]+>", "", val).translate(zen).strip()})
+        sig = ",".join(r["name"] for r in rows)
+        if not rows or sig == prev:
+            break
+        prev = sig
+        out.append({"page": page, "rows": rows})
+    return out
+
+
+def energy5_report(day):
+    with lock:
+        return {"date": day, "slots": [dict(v, t=k[11:]) for k, v in sorted(energy5.items()) if k.startswith(day)]}
 
 
 def energy_collect():
@@ -445,6 +498,11 @@ def energy_collect():
             src = "スマートメーター"
             use, gen = (max(0.0, -w), 0.0)  # 買電だけ分かる（発電は分からない）
             state["power"] = {"generation_w": None, "consumption_w": None, "net_w": w, "from": src}
+    # エコキュートが AiSEG2 の回路に無いときは、エコキュートから直接いまの消費電力を読む（ECHONET Lite の 0x84）
+    if conf.get("eco_ip") and not any(("エコキュート" in n or "給湯" in n) for n in circuits):
+        w = eco_power_w()
+        if w is not None:
+            circuits["エコキュート（直接）"] = w
     last = energy_last["t"]
     energy_last["t"] = now
     if use is None or last is None:
@@ -461,6 +519,19 @@ def energy_collect():
         for n, w in circuits.items():
             h["circuits"][n] = h["circuits"].get(n, 0.0) + w * dt
         h["src"] = src
+        # 5分ごとの記録（8日分）
+        n5 = datetime.now()
+        k5 = n5.strftime("%Y-%m-%dT%H:") + f"{n5.minute // 5 * 5:02d}"
+        f = energy5.setdefault(k5, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+        f["use"] += (use if src == "AiSEG2" else 0.0) * dt
+        f["gen"] += (gen or 0.0) * dt
+        f["buy"] += max(0.0, -net) * dt
+        f["sell"] += max(0.0, net) * dt
+        for n, w in circuits.items():
+            f["circuits"][n] = f["circuits"].get(n, 0.0) + w * dt
+        cut5 = (n5 - timedelta(days=8)).strftime("%Y-%m-%dT%H:%M")
+        for k in [k for k in energy5 if k < cut5]:
+            del energy5[k]
         cut = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H")
         for k in [k for k in energy["hours"] if k < cut]:
             del energy["hours"][k]
@@ -476,8 +547,224 @@ def energy_loop():
         if time.time() - saved > 300:
             with lock:
                 save_json(ENERGY_PATH, energy)
+                save_json(ENERGY5_PATH, energy5)
             saved = time.time()
         time.sleep(60)
+
+
+# ================= 電気料金（電力会社のプランの単価で計算） =================
+TARIFF_PATHS = ["/usr/local/share/homepanel/tariffs.json", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tariffs.json")]
+_tariffs = {"path": None, "mtime": None, "data": {}}
+
+
+def tariffs():
+    """プランの単価表。サーバーの更新（homepanel-update）が毎日 GitHub から新しくする"""
+    for p in TARIFF_PATHS:
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if _tariffs["path"] != p or _tariffs["mtime"] != m:
+            _tariffs.update(path=p, mtime=m, data=load_json(p, {}) or {})
+        return _tariffs["data"]
+    return {}
+
+
+def find_plan(pid):
+    if pid == "custom":
+        c = conf.get("tariff_custom") or {}
+        day, night = float(c.get("day_rate") or 0), c.get("night_rate")
+        bands = []
+        if night not in (None, "", 0):
+            ns, ne = int(c.get("night_start", 23)), int(c.get("night_end", 7))
+            hours = [h % 24 for h in range(ns, ns + ((ne - ns) % 24 or 24))]
+            bands.append({"name": f"夜間（{ns}〜{ne}時）", "rate": float(night), "when": [{"days": "all", "hours": hours}]})
+        bands.append({"name": "昼間" if bands else "電力量料金", "rate": day})
+        return {"id": "custom", "name": "自分で入力"}, {"id": "custom", "name": "自分で入力した単価", "contract": "none",
+                                                     "versions": [{"from": "2000-01-01", "basic": {"type": "fixed", "yen": float(c.get("basic") or 0)},
+                                                                   "energy": {"type": "tou", "bands": bands}}]}
+    for pr in tariffs().get("providers", []):
+        for pl in pr.get("plans", []):
+            if pl.get("id") == pid:
+                return pr, pl
+    return None, None
+
+
+def plan_version(pl, d):
+    vs = sorted(pl.get("versions") or [], key=lambda v: v.get("from", ""))
+    cur = vs[0] if vs else {}
+    for v in vs:
+        if v.get("from", "") <= d.isoformat():
+            cur = v
+    return cur
+
+
+def is_holiday(pl, d):
+    hd = pl.get("holiday") or {"sat": True, "sun": True, "national": True, "extra": []}
+    wd = d.weekday()
+    if (wd == 5 and hd.get("sat")) or (wd == 6 and hd.get("sun")):
+        return True
+    if hd.get("national") and d.isoformat() in set(tariffs().get("holidays") or []):
+        return True
+    return d.strftime("%m-%d") in (hd.get("extra") or [])
+
+
+def band_of(pl, ver, dt):
+    """その時刻の単価（円/kWh）と時間帯の名前。段階料金（従量電灯）なら None"""
+    en = ver.get("energy") or {}
+    if en.get("type") != "tou":
+        return None, None
+    season = "other"
+    for name, months in (pl.get("seasons") or {}).items():
+        if dt.month in months:
+            season = name
+    hol = is_holiday(pl, dt.date())
+    for b in en.get("bands") or []:
+        when = b.get("when")
+        ok = not when
+        for w in when or []:
+            days = w.get("days", "all")
+            if days == "weekday" and hol or days == "holiday" and not hol:
+                continue
+            hours = w.get("hours", "rest")
+            if hours == "rest" or dt.hour in hours:
+                ok = True
+                break
+        if ok:
+            r = b.get("rate")
+            if isinstance(r, dict):
+                r = r.get(season, r.get("other"))
+            return float(r or 0), b.get("name")
+    return 0.0, None
+
+
+def surcharge_of(d):
+    ym, val = d.strftime("%Y-%m"), 0.0
+    for x in sorted(tariffs().get("surcharge") or [], key=lambda x: x["from"]):
+        if x["from"] <= ym:
+            val = float(x["yen"])
+    return val
+
+
+def subsidy_of(d):
+    ym = d.strftime("%Y-%m")
+    return next((float(x["yen"]) for x in tariffs().get("subsidy") or [] if x.get("month") == ym), 0.0)
+
+
+def basic_of(pl, ver):
+    b = ver.get("basic") or {}
+    c = float(conf.get("tariff_contract") or 0)
+    t = b.get("type")
+    if t == "per_10a":
+        return float(b["yen"]) * (c or 30) / 10
+    if t in ("per_kva", "per_kw"):
+        return float(b["yen"]) * (c or 6)
+    if t == "kw_table":
+        c = c or 10
+        for lim, yen in b.get("table") or []:
+            if c <= lim:
+                return float(yen)
+        return float((b.get("table") or [[0, 0]])[-1][1]) + (c - float(b.get("over_from", 0))) * float(b.get("per_kw_over", 0))
+    if t in ("minimum", "fixed"):
+        return float(b.get("yen") or 0)
+    return 0.0
+
+
+def cost_hours(hours):
+    """時間ごとの記録（古い順、各 {h, buy, sell}）に、買った電気の料金（円）を付ける。段階料金は月の使用量の合計で決まる"""
+    pr, pl = find_plan(conf.get("tariff_plan") or "")
+    if not pl:
+        return None
+    fuel, sell_price = float(conf.get("tariff_fuel") or 0), float(conf.get("tariff_sell") or 0)
+    months, cum = {}, {}
+    for h in hours:
+        try:
+            dt = datetime.strptime(h["h"], "%Y-%m-%dT%H")
+        except Exception:
+            continue
+        ver = plan_version(pl, dt.date())
+        kwh = float(h.get("buy") or 0) / 1000
+        ym = dt.strftime("%Y-%m")
+        before = cum.get(ym, 0.0)
+        cum[ym] = before + kwh
+        rate, band = band_of(pl, ver, dt)
+        en = ver.get("energy") or {}
+        if rate is None:
+            # 段階料金：月の合計がどの段にあるかで単価が変わる
+            free = float((ver.get("basic") or {}).get("kwh") or 0) if (ver.get("basic") or {}).get("type") == "minimum" else 0.0
+            yen, lo = 0.0, before
+            hi = before + kwh
+            low = free
+            for lim, r in en.get("tiers") or []:
+                top = float(lim) if lim is not None else 1e12
+                a, b = max(lo, low), min(hi, top)
+                if b > a:
+                    yen += (b - a) * float(r)
+                low = top
+            rate = yen / kwh if kwh > 0 else next((float(r) for lim, r in en.get("tiers") or [] if lim is None or before < lim), 0.0)
+            band = "段階料金"
+        else:
+            yen = kwh * rate
+        add = surcharge_of(dt) + fuel - subsidy_of(dt)
+        yen += kwh * add
+        h["yen"] = round(yen, 2)
+        h["rate"] = round(rate + add, 2)
+        h["band"] = band
+        h["sell_yen"] = round(float(h.get("sell") or 0) / 1000 * sell_price, 2)
+        m = months.setdefault(ym, {"kwh": 0.0, "energy_yen": 0.0, "sell_kwh": 0.0, "sell_yen": 0.0, "basic_yen": round(basic_of(pl, ver), 0)})
+        m["kwh"] += kwh
+        m["energy_yen"] += yen
+        m["sell_kwh"] += float(h.get("sell") or 0) / 1000
+        m["sell_yen"] += h["sell_yen"]
+    for m in months.values():
+        m["total_yen"] = round(m["energy_yen"] + m["basic_yen"])
+        for k in ("kwh", "energy_yen", "sell_kwh", "sell_yen"):
+            m[k] = round(m[k], 2)
+    return {"provider": pr.get("name"), "plan": pl.get("name"), "plan_id": pl.get("id"), "months": months,
+            "fuel": fuel, "sell_price": sell_price, "surcharge": surcharge_of(date.today()), "subsidy": subsidy_of(date.today()),
+            "checked": pl.get("checked"), "updated": tariffs().get("updated")}
+
+
+def cost_summary():
+    """今日・今月の電気料金（ホーム画面用）"""
+    ym = datetime.now().strftime("%Y-%m")
+    with lock:
+        hours = [dict(v, h=k) for k, v in sorted(energy["hours"].items()) if k.startswith(ym)]
+    c = cost_hours(hours)
+    if c is None:
+        return None
+    today = date.today().isoformat()
+    th = [h for h in hours if h["h"].startswith(today)]
+    _, pl = find_plan(conf.get("tariff_plan") or "")
+    now = datetime.now()
+    rate, band = band_of(pl, plan_version(pl, now.date()), now)
+    m = c["months"].get(ym) or {}
+    days_in = (date(now.year + (now.month == 12), now.month % 12 + 1, 1) - timedelta(days=1)).day
+    return {"plan": f'{c["provider"]} {c["plan"]}', "today_yen": round(sum(h.get("yen", 0) for h in th)),
+            "today_kwh": round(sum(float(h.get("buy") or 0) for h in th) / 1000, 2),
+            "today_sell_yen": round(sum(h.get("sell_yen", 0) for h in th)),
+            "month_yen": m.get("total_yen"), "month_kwh": m.get("kwh"), "month_sell_yen": round(m.get("sell_yen", 0)),
+            "month_estimate_yen": round((m.get("energy_yen", 0) / max(1, now.day - 1 + now.hour / 24)) * days_in + m.get("basic_yen", 0)) if m else None,
+            "rate_now": round(rate + surcharge_of(now) + float(conf.get("tariff_fuel") or 0) - subsidy_of(now), 2) if rate is not None else None,
+            "band_now": band}
+
+
+def tariff_list():
+    t = tariffs()
+    out = [{"id": pr["id"], "name": pr["name"], "plans": [{"id": pl["id"], "name": pl["name"], "contract": pl.get("contract", "none"), "checked": pl.get("checked")}
+                                                       for pl in pr.get("plans", [])]} for pr in t.get("providers", [])]
+    _, pl = find_plan(conf.get("tariff_plan") or "")
+    detail = None
+    if pl:
+        ver = plan_version(pl, date.today())
+        en = ver.get("energy") or {}
+        if en.get("type") == "tou":
+            detail = [{"name": b.get("name"), "rate": b.get("rate")} for b in en.get("bands") or []]
+        else:
+            detail = [{"name": (f"{lim}kWhまで" if lim else "それより上"), "rate": r} for lim, r in en.get("tiers") or []]
+        detail = {"bands": detail, "basic_yen": round(basic_of(pl, ver)), "from": ver.get("from"), "contract": pl.get("contract", "none")}
+    return {"providers": out, "note": t.get("note"), "updated": t.get("updated"), "current": detail,
+            "surcharge": surcharge_of(date.today()), "subsidy": subsidy_of(date.today())}
 
 
 def energy_report(days):
@@ -485,9 +772,18 @@ def energy_report(days):
     start = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%dT00")
     dstart = start[:10]
     with lock:
-        hours = [dict(v, h=k) for k, v in sorted(energy["hours"].items()) if k >= start]
-        daily = {k: v for k, v in sorted(energy.get("days", {}).items()) if k >= dstart}
-    return {"hours": hours, "days": days, "daily": daily}
+        allh = [dict(v, h=k) for k, v in sorted(energy["hours"].items())]
+        daily = {k: dict(v) for k, v in sorted(energy.get("days", {}).items()) if k >= dstart}
+    # 料金は月の初めから順に計算する（段階料金のため）
+    first = start[:7]
+    cost = cost_hours([h for h in allh if h["h"][:7] >= first])
+    hours = [h for h in allh if h["h"] >= start]
+    if cost:
+        for h in hours:
+            d = daily.setdefault(h["h"][:10], {})
+            d["yen"] = round(d.get("yen", 0) + h.get("yen", 0), 2)
+            d["sell_yen"] = round(d.get("sell_yen", 0) + h.get("sell_yen", 0), 2)
+    return {"hours": hours, "days": days, "daily": daily, "cost": cost}
 
 
 # ---- 日ごとの天気・気温（Open-Meteo。過去2日と今日・明日。3時間ごとに更新して保存） ----
@@ -795,6 +1091,14 @@ def hot_water_track(eco):
         elif r > prev:
             day["hot_heat_l"] = day.get("hot_heat_l", 0) + (r - prev)
         day["hot_tank_l"] = (eco or {}).get("tank")
+        # 残りのお湯の変化（5分ごと・2日分）。エコキュートの画面のグラフ用
+        hist = energy.setdefault("hot", [])
+        now = time.time()
+        if not hist or now - hist[-1][0] >= 300 or abs(hist[-1][1] - r) >= 20:
+            hist.append([int(now), r])
+            cut = now - 2 * 86400
+            while hist and hist[0][0] < cut:
+                hist.pop(0)
 
 
 def remain_pct(eco):
@@ -1025,12 +1329,22 @@ def loop():
 
 # ================= 画面からの操作（/solar-api/） =================
 
+def cost_summary_safe():
+    try:
+        return cost_summary()
+    except Exception as e:
+        print("料金の計算でエラー:", e, flush=True)
+        return None
+
+
 def public_state():
     with lock:
         c = {k: v for k, v in conf.items() if k not in SECRET_CONF}
         c["aiseg_password_set"] = bool(conf.get("aiseg_password"))
         c["ha_token_set"] = bool(conf.get("ha_token"))
+        hot = [p for p in energy.get("hot", []) if p[0] > time.time() - 86400]
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
+                "hot_history": hot, "cost": cost_summary_safe(),
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}
@@ -1061,6 +1375,11 @@ class Api(BaseHTTPRequestHandler):
             return self._ok(public_state())
         if p == "/climate":
             return self._ok(climate_public())
+        if p == "/tariffs":
+            return self._ok(tariff_list())
+        if p == "/energy5":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._ok(energy5_report((q.get("date") or [date.today().isoformat()])[0]))
         if p == "/energy":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._ok(energy_report((q.get("days") or ["7"])[0]))
@@ -1104,6 +1423,12 @@ class Api(BaseHTTPRequestHandler):
         if p == "/aiseg-test":
             v = aiseg_surplus_w()
             return self._ok({"ok": v is not None, "surplus_w": v, "power": state.get("power"), "error": state.get("aiseg_error")})
+        if p == "/aiseg-circuits":
+            try:
+                pages = aiseg_circuit_pages()
+            except Exception as e:
+                return self._ok({"ok": False, "error": str(e)})
+            return self._ok({"ok": True, "pages": pages, "eco_direct": eco_power_w() if conf.get("eco_ip") else None})
         if p == "/discover":
             return self._ok({"devices": el.discover()})
         self._ok({"error": "not found"}, 404)

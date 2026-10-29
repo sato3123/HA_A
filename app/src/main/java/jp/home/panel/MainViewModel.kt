@@ -660,6 +660,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= 画面の更新（ホーム画面を引っぱって更新） =================
+    val refreshing = MutableStateFlow(false)
+
+    fun refreshAll() {
+        if (refreshing.value) return
+        viewModelScope.launch {
+            refreshing.value = true
+            try {
+                val c = client
+                if (c == null) {
+                    // つながっていなければ、つなぎ直す
+                    if (screen.value != Screen.Login) start()
+                } else {
+                    runCatching { c.reloadStates() }
+                }
+                loadEnergy()
+                loadEvents()
+                solarWake.trySend(Unit)
+                if (climateOnServer.value) loadClimateServer()
+                if (camRecording.value.isNotEmpty()) loadCamServer()
+                delay(800)
+            } finally {
+                refreshing.value = false
+            }
+        }
+    }
+
     // ================= アカウントの一覧・操作の記録 =================
 
     /** Home Assistant のユーザー（管理者の権限が必要。普段使いが管理者でなければ、管理者ログインで読む） */
@@ -2535,6 +2562,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val energyHoursStatus = MutableStateFlow<String?>(null)
     /** 日ごとの天気・気温・お湯（サーバーが保存）。日付（日本時間）→ 値 */
     val energyDaily = MutableStateFlow<Map<String, JSONObject>>(emptyMap())
+    /** 料金の計算の結果（プラン名・月ごとの合計など）。プランを選んでいなければ null */
+    val energyCost = MutableStateFlow<JSONObject?>(null)
 
     fun loadEnergyHours(days: Int) = viewModelScope.launch {
         energyHoursStatus.value = "読み込んでいます…"
@@ -2544,8 +2573,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             energyHours.value = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { h ->
                 val c = h.optJSONObject("circuits") ?: JSONObject()
                 EnergyHour(h.optString("h"), h.optDouble("use", 0.0), h.optDouble("gen", 0.0), h.optDouble("buy", 0.0), h.optDouble("sell", 0.0),
-                    c.keys().asSequence().associateWith { c.optDouble(it, 0.0) })
+                    c.keys().asSequence().associateWith { c.optDouble(it, 0.0) },
+                    yen = h.optDouble("yen").takeIf { !it.isNaN() }, sellYen = h.optDouble("sell_yen").takeIf { !it.isNaN() },
+                    rate = h.optDouble("rate").takeIf { !it.isNaN() }, band = h.optString("band").takeIf { it.isNotBlank() && it != "null" })
             }
+            energyCost.value = j.optJSONObject("cost")
             j.optJSONObject("daily")?.let { d -> energyDaily.value = d.keys().asSequence().associateWith { d.optJSONObject(it) ?: JSONObject() } }
             energyHoursStatus.value = null
         } catch (e: CancellationException) {
@@ -2571,6 +2603,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val nightPending = MutableStateFlow(false)
     /** サーバーが記録した日ごとの値（お湯の使用量・天気・気温など）。日付（日本時間）→ 値 */
     val serverDaily = MutableStateFlow<List<Pair<String, JSONObject>>>(emptyList())
+    /** 今日・今月の電気料金（サーバーが電力会社のプランの単価で計算） */
+    val serverCost = MutableStateFlow<JSONObject?>(null)
+    /** 残りのお湯の変化（時刻, L）。24時間分 */
+    val hotHistory = MutableStateFlow<List<Pair<Long, Int>>>(emptyList())
+
+    /** 電力会社・プランの一覧と、いまのプランの単価（GET /solar-api/tariffs） */
+    suspend fun tariffList(): JSONObject = serverCall("/tariffs", null)
+
+    /** 料金の設定をサーバーに送る（プラン・契約の大きさ・燃料費調整額・売電単価・自分で入力した単価） */
+    suspend fun saveTariff(values: Map<String, Any>) {
+        val body = JSONObject()
+        values.forEach { (k, v) -> body.put(k, v) }
+        applyServerState(serverCall("/config", body))
+        updateSolarView()
+    }
+
+    /** AiSEG2 の回路の一覧（確認用） */
+    suspend fun aisegCircuits(): JSONObject = serverCall("/aiseg-circuits", JSONObject())
+
+    /** 5分ごとの記録（その日の 0:00〜） */
+    suspend fun energy5(day: String): List<EnergyHour> {
+        val a = serverCall("/energy5?date=$day", null).optJSONArray("slots") ?: JSONArray()
+        return (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { h ->
+            val c = h.optJSONObject("circuits") ?: JSONObject()
+            EnergyHour(day + "T" + h.optString("t"), h.optDouble("use", 0.0), h.optDouble("gen", 0.0), h.optDouble("buy", 0.0), h.optDouble("sell", 0.0),
+                c.keys().asSequence().associateWith { c.optDouble(it, 0.0) })
+        }
+    }
     val serverAisegUrl = MutableStateFlow("")
 
     /** AiSEG2 の住所とパスワードをサーバーに登録する（パスワードはサーバーにだけ保存し、このタブレットには残さない） */
@@ -2655,6 +2715,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         nightStop.value = j.optBoolean("night_stop")
         nightPending.value = j.optBoolean("night_pending")
         j.optJSONObject("daily")?.let { d -> serverDaily.value = d.keys().asSequence().sorted().map { it to (d.optJSONObject(it) ?: JSONObject()) }.toList() }
+        serverCost.value = j.optJSONObject("cost")
+        j.optJSONArray("hot_history")?.let { a ->
+            hotHistory.value = (0 until a.length()).mapNotNull { a.optJSONArray(it) }.map { (it.optLong(0) * 1000) to it.optInt(1) }
+        }
         // 画面の設定もサーバーの値に合わせる
         shEnabled.value = conf.optBoolean("enabled", shEnabled.value)
         shStart.value = conf.optInt("start_hour", shStart.value)

@@ -1371,6 +1371,12 @@
     ["📜 操作の記録", [
       "⚙ 設定 →「操作の記録」で、だれが・いつ・何を操作したか（Home Assistant の記録）と、サーバーが行った操作を見られます。",
     ]],
+    ["💴 電気料金", [
+      "Android 版の ⚙ 設定 →「電気料金」で電力会社とプランを選ぶと、サーバーが時間帯・季節・休日ごとの単価で電気代を計算し、ホーム画面に今日・今月・見込みの電気代を出します。",
+    ]],
+    ["↻ 画面の読み直し", [
+      "ホーム画面のいちばん上で下に引っぱって離すと、機器の状態・電気・予定などを読み直します。",
+    ]],
     ["🕘 時刻", [
       "時刻はすべて日本時間で表示し、1日の切り替わりも日本時間の0時です。",
     ]],
@@ -2675,11 +2681,11 @@
     const box = $("#energy");
     if (!box) return;
     const en = S.energy;
-    if (!en) { box.innerHTML = ""; return; }
+    if (!en) { box.innerHTML = costStripHTML(); return; }
     const t = en.t;
     box.innerHTML = `<div class="card estrip"><b>⚡ 今日の電気</b><span>使用 <b>${kwh(t.used)}</b></span><span>買電 <b>${kwh(t.gridIn)}</b></span>
       ${en.hasExport ? `<span>売電 <b>${kwh(t.gridOut)}</b></span>` : ""}${en.hasSolar ? `<span>発電 <b>${kwh(t.solar)}</b></span>` : ""}
-      ${t.self !== null && en.hasSolar ? `<span>自給率 <b>${Math.round(t.self)}%</b></span>` : ""}${t.cost > 0 ? `<span>電気代 <b>${Math.round(t.cost)}円</b></span>` : ""}</div>`;
+      ${t.self !== null && en.hasSolar ? `<span>自給率 <b>${Math.round(t.self)}%</b></span>` : ""}${t.cost > 0 && !(S.solar && S.solar.cost) ? `<span>電気代 <b>${Math.round(t.cost)}円</b></span>` : ""}</div>${costStripHTML()}`;
   }
 
   // ================= おひさま沸き上げ（サーバーで動いているものを表示） =================
@@ -2690,9 +2696,41 @@
   }
   async function loadSolar(path, body) {
     if (!SERVER_MODE) return;
-    try { S.solar = await solarApi(path || "/status", body); S.solarErr = null; }
+    try { S.solar = await solarApi(path || "/status", body); S.solarErr = null; renderEnergy(); }
     catch (e) { if (path) S.solarErr = "サーバーに送れませんでした：" + e.message; else S.solar = null; }
     renderSolar();
+  }
+  const yenFmt = (v) => (v === null || v === undefined ? "－" : Math.round(v).toLocaleString("ja-JP") + "円");
+  /** サーバーが電力会社のプランの単価で計算した電気代 */
+  function costStripHTML() {
+    const c = S.solar && S.solar.cost;
+    if (!c) return "";
+    return `<div class="card estrip"><b>💴 電気代</b><span>今日 <b>${yenFmt(c.today_yen)}</b></span><span>今月 <b>${yenFmt(c.month_yen)}</b></span>
+      <span>見込み <b>${yenFmt(c.month_estimate_yen)}</b></span>${c.rate_now != null ? `<span>いまの単価 <b>${c.rate_now}円/kWh</b></span>` : ""}
+      ${c.today_sell_yen > 0 ? `<span>売電 <b>${yenFmt(c.today_sell_yen)}</b></span>` : ""}<span class="note">${esc(c.plan || "")}</span></div>`;
+  }
+  /** 24時間のお湯：線＝残り、棒＝1時間ごとに使った量 */
+  function hotChartHTML(hist, tank) {
+    if (!hist || hist.length < 2) return "";
+    const W = 640, H = 120, L = 44, B = 18, end = Date.now(), start = end - 86400000;
+    const used = new Array(24).fill(0);
+    for (let i = 1; i < hist.length; i++) {
+      const [t1, r1] = hist[i], r0 = hist[i - 1][1];
+      if (r1 < r0 && t1 * 1000 >= start) used[Math.min(23, Math.floor((t1 * 1000 - start) / 3600000))] += r0 - r1;
+    }
+    const maxL = Math.max(1, tank || Math.max(...hist.map((p) => p[1]))), maxU = Math.max(10, ...used);
+    const x = (t) => L + (W - L) * Math.max(0, Math.min(1, (t - start) / (end - start)));
+    const y = (l) => H - B - (l / maxL) * (H - B - 4);
+    let g = "";
+    [maxL, maxL / 2, 0].forEach((v) => { g += `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="2" y="${y(v) + 4}" class="lbl">${Math.round(v)}L</text>`; });
+    const bw = (W - L) / 24;
+    used.forEach((u, i) => { if (u > 0) { const h = (u / maxU) * (H - B - 4) * 0.6; g += `<rect x="${L + i * bw + bw * 0.15}" y="${H - B - h}" width="${bw * 0.7}" height="${h}" fill="#42a5f5" opacity=".6"/>`; } });
+    const tk = new Date(start); tk.setMinutes(0, 0, 0); tk.setHours(tk.getHours() + 1); while (tk.getHours() % 6) tk.setHours(tk.getHours() + 1);
+    for (; tk.getTime() < end; tk.setHours(tk.getHours() + 6)) g += `<text x="${x(tk.getTime())}" y="${H - 4}" class="lbl" text-anchor="middle">${tk.getHours()}時</text>`;
+    const d = hist.filter((p) => p[0] * 1000 >= start - 600000).map((p, i) => `${i ? "L" : "M"}${x(p[0] * 1000)} ${y(p[1])}`).join(" ");
+    const total = Math.round(used.reduce((a, b) => a + b, 0));
+    return `<div class="note">24時間のお湯（この24時間で約${total}L 使用）　<span style="color:var(--primary)">━ 残り</span>　<span style="color:#42a5f5">■ 使った量（1時間ごと）</span></div>
+      <svg viewBox="0 0 ${W} ${H}" class="chart hot">${g}<path d="${d}" fill="none" stroke="var(--primary)" stroke-width="2.5"/></svg>`;
   }
   function renderSolar() {
     const box = $("#solar");
@@ -2708,6 +2746,7 @@
       ${e.remain != null ? `<div>残りのお湯 <b style="font-size:22px">${e.remain}L</b>${e.tank ? ` ／ ${e.tank}L（${pct}%）` : ""}</div>${pct !== null ? `<div class="bar"><div style="height:100%;width:${pct}%;background:var(--primary)"></div></div>` : ""}` : ""}
       <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
       ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.message.startsWith("⚠") ? "" : p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
+      ${hotChartHTML(j.hot_history, e.tank)}
       ${nightHeatHTML(j)}
       ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
       <div class="brow">${p && !p.ok ? `<button class="btn" data-set="solarRetry">もう一度設定</button>` : `<button class="tbtn" data-set="solarRetry">設定し直す</button>`}
@@ -3024,6 +3063,43 @@
     if (S.ssOn || S.cam || document.visibilityState !== "visible") return;
     document.querySelectorAll("img[data-snap]").forEach((img) => refreshSnapshot(img.dataset.snap));
   }
+  // ---- ホーム画面を上の端で下に引っぱると、読み直す ----
+  async function refreshAll() {
+    const ind = $("#ptr");
+    if (ind) { ind.classList.add("busy"); ind.textContent = "⟳ 読み直しています…"; }
+    try {
+      if (S.ha) {
+        const arr = await S.ha.send({ type: "get_states" });
+        arr.forEach((x) => { S.ha.states[x.entity_id] = x; });
+        renderEntities(); renderThermos(); renderWeather();
+      }
+      loadEnergy(); loadEvents(); loadSolar(); loadClimate(); refreshSnapshots();
+    } catch (e) { /* つながっていなければ接続のやり直しに任せる */ }
+    setTimeout(() => { if (ind) { ind.classList.remove("busy", "show"); ind.style.height = "0px"; } }, 600);
+  }
+  function setupPullToRefresh() {
+    let y0 = null, pulled = 0;
+    const ind = $("#ptr");
+    const atTop = () => (document.scrollingElement || document.documentElement).scrollTop <= 0;
+    const blocked = () => S.page || S.cam || S.detail || S.ssOn;
+    document.addEventListener("touchstart", (ev) => { y0 = !blocked() && atTop() && ev.touches.length === 1 ? ev.touches[0].clientY : null; pulled = 0; }, { passive: true });
+    document.addEventListener("touchmove", (ev) => {
+      if (y0 === null) return;
+      pulled = ev.touches[0].clientY - y0;
+      if (pulled <= 0 || !atTop()) { ind.style.height = "0px"; return; }
+      const h = Math.min(70, pulled / 2);
+      ind.style.height = h + "px";
+      ind.classList.add("show");
+      ind.textContent = pulled > 120 ? "↻ 指を離すと読み直します" : "↓ 引っぱって読み直す";
+    }, { passive: true });
+    document.addEventListener("touchend", () => {
+      if (y0 === null) return;
+      y0 = null;
+      if (pulled > 120) refreshAll();
+      else { ind.style.height = "0px"; ind.classList.remove("show"); }
+    });
+  }
+
   // ---- ホーム画面のタイルにそのまま動画（MJPEG）を映す ----
   const camTileLive = () => store.get("camTile", "live") === "live";
   const liveRetryAt = new Map();
@@ -3407,7 +3483,7 @@
   }
 
   function buildMain() {
-    $("#app").innerHTML = `<div class="wrap">
+    $("#app").innerHTML = `<div class="ptr" id="ptr"></div><div class="wrap">
       <div class="top"><span class="badge" id="badge"></span><span class="profbar" id="profileBar"></span><span class="sp"></span>
         <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
@@ -3488,6 +3564,7 @@
     }, true);
     document.addEventListener("keydown", onUserInteraction);
 
+    setupPullToRefresh();
     layoutHome();
     renderProfileBar();
     renderClock();

@@ -241,6 +241,9 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     val full: (androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope) -> GridItemSpan =
         { GridItemSpan(it.maxLineSpan) }
 
+    // 上の端で下に引っぱると、機器の状態・電気・予定などを読み直す
+    val refreshing by vm.refreshing.collectAsState()
+    androidx.compose.material3.pulltorefresh.PullToRefreshBox(isRefreshing = refreshing, onRefresh = { vm.refreshAll() }, modifier = Modifier.fillMaxSize()) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(if (compact) 150.dp else 140.dp),
         contentPadding = PaddingValues(if (compact) 8.dp else 12.dp),
@@ -341,6 +344,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 }
             }
         }
+    }
     }
 
     if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })

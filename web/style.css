@@ -325,3 +325,8 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .msel select { font: inherit; font-size: 15px; color: inherit; background: var(--surface); border: 1px solid var(--outline); border-radius: 18px; padding: 6px 10px; }
 .tile.on .msel select { background: transparent; }
 .roomh .rclim { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 12px; }
+
+/* ---- 引っぱって読み直す ---- */
+.ptr { height: 0; overflow: hidden; display: flex; align-items: flex-end; justify-content: center; font-size: 14px; color: var(--muted); transition: height .15s; }
+.ptr.busy { height: 40px !important; }
+.chart.hot { max-width: 720px; }

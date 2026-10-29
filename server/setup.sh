@@ -46,6 +46,11 @@ if ! cmp -s "\$TMP/new/version.json" "$WEB/version.json"; then
   chmod -R a+rX "$WEB"
   echo "更新しました: \$(cat "$WEB/version.json")"
 fi
+# 電気料金の単価表（電力会社・プラン）も新しくする
+mkdir -p /usr/local/share/homepanel
+if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/tariffs.json" -o "\$TMP/tariffs.json" && jq -e .providers "\$TMP/tariffs.json" >/dev/null; then
+  cmp -s "\$TMP/tariffs.json" /usr/local/share/homepanel/tariffs.json || install -m 644 "\$TMP/tariffs.json" /usr/local/share/homepanel/tariffs.json
+fi
 # TimeTree の取り込みの道具も新しくする（1日1回。TimeTree 側の変更に追いつくため）
 if [ -x /opt/timetree/bin/pip ] && [ -z "\$(find /opt/timetree/.updated -mtime -1 2>/dev/null)" ]; then
   /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null 2>&1 && touch /opt/timetree/.updated || true
@@ -179,6 +184,8 @@ WantedBy=multi-user.target
 UNITEOF
 
 echo "== おひさま沸き上げ（エコキュート）のサービスを用意しています"
+mkdir -p /usr/local/share/homepanel
+curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/tariffs.json" -o /usr/local/share/homepanel/tariffs.json && chmod 644 /usr/local/share/homepanel/tariffs.json || echo "注意：電気料金の単価表を取れませんでした"
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o /usr/local/bin/homepanel-solar
 chmod 755 /usr/local/bin/homepanel-solar
 cat > /etc/systemd/system/homepanel-solar.service <<'UNITEOF'

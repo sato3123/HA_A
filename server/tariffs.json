@@ -1,0 +1,227 @@
+{
+  "updated": "2026-10-29",
+  "note": "単価は税込（円）。燃料費調整額は含まない（画面で入力）。再エネ賦課金・国の補助はここで自動で計算する。各社の公式の料金表で確認したうえで使ってください。",
+  "surcharge": [
+    {"from": "2025-05", "yen": 3.98},
+    {"from": "2026-05", "yen": 4.18}
+  ],
+  "subsidy": [
+    {"month": "2026-01", "yen": 4.5},
+    {"month": "2026-02", "yen": 4.5},
+    {"month": "2026-03", "yen": 1.5},
+    {"month": "2026-07", "yen": 3.5},
+    {"month": "2026-08", "yen": 4.5},
+    {"month": "2026-09", "yen": 3.5}
+  ],
+  "holidays": [
+    "2026-01-01", "2026-01-12", "2026-02-11", "2026-02-23", "2026-03-20", "2026-04-29", "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06",
+    "2026-07-20", "2026-08-11", "2026-09-21", "2026-09-22", "2026-09-23", "2026-10-12", "2026-11-03", "2026-11-23",
+    "2027-01-01", "2027-01-11", "2027-02-11", "2027-02-23", "2027-03-21", "2027-03-22", "2027-04-29", "2027-05-03", "2027-05-04", "2027-05-05",
+    "2027-07-19", "2027-08-11", "2027-09-20", "2027-09-23", "2027-10-11", "2027-11-03", "2027-11-23"
+  ],
+  "providers": [
+    {
+      "id": "tepco", "name": "東京電力エナジーパートナー",
+      "plans": [
+        {"id": "tepco_juryo_b", "name": "従量電灯B", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_10a", "yen": 311.75},
+            "energy": {"type": "tier", "tiers": [[120, 29.80], [300, 36.40], [null, 40.49]]}},
+           {"from": "2026-11-01", "basic": {"type": "per_10a", "yen": 392.06},
+            "energy": {"type": "tier", "tiers": [[120, 29.85], [300, 36.45], [null, 40.54]]}}
+         ]},
+        {"id": "tepco_standard_s", "name": "スタンダードS", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_10a", "yen": 311.75},
+            "energy": {"type": "tier", "tiers": [[120, 29.80], [300, 36.40], [null, 40.49]]}}
+         ]},
+        {"id": "tepco_standard_l", "name": "スタンダードL", "contract": "kva", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_kva", "yen": 311.75},
+            "energy": {"type": "tier", "tiers": [[120, 29.80], [300, 36.40], [null, 40.49]]}}
+         ]},
+        {"id": "tepco_smartlife_s", "name": "スマートライフS", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_10a", "yen": 311.75},
+            "energy": {"type": "tou", "bands": [
+              {"name": "夜間（1〜6時）", "rate": 27.86, "when": [{"days": "all", "hours": [1, 2, 3, 4, 5]}]},
+              {"name": "昼間（6〜翌1時）", "rate": 35.76}
+            ]}}
+         ]},
+        {"id": "tepco_smartlife_l", "name": "スマートライフL", "contract": "kva", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_kva", "yen": 311.75},
+            "energy": {"type": "tou", "bands": [
+              {"name": "夜間（1〜6時）", "rate": 27.86, "when": [{"days": "all", "hours": [1, 2, 3, 4, 5]}]},
+              {"name": "昼間（6〜翌1時）", "rate": 35.76}
+            ]}}
+         ]},
+        {"id": "tepco_yorutoku8", "name": "夜トク8", "contract": "kw", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_kw", "yen": 255.69},
+            "energy": {"type": "tou", "bands": [
+              {"name": "夜間（23〜7時）", "rate": 31.64, "when": [{"days": "all", "hours": [23, 0, 1, 2, 3, 4, 5, 6]}]},
+              {"name": "昼間（7〜23時）", "rate": 42.60}
+            ]}}
+         ]},
+        {"id": "tepco_yorutoku12", "name": "夜トク12", "contract": "kw", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2023-06-01", "basic": {"type": "per_kw", "yen": 255.69},
+            "energy": {"type": "tou", "bands": [
+              {"name": "夜間（21〜9時）", "rate": 33.33, "when": [{"days": "all", "hours": [21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]}]},
+              {"name": "昼間（9〜21時）", "rate": 44.16}
+            ]}}
+         ]}
+      ]
+    },
+    {
+      "id": "kepco", "name": "関西電力",
+      "plans": [
+        {"id": "kepco_juryo_a", "name": "従量電灯A", "contract": "none", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "minimum", "yen": 763.81, "kwh": 15},
+            "energy": {"type": "tier", "tiers": [[120, 20.89], [300, 26.29], [null, 29.27]]}}
+         ]},
+        {"id": "kepco_hapie_r", "name": "はぴｅタイムR", "contract": "kw", "checked": "2026-10-29",
+         "holiday": {"sat": true, "sun": true, "national": true, "extra": ["01-02", "01-03", "04-30", "05-01", "05-02", "12-30", "12-31"]},
+         "seasons": {"summer": [7, 8, 9]},
+         "versions": [
+           {"from": "2026-08-01", "basic": {"type": "kw_table", "table": [[10, 2409.40]], "over_from": 10, "per_kw_over": 416.94},
+            "energy": {"type": "tou", "bands": [
+              {"name": "ナイトタイム（23〜7時）", "rate": 15.37, "when": [{"days": "all", "hours": [23, 0, 1, 2, 3, 4, 5, 6]}]},
+              {"name": "デイタイム（平日10〜17時）", "rate": {"summer": 28.87, "other": 26.24}, "when": [{"days": "weekday", "hours": [10, 11, 12, 13, 14, 15, 16]}]},
+              {"name": "リビングタイム", "rate": 22.80}
+            ]}}
+         ]}
+      ]
+    },
+    {
+      "id": "chubu", "name": "中部電力ミライズ",
+      "plans": [
+        {"id": "chubu_juryo_b", "name": "従量電灯B", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "per_10a", "yen": 447.92},
+            "energy": {"type": "tier", "tiers": [[120, 21.25], [300, 25.73], [null, 28.68]]}}
+         ]},
+        {"id": "chubu_smartlife", "name": "スマートライフプラン", "contract": "kva", "checked": "2026-10-29",
+         "holiday": {"sat": true, "sun": true, "national": true, "extra": []},
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "kw_table", "table": [[10, 3106.24]], "over_from": 10, "per_kw_over": 321.14},
+            "energy": {"type": "tou", "bands": [
+              {"name": "ナイトタイム（22〜8時）", "rate": 16.58, "when": [{"days": "all", "hours": [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]}]},
+              {"name": "デイタイム（平日10〜17時）", "rate": 38.86, "when": [{"days": "weekday", "hours": [10, 11, 12, 13, 14, 15, 16]}]},
+              {"name": "@ホームタイム", "rate": 28.67}
+            ]}},
+           {"from": "2027-04-01", "basic": {"type": "kw_table", "table": [[10, 3106.24]], "over_from": 10, "per_kw_over": 321.14},
+            "energy": {"type": "tou", "bands": [
+              {"name": "ナイトタイム（22〜8時）", "rate": 19.46, "when": [{"days": "all", "hours": [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]}]},
+              {"name": "デイタイム（平日10〜17時）", "rate": 31.98, "when": [{"days": "weekday", "hours": [10, 11, 12, 13, 14, 15, 16]}]},
+              {"name": "@ホームタイム", "rate": 28.82}
+            ]}}
+         ]}
+      ]
+    },
+    {
+      "id": "kyuden", "name": "九州電力",
+      "plans": [
+        {"id": "kyuden_juryo_b", "name": "従量電灯B", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "per_10a", "yen": 441.69},
+            "energy": {"type": "tier", "tiers": [[120, 18.33], [300, 23.93], [null, 26.93]]}}
+         ]},
+        {"id": "kyuden_denka_night_22", "name": "電化でナイト・セレクト（夜間22〜8時）", "contract": "kw", "checked": "2026-10-29",
+         "holiday": {"sat": true, "sun": true, "national": true, "extra": ["01-02", "01-03", "04-30", "05-01", "05-02", "12-30", "12-31"]},
+         "seasons": {"springautumn": [3, 4, 5, 6, 10, 11]},
+         "versions": [
+           {"from": "2026-08-01", "basic": {"type": "kw_table", "table": [[10, 1888.80], [15, 4758.20]], "over_from": 15, "per_kw_over": 573.88},
+            "energy": {"type": "tou", "bands": [
+              {"name": "ナイトタイム（22〜8時）", "rate": 14.59, "when": [{"days": "all", "hours": [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]}]},
+              {"name": "休日の昼間", "rate": {"springautumn": 18.61, "other": 22.01}, "when": [{"days": "holiday", "hours": "rest"}]},
+              {"name": "平日の昼間", "rate": {"springautumn": 24.74, "other": 27.63}}
+            ]}}
+         ]},
+        {"id": "kyuden_denka_night_21", "name": "電化でナイト・セレクト（夜間21〜7時）", "contract": "kw", "checked": "2026-10-29",
+         "holiday": {"sat": true, "sun": true, "national": true, "extra": ["01-02", "01-03", "04-30", "05-01", "05-02", "12-30", "12-31"]},
+         "seasons": {"springautumn": [3, 4, 5, 6, 10, 11]},
+         "versions": [
+           {"from": "2026-08-01", "basic": {"type": "kw_table", "table": [[10, 1888.80], [15, 4758.20]], "over_from": 15, "per_kw_over": 573.88},
+            "energy": {"type": "tou", "bands": [
+              {"name": "ナイトタイム（21〜7時）", "rate": 14.59, "when": [{"days": "all", "hours": [21, 22, 23, 0, 1, 2, 3, 4, 5, 6]}]},
+              {"name": "休日の昼間", "rate": {"springautumn": 18.61, "other": 22.01}, "when": [{"days": "holiday", "hours": "rest"}]},
+              {"name": "平日の昼間", "rate": {"springautumn": 24.74, "other": 27.63}}
+            ]}}
+         ]},
+        {"id": "kyuden_denka_night_23", "name": "電化でナイト・セレクト（夜間23〜9時）", "contract": "kw", "checked": "2026-10-29",
+         "holiday": {"sat": true, "sun": true, "national": true, "extra": ["01-02", "01-03", "04-30", "05-01", "05-02", "12-30", "12-31"]},
+         "seasons": {"springautumn": [3, 4, 5, 6, 10, 11]},
+         "versions": [
+           {"from": "2026-08-01", "basic": {"type": "kw_table", "table": [[10, 1888.80], [15, 4758.20]], "over_from": 15, "per_kw_over": 573.88},
+            "energy": {"type": "tou", "bands": [
+              {"name": "ナイトタイム（23〜9時）", "rate": 14.59, "when": [{"days": "all", "hours": [23, 0, 1, 2, 3, 4, 5, 6, 7, 8]}]},
+              {"name": "休日の昼間", "rate": {"springautumn": 18.61, "other": 22.01}, "when": [{"days": "holiday", "hours": "rest"}]},
+              {"name": "平日の昼間", "rate": {"springautumn": 24.74, "other": 27.63}}
+            ]}}
+         ]}
+      ]
+    },
+    {
+      "id": "hepco", "name": "北海道電力",
+      "plans": [
+        {"id": "hepco_juryo_b", "name": "従量電灯B", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "per_10a", "yen": 572.10},
+            "energy": {"type": "tier", "tiers": [[120, 35.77], [280, 42.06], [null, 45.78]]}}
+         ]},
+        {"id": "hepco_enetoku_smart", "name": "エネとくスマートプラン", "contract": "kw", "checked": "2026-10-29",
+         "holiday": {"sat": false, "sun": true, "national": true, "extra": []},
+         "versions": [
+           {"from": "2026-08-01", "basic": {"type": "per_kw", "yen": 486.20},
+            "energy": {"type": "tou", "bands": [
+              {"name": "夜間・休日", "rate": 29.44, "when": [{"days": "all", "hours": [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]}, {"days": "holiday", "hours": "rest"}]},
+              {"name": "昼間（8〜22時）", "rate": 38.22}
+            ]}}
+         ]}
+      ]
+    },
+    {
+      "id": "tohoku", "name": "東北電力",
+      "plans": [
+        {"id": "tohoku_juryo_b", "name": "従量電灯B", "contract": "ampere", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "per_10a", "yen": 410.71},
+            "energy": {"type": "tier", "tiers": [[120, 31.01], [300, 37.76], [null, 41.71]]}}
+         ]}
+      ]
+    },
+    {
+      "id": "chugoku", "name": "中国電力",
+      "plans": [
+        {"id": "chugoku_juryo_a", "name": "従量電灯A", "contract": "none", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "minimum", "yen": 983.37, "kwh": 15},
+            "energy": {"type": "tier", "tiers": [[120, 33.32], [300, 40.00], [null, 42.12]]}}
+         ]}
+      ]
+    },
+    {
+      "id": "yonden", "name": "四国電力",
+      "plans": [
+        {"id": "yonden_juryo_a", "name": "従量電灯A", "contract": "none", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "minimum", "yen": 953.13, "kwh": 11},
+            "energy": {"type": "tier", "tiers": [[120, 31.42], [300, 38.04], [null, 41.55]]}}
+         ]}
+      ]
+    },
+    {
+      "id": "okiden", "name": "沖縄電力",
+      "plans": [
+        {"id": "okiden_juryo", "name": "従量電灯", "contract": "none", "checked": "2026-10-29",
+         "versions": [
+           {"from": "2026-11-01", "basic": {"type": "minimum", "yen": 767.82, "kwh": 10},
+            "energy": {"type": "tier", "tiers": [[120, 42.06], [300, 47.60], [null, 49.58]]}}
+         ]}
+      ]
+    }
+  ]
+}

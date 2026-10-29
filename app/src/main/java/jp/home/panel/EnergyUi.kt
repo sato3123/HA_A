@@ -52,6 +52,17 @@ fun EnergyStrip(vm: MainViewModel, onOpen: () -> Unit) {
             live.batteryPct?.let { Stat("蓄電池", "$it%") }
         }
     }
+    val cost by vm.serverCost.collectAsState()
+    cost?.let { c ->
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(horizontal = 4.dp).clickable { onOpen() }) {
+            Text("💴 電気代", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Stat("今日", yenText(c, "today_yen"))
+            Stat("今月", yenText(c, "month_yen"))
+            Stat("見込み", yenText(c, "month_estimate_yen"))
+            if (!c.isNull("rate_now") && c.has("rate_now")) Stat("いまの単価", "${c.optDouble("rate_now")}円/kWh")
+            if (c.optLong("today_sell_yen") > 0) Stat("売電", yenText(c, "today_sell_yen"))
+        }
+    }
     if (report == null) {
         status?.let { Text("⚡ $it", style = MaterialTheme.typography.bodySmall) }
         return@Column
@@ -77,6 +88,8 @@ fun EnergyStrip(vm: MainViewModel, onOpen: () -> Unit) {
     }
     }
 }
+
+private fun yenText(c: org.json.JSONObject, k: String) = if (!c.has(k) || c.isNull(k)) "－" else String.format("%,d円", c.optLong(k))
 
 @Composable
 private fun Stat(label: String, value: String) {

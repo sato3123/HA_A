@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.drawText
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -87,7 +88,8 @@ fun EcoCuteCard(vm: MainViewModel) {
                     if (!p.ok) TextButton(onClick = { vm.retrySolarPlan() }) { Text("もう一度設定") }
                 }
             }
-            if (enabled && s.history.size >= 2) SurplusChart(s.history, Modifier.fillMaxWidth())
+            val hot by vm.hotHistory.collectAsState()
+            if (hot.size >= 2) HotWaterChart(hot, s.tankL, Modifier.fillMaxWidth())
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
@@ -220,6 +222,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 if (aisegSaved.isNotBlank()) OutlinedButton(onClick = { vm.testAiseg() }) { Text("読めるか試す") }
             }
             aisegMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            AisegCircuitCheck(vm)
             view?.serverError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
         if (!elOn && where != "server") {
@@ -479,4 +482,109 @@ fun HotWaterDaily(vm: MainViewModel, tankL: Int?) {
             "（濃い線＝使った量、薄い線＝沸かした量。日の切り替わりは日本時間の0時です）",
         style = MaterialTheme.typography.bodySmall,
     )
+}
+
+/** AiSEG2 の回路の一覧を確かめる（回路別の記録に出てこない機器を調べる） */
+@Composable
+private fun AisegCircuitCheck(vm: MainViewModel) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var res by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    OutlinedButton(onClick = {
+        msg = "AiSEG2 の回路を読んでいます…"; res = null
+        scope.launch {
+            try { res = vm.aisegCircuits(); msg = null } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { msg = "読めませんでした：${e.message}" }
+        }
+    }) { Text("AiSEG2 の回路の一覧を確かめる") }
+    msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    res?.let { r ->
+        if (!r.optBoolean("ok")) Text("✕ " + r.optString("error"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        val pages = r.optJSONArray("pages")
+        var n = 0
+        for (i in 0 until (pages?.length() ?: 0)) {
+            val rows = pages!!.optJSONObject(i)?.optJSONArray("rows") ?: continue
+            for (j in 0 until rows.length()) {
+                val row = rows.optJSONObject(j) ?: continue
+                n++
+                Text("・${row.optString("name").ifBlank { "（名前なし）" }}　${row.optString("value")}", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Text("AiSEG2 の回路：${n}個" + (if (!r.isNull("eco_direct") && r.has("eco_direct")) "・エコキュートから直接 ${r.optDouble("eco_direct").toInt()}W を読めます（回路別に「エコキュート（直接）」として記録します）"
+            else "・エコキュートから直接は消費電力を読めませんでした"), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/**
+ * 24時間のお湯：線＝残りのお湯（L）、棒＝1時間ごとに使ったお湯（L）。
+ * 残りのお湯の減り方から計算する（沸き上げで増えた分は使った量に入れない）。
+ */
+@Composable
+private fun HotWaterChart(pts: List<Pair<Long, Int>>, tankL: Int?, modifier: Modifier) {
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    val label = MaterialTheme.colorScheme.onSurfaceVariant
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val style = MaterialTheme.typography.labelSmall.copy(color = label)
+    val line = MaterialTheme.colorScheme.primary
+    val bar = androidx.compose.ui.graphics.Color(0xFF42A5F5)
+    val end = System.currentTimeMillis()
+    val start = end - 24 * 3_600_000L
+    // 1時間ごとの使った量
+    val used = DoubleArray(24)
+    for (i in 1 until pts.size) {
+        val (t0, r0) = pts[i - 1]; val (t1, r1) = pts[i]
+        if (r1 < r0 && t1 >= start) {
+            val idx = ((t1 - start) / 3_600_000L).toInt().coerceIn(0, 23)
+            used[idx] += (r0 - r1).toDouble()
+        }
+    }
+    val todayUse = used.sum()
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("24時間のお湯（この24時間で約${todayUse.toInt()}L 使用）", style = MaterialTheme.typography.labelMedium)
+            Text("━ 残り", style = MaterialTheme.typography.labelSmall, color = line)
+            Text("■ 使った量（1時間ごと）", style = MaterialTheme.typography.labelSmall, color = bar)
+        }
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(110.dp)) {
+            val left = 44.dp.toPx(); val bottom = size.height - 16.dp.toPx(); val top = 4.dp.toPx()
+            val maxL = (tankL ?: pts.maxOf { it.second }).coerceAtLeast(1).toFloat()
+            val maxUse = used.maxOrNull()?.coerceAtLeast(10.0) ?: 10.0
+            fun x(t: Long) = left + (size.width - left) * ((t - start).toFloat() / (end - start)).coerceIn(0f, 1f)
+            fun y(l: Float) = bottom - (l / maxL) * (bottom - top)
+            listOf(maxL, maxL / 2, 0f).forEach { v ->
+                drawLine(grid, androidx.compose.ui.geometry.Offset(left, y(v)), androidx.compose.ui.geometry.Offset(size.width, y(v)), 1f)
+                val tl = measurer.measure("${v.toInt()}L", style)
+                drawText(tl, topLeft = androidx.compose.ui.geometry.Offset(0f, y(v) - tl.size.height / 2))
+            }
+            val bw = (size.width - left) / 24
+            used.forEachIndexed { i, u ->
+                if (u <= 0) return@forEachIndexed
+                val h = (u / maxUse).toFloat() * (bottom - top) * 0.6f
+                drawRect(bar.copy(alpha = 0.6f), androidx.compose.ui.geometry.Offset(left + i * bw + bw * 0.15f, bottom - h), androidx.compose.ui.geometry.Size(bw * 0.7f, h))
+            }
+            // 時刻の目安（6時間ごと）
+            val zone = java.time.ZoneId.systemDefault()
+            var tick = java.time.Instant.ofEpochMilli(start).atZone(zone).withMinute(0).withSecond(0).withNano(0).plusHours(1)
+            while (tick.hour % 6 != 0) tick = tick.plusHours(1)
+            while (tick.toInstant().toEpochMilli() < end) {
+                val xx = x(tick.toInstant().toEpochMilli())
+                val tl = measurer.measure("${tick.hour}時", style)
+                drawText(tl, topLeft = androidx.compose.ui.geometry.Offset((xx - tl.size.width / 2).coerceIn(left, size.width - tl.size.width), bottom + 2))
+                tick = tick.plusHours(6)
+            }
+            val path = androidx.compose.ui.graphics.Path()
+            pts.filter { it.first >= start - 600_000L }.forEachIndexed { i, (t, r) ->
+                if (i == 0) path.moveTo(x(t), y(r.toFloat())) else path.lineTo(x(t), y(r.toFloat()))
+            }
+            drawPath(path, line, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+        }
+        // 大きく使った時刻
+        val big = used.indices.filter { used[it] >= 30 }.sortedByDescending { used[it] }.take(3)
+        if (big.isNotEmpty()) {
+            val zone = java.time.ZoneId.systemDefault()
+            Text("たくさん使った時間：" + big.joinToString("、") { i ->
+                val h = java.time.Instant.ofEpochMilli(start + i * 3_600_000L).atZone(zone).hour
+                "${h}時台 約${used[i].toInt()}L"
+            }, style = MaterialTheme.typography.bodySmall)
+        }
+    }
 }

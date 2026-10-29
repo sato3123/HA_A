@@ -145,6 +145,9 @@ class HaClient(private val baseUrl: String, private val http: OkHttpClient) {
 
     fun sendBinary(bytes: ByteArray): Boolean = ws?.send(bytes.toByteString()) ?: false
 
+    /** 全部の機器の状態を読み直す（画面の更新用） */
+    suspend fun reloadStates() = loadStates()
+
     private suspend fun loadStates() {
         val arr = request(JSONObject().put("type", "get_states")).getJSONArray("result")
         val map = HashMap<String, Entity>()

@@ -48,9 +48,10 @@ data class EnergyHour(
     val key: String, // "2026-10-27T14"
     val use: Double, val gen: Double, val buy: Double, val sell: Double,
     val circuits: Map<String, Double>,
+    val yen: Double? = null, val sellYen: Double? = null, val rate: Double? = null, val band: String? = null,
 ) {
     val date: String get() = key.take(10)
-    val hour: Int get() = key.takeLast(2).toIntOrNull() ?: 0
+    val hour: Int get() = key.substring(11, 13).toIntOrNull() ?: 0
 }
 
 private val USE = Color(0xFFFFB74D)
@@ -99,7 +100,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         FilterChip(selected = period == k, onClick = { period = k; circuit = null }, label = { Text(l) }, colors = chip)
                     }
                     Text("　")
-                    listOf("hour" to "時間別", "day" to "日ごと（天気・気温）", "circuit" to "回路別", "compare" to "回路の比較").forEach { (k, l) ->
+                    listOf("hour" to "時間別", "five" to "5分ごと（回路別）", "day" to "日ごと（天気・気温）", "circuit" to "回路別", "compare" to "回路の比較").forEach { (k, l) ->
                         FilterChip(selected = tab == k, onClick = { tab = k }, label = { Text(l) }, colors = chip)
                     }
                 }
@@ -116,6 +117,18 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         Total("売った電気", kwhOf(sum { it.sell }), SELL)
                         val use = sum { it.use }
                         if (use > 0) Total("自給率", String.format("%.0f%%", ((1 - sum { it.buy } / use) * 100).coerceIn(0.0, 100.0)), GEN)
+                        if (hours.any { it.yen != null }) Total("電気代（買った電気）", String.format("%,.0f円", hours.sumOf { it.yen ?: 0.0 }), BUY)
+                        if (hours.any { (it.sellYen ?: 0.0) > 0 }) Total("売電", String.format("%,.0f円", hours.sumOf { it.sellYen ?: 0.0 }), SELL)
+                    }
+                    val cost by vm.energyCost.collectAsState()
+                    if (cost == null) Text("※ 電気代を出すには、⚙ 設定 →「電気料金」で電力会社とプランを選んでください。", style = MaterialTheme.typography.labelSmall)
+                    else cost?.optJSONObject("months")?.let { ms ->
+                        ms.keys().asSequence().sorted().toList().takeLast(2).forEach { k ->
+                            val m = ms.optJSONObject(k) ?: return@forEach
+                            Text("${k.substring(5).trimStart('0')}月：電気代 ${String.format("%,d", m.optLong("total_yen"))}円（使用 ${String.format("%,.0f", m.optDouble("energy_yen"))}円＋基本料金 ${String.format("%,d", m.optLong("basic_yen"))}円・買った電気 ${String.format("%.1f", m.optDouble("kwh"))}kWh）" +
+                                (if (m.optDouble("sell_yen") > 0) "・売電 ${String.format("%,.0f", m.optDouble("sell_yen"))}円" else "") + "　${cost?.optString("plan")}",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                     }
 
                     if (tab == "hour") {
@@ -126,10 +139,17 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         Text(if (oneDay) "時間ごとの電気" else "日ごとの電気", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                         Legend()
                         FlowChart(slots.map { (l, list) -> Slot(l, list.sumOf { it.use }, list.sumOf { it.gen }, list.sumOf { it.buy }, list.sumOf { it.sell }) })
+                        if (oneDay && hours.any { it.yen != null }) {
+                            val costly = slots.filter { it.second.isNotEmpty() }.sortedByDescending { it.second.sumOf { h -> h.yen ?: 0.0 } }.take(3)
+                            Text("電気代が多かった時間：" + costly.joinToString("、") { (l, list) -> "$l ${String.format("%,.0f", list.sumOf { it.yen ?: 0.0 })}円（${list.firstOrNull()?.rate?.let { r -> "${r}円/kWh" } ?: ""}）" },
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                         val peak = slots.maxByOrNull { it.second.sumOf { h -> h.use } }
                         peak?.takeIf { it.second.isNotEmpty() }?.let {
                             Text("いちばん多く使ったのは ${it.first}（${kwhOf(it.second.sumOf { h -> h.use })}）", style = MaterialTheme.typography.bodySmall)
                         }
+                    } else if (tab == "five") {
+                        FiveMinuteView(vm)
                     } else if (tab == "day") {
                         DailyWeatherTable(if (oneDay) (0..6).map { today.minusDays(it.toLong()).toString() } else dayList, data ?: emptyList(), daily)
                     } else if (tab == "compare") {
@@ -318,7 +338,8 @@ private fun DailyWeatherTable(days: List<String>, data: List<EnergyHour>, daily:
                 val use = h.sumOf { it.use }
                 Box(Modifier.padding(vertical = 3.dp).fillMaxWidth((use / maxUse).toFloat().coerceIn(0.01f, 1f)).height(8.dp).background(USE, RoundedCornerShape(4.dp)))
                 Text(
-                    "使った ${kwhOf(use)}・発電 ${kwhOf(h.sumOf { it.gen })}・買った ${kwhOf(h.sumOf { it.buy })}・売った ${kwhOf(h.sumOf { it.sell })}",
+                    "使った ${kwhOf(use)}・発電 ${kwhOf(h.sumOf { it.gen })}・買った ${kwhOf(h.sumOf { it.buy })}・売った ${kwhOf(h.sumOf { it.sell })}" +
+                        (if (h.any { it.yen != null }) "・電気代 ${String.format("%,.0f", h.sumOf { it.yen ?: 0.0 })}円" else ""),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -331,7 +352,7 @@ private fun fmt1(v: Double) = String.format("%.1f", v)
 
 /** 回路の比較：選んだ回路ごとの折れ線 */
 @Composable
-private fun CompareChart(labels: List<String>, series: List<List<Double>>) {
+private fun CompareChart(labels: List<String>, series: List<List<Double>>, unit: (Double) -> String = { String.format("%.1f", it / 1000) + "kWh" }) {
     val measurer = rememberTextMeasurer()
     val style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
     val grid = MaterialTheme.colorScheme.outlineVariant
@@ -344,10 +365,10 @@ private fun CompareChart(labels: List<String>, series: List<List<Double>>) {
         for (i in 0..2) {
             val v = max * i / 2
             drawLine(grid, Offset(left, y(v)), Offset(size.width, y(v)), 1f)
-            val tl = measurer.measure(String.format("%.1f", v / 1000) + "kWh", style)
+            val tl = measurer.measure(unit(v), style)
             drawText(tl, topLeft = Offset(0f, y(v) - tl.size.height / 2))
         }
-        val every = when { n > 20 -> 6; n > 10 -> 3; else -> 1 }
+        val every = when { n > 200 -> 36; n > 100 -> 12; n > 20 -> 6; n > 10 -> 3; else -> 1 }
         labels.forEachIndexed { i, l ->
             if (i % every == 0) {
                 val tl = measurer.measure(l, style)
@@ -358,9 +379,85 @@ private fun CompareChart(labels: List<String>, series: List<List<Double>>) {
             val c = COMPARE[si % COMPARE.size]
             v.forEachIndexed { i, value ->
                 val x = left + i * w + w / 2
-                drawCircle(c, radius = 2.5.dp.toPx(), center = Offset(x, y(value)))
-                if (i > 0) drawLine(c, Offset(x - w, y(v[i - 1])), Offset(x, y(value)), 2.dp.toPx())
+                if (n <= 60) drawCircle(c, radius = 2.5.dp.toPx(), center = Offset(x, y(value)))
+                if (i > 0) drawLine(c, Offset(x - w, y(v[i - 1])), Offset(x, y(value)), if (n > 60) 1.5.dp.toPx() else 2.dp.toPx())
             }
         }
+    }
+}
+
+/** 5分ごとの電気（その日）。回路を選んで重ねて見る。値は5分間の平均の電力（W） */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun FiveMinuteView(vm: MainViewModel) {
+    val today = LocalDate.now()
+    var day by remember { mutableStateOf(today) }
+    var data by remember { mutableStateOf<List<EnergyHour>?>(null) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var picked by remember { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(day) {
+        data = null; err = null
+        try { data = vm.energy5(day.toString()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { err = e.message }
+    }
+    val chip = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = MaterialTheme.colorScheme.primary,
+        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+    )
+    Text("5分ごとの電気（5分間の平均の電力）", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        (0..6).forEach { i ->
+            val d = today.minusDays(i.toLong())
+            FilterChip(selected = day == d, onClick = { day = d },
+                label = { Text(when (i) { 0 -> "今日"; 1 -> "昨日"; else -> "${d.monthValue}/${d.dayOfMonth}" }) }, colors = chip)
+        }
+    }
+    err?.let { Text("読めませんでした：$it", style = MaterialTheme.typography.bodySmall) }
+    val list = data
+    if (list == null && err == null) Text("読んでいます…", style = MaterialTheme.typography.bodySmall)
+    if (list == null) return
+    if (list.isEmpty()) {
+        Text("この日の5分ごとの記録はまだありません（記録は8日分です。サーバーを新しい版にした時点からたまります）。", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val HOUSE = "家全体（使った電気）"
+    val totals = HashMap<String, Double>()
+    list.forEach { h -> h.circuits.forEach { (n, v) -> totals[n] = (totals[n] ?: 0.0) + v } }
+    val names = listOf(HOUSE) + totals.entries.sortedByDescending { it.value }.map { it.key }
+    val sel = (picked ?: (listOf(HOUSE) + names.drop(1).take(2)).toSet()).filter { it in names }
+    Text("見る回路（最大6つ）", style = MaterialTheme.typography.labelLarge)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        names.forEach { n ->
+            val i = sel.indexOf(n)
+            FilterChip(
+                selected = i >= 0,
+                onClick = {
+                    val cur = sel.toMutableSet()
+                    if (n in cur) cur.remove(n) else if (cur.size < 6) cur.add(n)
+                    picked = cur
+                },
+                label = { Text((if (i >= 0) "● " else "") + n, color = if (i >= 0) COMPARE[i % COMPARE.size] else Color.Unspecified) },
+            )
+        }
+    }
+    // 0:00〜23:55 の 288 コマ
+    val byKey = list.associateBy { it.key.substring(11, 16) }
+    val keys = (0 until 288).map { String.format("%d:%02d", it / 12, it % 12 * 5) }
+    val padKeys = (0 until 288).map { String.format("%02d:%02d", it / 12, it % 12 * 5) }
+    val last = if (day == today) (java.time.LocalTime.now().let { it.hour * 12 + it.minute / 5 }) else 287
+    val series = sel.map { n ->
+        padKeys.take(last + 1).map { k ->
+            val h = byKey[k]
+            val wh = if (h == null) 0.0 else if (n == HOUSE) h.use else h.circuits[n] ?: 0.0
+            wh * 12 // 5分間の Wh → 平均の W
+        }
+    }
+    CompareChart(keys.take(last + 1), series) { v -> if (v >= 1000) String.format("%.1fkW", v / 1000) else String.format("%.0fW", v) }
+    series.forEachIndexed { i, v ->
+        val peak = v.indices.maxByOrNull { v[it] }
+        val kwh = v.sum() / 12 / 1000
+        Text(
+            "● ${sel[i]}　${String.format("%.2f", kwh)}kWh" + (peak?.takeIf { v[it] > 0 }?.let { "・いちばん多いのは ${keys[it]}ごろ（${String.format("%.0f", v[it])}W）" } ?: ""),
+            color = COMPARE[i % COMPARE.size], style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
