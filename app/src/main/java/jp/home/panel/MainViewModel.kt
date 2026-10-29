@@ -2607,6 +2607,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val serverCost = MutableStateFlow<JSONObject?>(null)
     /** 残りのお湯の変化（時刻, L）。24時間分 */
     val hotHistory = MutableStateFlow<List<Pair<Long, Int>>>(emptyList())
+    /** AiSEG2 の「湯」の画面の、1時間ごとのお湯の使用量（L）：昨日・今日（0〜23時） */
+    val hotHourly = MutableStateFlow<Pair<List<Double>, List<Double>>?>(null)
 
     /** 電力会社・プランの一覧と、いまのプランの単価（GET /solar-api/tariffs） */
     suspend fun tariffList(): JSONObject = serverCall("/tariffs", null)
@@ -2724,6 +2726,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         nightPending.value = j.optBoolean("night_pending")
         j.optJSONObject("daily")?.let { d -> serverDaily.value = d.keys().asSequence().sorted().map { it to (d.optJSONObject(it) ?: JSONObject()) }.toList() }
         serverCost.value = j.optJSONObject("cost")
+        hotHourly.value = j.optJSONObject("hot_hourly")?.let { h ->
+            fun arr(k: String) = h.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } } ?: emptyList()
+            arr("yesterday") to arr("today")
+        }
         j.optJSONArray("hot_history")?.let { a ->
             hotHistory.value = (0 until a.length()).mapNotNull { a.optJSONArray(it) }.map { (it.optLong(0) * 1000) to it.optInt(1) }
         }

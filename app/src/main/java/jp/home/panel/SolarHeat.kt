@@ -89,7 +89,8 @@ fun EcoCuteCard(vm: MainViewModel) {
                 }
             }
             val hot by vm.hotHistory.collectAsState()
-            if (hot.size >= 2) HotWaterChart(hot, s.tankL, Modifier.fillMaxWidth())
+            val hourly by vm.hotHourly.collectAsState()
+            if (hot.size >= 2 || hourly != null) HotWaterChart(hot, s.tankL, Modifier.fillMaxWidth(), hourly)
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
@@ -519,7 +520,7 @@ private fun AisegCircuitCheck(vm: MainViewModel) {
  * 残りのお湯の減り方から計算する（沸き上げで増えた分は使った量に入れない）。
  */
 @Composable
-private fun HotWaterChart(pts: List<Pair<Long, Int>>, tankL: Int?, modifier: Modifier) {
+private fun HotWaterChart(pts: List<Pair<Long, Int>>, tankL: Int?, modifier: Modifier, hourly: Pair<List<Double>, List<Double>>? = null) {
     val grid = MaterialTheme.colorScheme.outlineVariant
     val label = MaterialTheme.colorScheme.onSurfaceVariant
     val measurer = androidx.compose.ui.text.rememberTextMeasurer()
@@ -537,6 +538,16 @@ private fun HotWaterChart(pts: List<Pair<Long, Int>>, tankL: Int?, modifier: Mod
             used[idx] += (r0 - r1).toDouble()
         }
     }
+    // AiSEG2 の「湯」の画面の値があれば、そちらを使う（1時間ごとの実際の使用量）
+    if (hourly != null) {
+        val zone = java.time.ZoneId.systemDefault()
+        val startHour = java.time.Instant.ofEpochMilli(start).atZone(zone)
+        for (i in 0 until 24) {
+            val t = startHour.plusHours(i.toLong())
+            val list = if (t.toLocalDate() == java.time.LocalDate.now()) hourly.second else hourly.first
+            used[i] = list.getOrNull(t.hour) ?: 0.0
+        }
+    }
     val todayUse = used.sum()
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -546,7 +557,7 @@ private fun HotWaterChart(pts: List<Pair<Long, Int>>, tankL: Int?, modifier: Mod
         }
         androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(110.dp)) {
             val left = 44.dp.toPx(); val bottom = size.height - 16.dp.toPx(); val top = 4.dp.toPx()
-            val maxL = (tankL ?: pts.maxOf { it.second }).coerceAtLeast(1).toFloat()
+            val maxL = (tankL ?: pts.maxOfOrNull { it.second } ?: 1).coerceAtLeast(1).toFloat()
             val maxUse = used.maxOrNull()?.coerceAtLeast(10.0) ?: 10.0
             fun x(t: Long) = left + (size.width - left) * ((t - start).toFloat() / (end - start)).coerceIn(0f, 1f)
             fun y(l: Float) = bottom - (l / maxL) * (bottom - top)

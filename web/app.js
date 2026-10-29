@@ -2710,15 +2710,25 @@
       ${c.today_sell_yen > 0 ? `<span>売電 <b>${yenFmt(c.today_sell_yen)}</b></span>` : ""}<span class="note">${esc(c.plan || "")}</span></div>`;
   }
   /** 24時間のお湯：線＝残り、棒＝1時間ごとに使った量 */
-  function hotChartHTML(hist, tank) {
-    if (!hist || hist.length < 2) return "";
+  function hotChartHTML(hist, tank, hourly) {
+    hist = hist || [];
+    if (hist.length < 2 && !hourly) return "";
     const W = 640, H = 120, L = 44, B = 18, end = Date.now(), start = end - 86400000;
     const used = new Array(24).fill(0);
     for (let i = 1; i < hist.length; i++) {
       const [t1, r1] = hist[i], r0 = hist[i - 1][1];
       if (r1 < r0 && t1 * 1000 >= start) used[Math.min(23, Math.floor((t1 * 1000 - start) / 3600000))] += r0 - r1;
     }
-    const maxL = Math.max(1, tank || Math.max(...hist.map((p) => p[1]))), maxU = Math.max(10, ...used);
+    if (hourly) {
+      // AiSEG2 の「湯」の画面の、1時間ごとの実際の使用量を使う
+      const today = new Date().toDateString();
+      for (let i = 0; i < 24; i++) {
+        const t = new Date(start + i * 3600000); t.setMinutes(0, 0, 0);
+        const list = (t.toDateString() === today ? hourly.today : hourly.yesterday) || [];
+        used[i] = Number(list[t.getHours()] || 0);
+      }
+    }
+    const maxL = Math.max(1, tank || Math.max(1, ...hist.map((p) => p[1]))), maxU = Math.max(10, ...used);
     const x = (t) => L + (W - L) * Math.max(0, Math.min(1, (t - start) / (end - start)));
     const y = (l) => H - B - (l / maxL) * (H - B - 4);
     let g = "";
@@ -2746,7 +2756,7 @@
       ${e.remain != null ? `<div>残りのお湯 <b style="font-size:22px">${e.remain}L</b>${e.tank ? ` ／ ${e.tank}L（${pct}%）` : ""}</div>${pct !== null ? `<div class="bar"><div style="height:100%;width:${pct}%;background:var(--primary)"></div></div>` : ""}` : ""}
       <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
       ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.message.startsWith("⚠") ? "" : p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
-      ${hotChartHTML(j.hot_history, e.tank)}
+      ${hotChartHTML(j.hot_history, e.tank, j.hot_hourly)}
       ${nightHeatHTML(j)}
       ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
       <div class="brow">${p && !p.ok ? `<button class="btn" data-set="solarRetry">もう一度設定</button>` : `<button class="tbtn" data-set="solarRetry">設定し直す</button>`}

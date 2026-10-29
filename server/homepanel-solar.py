@@ -524,15 +524,23 @@ def energy_collect():
             src = "スマートメーター"
             use, gen = (max(0.0, -w), 0.0)  # 買電だけ分かる（発電は分からない）
             state["power"] = {"generation_w": None, "consumption_w": None, "net_w": w, "from": src}
-    # エアコンなど、機器から直接読めるもの（AiSEG2 の200Vの回路は値が出ないため）
-    for d in conf.get("power_devices") or []:
+    # いまの電力が出る回路（100V）を覚えておく。出ない回路（200V）は「回路ごとの使用量（日）」の増えた分で記録する
+    nz = [n for n, w in circuits.items() if w > 0]
+    if nz:
+        with lock:
+            names = set(energy.get("inst_names") or [])
+            if not names.issuperset(nz):
+                energy["inst_names"] = sorted(names | set(nz))
+    daily_ok = aiseg_daily["ok"]
+    # エアコンなど、機器から直接読めるもの（AiSEG2 の回路ごとの使用量が読めないときだけ）
+    for d in ([] if daily_ok else conf.get("power_devices") or []):
         w = device_power_w(d)
         if w is not None:
             nm = f'{d.get("name") or d.get("ip")}（直接）'
             circuits[nm] = circuits.get(nm, 0.0) + w
     # エコキュートの電気：AiSEG2 の回路に値が出ないときは、エコキュートから直接読む（ECHONET Lite の 0x84）。
     # それもできない機種は、沸き上げ中の「家全体 − 回路の合計」の増え方から推定する
-    if src == "AiSEG2" and use is not None:
+    if src == "AiSEG2" and use is not None and not daily_ok:
         rest = max(0.0, use - sum(circuits.values()))
         if conf.get("eco_ip"):
             eco_w = sum(w for n, w in circuits.items() if "エコキュート" in n or "給湯" in n)
@@ -586,6 +594,122 @@ def energy_collect():
             del energy["hours"][k]
 
 
+# ---- AiSEG2 の「回路ごとの使用電力量（日）」と「湯」の画面（200V の回路も入っている） ----
+aiseg_daily = {"date": None, "last": {}, "ok": False, "at": 0, "pages": None}
+
+
+def _graph_params(d):
+    t = f"{d.year}/{d.month}/{d.day}"
+    c = f"{d.year},{d.month},{d.day}"
+    return urllib.parse.urlencode({"term": t, "termStr": "day", "day": c, "week": c, "month": c, "year": c})
+
+
+def aiseg_daily_circuits(d=None):
+    """その日の回路ごとの使用電力量（kWh）。582（1ページ目）と 583?id=2… を読む。読めなければ 581（上位5つ＋その他）"""
+    import re
+    d = d or date.today()
+    rx = re.compile(r'<div class="a_label">(.*?)</div>\s*<div class="a_value">([0-9.,０-９．]*)\s*kWh</div>', re.S)
+    zen = str.maketrans("０１２３４５６７８９．，", "0123456789.,")
+
+    def rows(html):
+        out = {}
+        for name, val in rx.findall(html):
+            n = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", name).replace("\u3000", " ")).strip()
+            v = val.translate(zen).replace(",", "")
+            if n and n != "-" and v:
+                out[n] = out.get(n, 0.0) + float(v)
+        return out
+    q = _graph_params(d)
+    full, prev_sig = {}, None
+    paths = [f"/page/graph/582?{q}"] + [f"/page/graph/583?id={i}&{q}" for i in range(2, 12)]
+    for path in paths:
+        try:
+            r = rows(aiseg_open(path))
+        except Exception:
+            break
+        sig = ",".join(r)
+        if not r or sig == prev_sig:
+            break
+        prev_sig = sig
+        full.update(r)
+    if full:
+        return full, "all"
+    r = rows(aiseg_open(f"/page/graph/581?{q}"))
+    r.pop("その他", None)
+    return r, "top5"
+
+
+def aiseg_hot_hourly():
+    """AiSEG2 の「湯」の画面：1時間ごとのお湯の使用量（L）。今日と昨日"""
+    import re
+    h = aiseg_open("/page/graph/55111")
+    m = re.search(r"var graph_data\s*=\s*(\{.*?\});", h, re.S)
+    if not m:
+        return None
+    j = json.loads(m.group(1))
+    return {"today": j.get("total1") or [], "yesterday": j.get("total2") or []}
+
+
+def aiseg_daily_tick():
+    """5分ごと：回路ごとの1日の使用量の増えた分を、いまの時間・5分の記録に入れる（いまの電力が出ない 200V の回路のため）"""
+    if not conf.get("aiseg_url"):
+        return
+    today = date.today()
+    try:
+        cur, kind = aiseg_daily_circuits(today)
+    except Exception as e:
+        aiseg_daily["ok"] = False
+        print("AiSEG2 の回路ごとの使用量を読めませんでした:", e, flush=True)
+        return
+    aiseg_daily.update(ok=bool(cur), at=time.time(), pages=kind)
+    with lock:
+        day = energy.setdefault("days", {}).setdefault(today.isoformat(), {})
+        day["circuits_kwh"] = {k: round(v, 3) for k, v in cur.items()}
+        if aiseg_daily["date"] != today.isoformat():
+            # 日が変わったとき・起動したときは、その時点を起点にする（それまでの分を1つの時間にまとめて入れない）
+            aiseg_daily.update(date=today.isoformat(), last=dict(cur))
+        else:
+            inst = set(energy.get("inst_names") or [])
+            now = datetime.now()
+            hk = now.strftime("%Y-%m-%dT%H")
+            k5 = now.strftime("%Y-%m-%dT%H:") + f"{now.minute // 5 * 5:02d}"
+            h = energy["hours"].setdefault(hk, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+            f = energy5.setdefault(k5, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+            for n, kwh in cur.items():
+                if n in inst:
+                    continue  # いまの電力が読める回路は、そちらで記録している
+                dwh = (kwh - aiseg_daily["last"].get(n, kwh)) * 1000
+                if dwh > 0:
+                    h["circuits"][n] = h["circuits"].get(n, 0.0) + dwh
+                    f["circuits"][n] = f["circuits"].get(n, 0.0) + dwh
+            aiseg_daily["last"] = dict(cur)
+    # 過去7日の回路ごとの使用量も、まだ無ければ1日ずつ読んでおく（電気の分析の「回路別」用）
+    for i in range(1, 8):
+        dk = (today - timedelta(days=i)).isoformat()
+        with lock:
+            have = "circuits_kwh" in energy.setdefault("days", {}).setdefault(dk, {})
+        if not have:
+            try:
+                past, _ = aiseg_daily_circuits(today - timedelta(days=i))
+                with lock:
+                    energy["days"][dk]["circuits_kwh"] = {k: round(v, 3) for k, v in past.items()}
+            except Exception:
+                pass
+            break
+    try:
+        hot = aiseg_hot_hourly()
+        if hot:
+            with lock:
+                state["hot_hourly"] = hot
+                day = energy["days"].setdefault(today.isoformat(), {})
+                day["hot_use_l"] = sum(x or 0 for x in hot["today"])
+                y = (today - timedelta(days=1)).isoformat()
+                energy["days"].setdefault(y, {})["hot_use_l"] = sum(x or 0 for x in hot["yesterday"])
+                state["hot_from_aiseg"] = True
+    except Exception as e:
+        print("AiSEG2 の湯の量を読めませんでした:", e, flush=True)
+
+
 def energy_loop():
     saved = time.time()
     while True:
@@ -593,6 +717,12 @@ def energy_loop():
             energy_collect()
         except Exception as e:
             print("電気の記録でエラー:", e, flush=True)
+        if time.time() - aiseg_daily["at"] > 290:
+            try:
+                aiseg_daily_tick()
+            except Exception as e:
+                aiseg_daily["at"] = time.time()
+                print("回路ごとの使用量でエラー:", e, flush=True)
         if time.time() - saved > 300:
             with lock:
                 save_json(ENERGY_PATH, energy)
@@ -1161,7 +1291,7 @@ def hot_water_track(eco):
     d = date.today().isoformat()
     with lock:
         day = energy.setdefault("days", {}).setdefault(d, {})
-        if r < prev:
+        if r < prev and not state.get("hot_from_aiseg"):
             day["hot_use_l"] = day.get("hot_use_l", 0) + (prev - r)
         elif r > prev:
             day["hot_heat_l"] = day.get("hot_heat_l", 0) + (r - prev)
@@ -1419,7 +1549,8 @@ def public_state():
         c["ha_token_set"] = bool(conf.get("ha_token"))
         hot = [p for p in energy.get("hot", []) if p[0] > time.time() - 86400]
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
-                "hot_history": hot, "cost": cost_summary_safe(),
+                "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(),
+                "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}

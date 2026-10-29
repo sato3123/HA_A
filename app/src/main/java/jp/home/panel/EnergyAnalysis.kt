@@ -154,8 +154,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         DailyWeatherTable(if (oneDay) (0..6).map { today.minusDays(it.toLong()).toString() } else dayList, data ?: emptyList(), daily)
                     } else if (tab == "compare") {
                         // 回路の比較（選んだ回路を同じグラフに重ねる）
-                        val totals = HashMap<String, Double>()
-                        hours.forEach { h -> h.circuits.forEach { (n, v) -> totals[n] = (totals[n] ?: 0.0) + v } }
+                        val totals = circuitTotals(dayList, hours, daily)
                         val names = totals.entries.sortedByDescending { it.value }.map { it.key }
                         val sel = (picked ?: names.take(3).toSet()).filter { it in totals }
                         Text("比べる回路を選んでください（最大6つ）", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -178,7 +177,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                             val labels = if (oneDay) (0..23).map { "${it}時" } else dayList.reversed().map { it.substring(5).replace('-', '/') }
                             val series = sel.map { n ->
                                 n to (if (oneDay) (0..23).map { h -> hours.filter { it.hour == h }.sumOf { it.circuits[n] ?: 0.0 } }
-                                else dayList.reversed().map { d -> hours.filter { it.date == d }.sumOf { it.circuits[n] ?: 0.0 } })
+                                else dayList.reversed().map { d -> circuitDay(d, n, hours, daily) })
                             }
                             CompareChart(labels, series.map { it.second })
                             val all = totals.values.sum()
@@ -194,9 +193,11 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         }
                     } else {
                         // 回路別
-                        val totals = HashMap<String, Double>()
-                        hours.forEach { h -> h.circuits.forEach { (n, v) -> totals[n] = (totals[n] ?: 0.0) + v } }
+                        val totals = circuitTotals(dayList, hours, daily)
                         val all = totals.values.sum()
+                        if (dayList.any { daily[it]?.has("circuits_kwh") == true }) {
+                            Text("※ 合計は AiSEG2 の「回路ごとの使用電力量（日）」の値です（エコキュート・エアコンなど 200V の回路も入ります）。", style = MaterialTheme.typography.labelSmall)
+                        }
                         val sorted = totals.entries.sortedByDescending { it.value }
                         Text("回路ごとの使った電気（タップで時間ごとの変化）", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                         if (sorted.isEmpty()) Text("回路ごとの記録がありません（AiSEG2 に回路の計測が登録されているか確認してください）。", style = MaterialTheme.typography.bodySmall)
@@ -213,7 +214,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                             }
                             if (circuit == name) {
                                 val slots = if (oneDay) (0..23).map { h -> Slot("${h}時", hours.filter { it.hour == h }.sumOf { it.circuits[name] ?: 0.0 }, 0.0, 0.0, 0.0) }
-                                else dayList.reversed().map { d -> Slot(d.substring(5).replace('-', '/'), hours.filter { it.date == d }.sumOf { it.circuits[name] ?: 0.0 }, 0.0, 0.0, 0.0) }
+                                else dayList.reversed().map { d -> Slot(d.substring(5).replace('-', '/'), circuitDay(d, name, hours, daily), 0.0, 0.0, 0.0) }
                                 FlowChart(slots, onlyUse = true)
                             }
                         }
@@ -460,4 +461,22 @@ private fun FiveMinuteView(vm: MainViewModel) {
             color = COMPARE[i % COMPARE.size], style = MaterialTheme.typography.bodySmall,
         )
     }
+}
+
+/** その日の回路の使用量（Wh）。AiSEG2 の1日ごとの値があればそれを、無ければ時間ごとの記録の合計 */
+private fun circuitDay(d: String, name: String, hours: List<EnergyHour>, daily: Map<String, org.json.JSONObject>): Double {
+    val ck = daily[d]?.optJSONObject("circuits_kwh")
+    if (ck != null) return ck.optDouble(name, 0.0) * 1000
+    return hours.filter { it.date == d }.sumOf { it.circuits[name] ?: 0.0 }
+}
+
+/** 期間の回路ごとの使用量（Wh） */
+private fun circuitTotals(days: List<String>, hours: List<EnergyHour>, daily: Map<String, org.json.JSONObject>): Map<String, Double> {
+    val out = HashMap<String, Double>()
+    for (d in days) {
+        val ck = daily[d]?.optJSONObject("circuits_kwh")
+        if (ck != null) ck.keys().forEach { k -> out[k] = (out[k] ?: 0.0) + ck.optDouble(k, 0.0) * 1000 }
+        else hours.filter { it.date == d }.forEach { h -> h.circuits.forEach { (n, v) -> out[n] = (out[n] ?: 0.0) + v } }
+    }
+    return out
 }
