@@ -1455,7 +1455,17 @@ class Api(BaseHTTPRequestHandler):
                 pages = aiseg_circuit_pages()
             except Exception as e:
                 return self._ok({"ok": False, "error": str(e)})
-            return self._ok({"ok": True, "pages": pages, "eco_direct": eco_power_w() if conf.get("eco_ip") else None})
+            eco_props = None
+            if conf.get("eco_ip"):
+                eco_power["ok"] = None  # もう一度試す
+                try:
+                    m = el.get(conf["eco_ip"], conf["eco_eoj"], [0x9F, 0x84, 0x85], timeout=5)
+                    if m and 0x9F in m:
+                        eco_props = ["%02X" % e for e in sorted(prop_map(m[0x9F]))]
+                except Exception:
+                    pass
+            return self._ok({"ok": True, "pages": pages, "eco_direct": eco_power_w() if conf.get("eco_ip") else None,
+                             "eco_ip": conf.get("eco_ip"), "eco_props": eco_props})
         if p == "/discover":
             return self._ok({"devices": el.discover()})
         self._ok({"error": "not found"}, 404)
