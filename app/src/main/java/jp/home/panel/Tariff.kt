@@ -128,6 +128,25 @@ fun TariffSettings(vm: MainViewModel) {
                 Text("・${b.optString("name")}：$rate/kWh", style = MaterialTheme.typography.bodySmall)
             }
             Text("・基本料金（最低料金）：約${cur.optInt("basic_yen")}円/月", style = MaterialTheme.typography.bodySmall)
+            cur.optString("note").takeIf { it.isNotBlank() && it != "null" }?.let { Text("※ $it", style = MaterialTheme.typography.bodySmall) }
+            Text(
+                "・燃料費調整額：${cur.optDouble("fuel")}円/kWh" +
+                    if (cur.optBoolean("fuel_auto")) "（${cur.optString("fuel_source")}・自動）" else "（下の欄に入れた値）",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            // 割引（例：電化割引）
+            val ds = cur.optJSONArray("discounts")
+            for (i in 0 until (ds?.length() ?: 0)) {
+                val d = ds!!.optJSONObject(i) ?: continue
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Switch(checked = d.optBoolean("on"), onCheckedChange = { on ->
+                        val ids = (0 until ds.length()).mapNotNull { ds.optJSONObject(it) }
+                            .filter { x -> if (x.optString("id") == d.optString("id")) on else x.optBoolean("on") }.map { it.optString("id") }
+                        save("tariff_discounts" to org.json.JSONArray(ids))
+                    })
+                    Text(d.optString("name"), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
             Text("・再エネ賦課金：${list?.optDouble("surcharge")}円/kWh" +
                 (list?.optDouble("subsidy")?.takeIf { it > 0 }?.let { "・国の補助：−${it}円/kWh（今月）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             if (contract != "none") {
@@ -144,14 +163,14 @@ fun TariffSettings(vm: MainViewModel) {
         var fuel by remember(sc["tariff_fuel"]) { mutableStateOf((sc["tariff_fuel"] as? Number)?.toDouble()?.let { fmtNum(it) } ?: "0") }
         var sell by remember(sc["tariff_sell"]) { mutableStateOf((sc["tariff_sell"] as? Number)?.toDouble()?.let { fmtNum(it) } ?: "0") }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(fuel, { fuel = it }, label = { Text("燃料費調整額（円/kWh）") }, singleLine = true,
+            OutlinedTextField(fuel, { fuel = it }, label = { Text("燃料費調整額（公表値が無い月・円/kWh）") }, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.widthIn(max = 220.dp))
             OutlinedTextField(sell, { sell = it }, label = { Text("売電の単価（円/kWh）") }, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.widthIn(max = 220.dp))
             Button(onClick = { save("tariff_fuel" to (fuel.toDoubleOrNull() ?: 0.0), "tariff_sell" to (sell.toDoubleOrNull() ?: 0.0)) }) { Text("保存") }
         }
         Text(
-            "燃料費調整額は毎月変わり、電力会社のサイトや検針票に「燃料費調整単価」として出ています（マイナスのこともあります）。売電の単価は、太陽光の買取の契約の単価です。\n" +
+            "燃料費調整額は毎月変わります。単価表に電力会社の公表値がある月はそれを自動で使い、無い月（まだ公表されていない月など）はここに入れた値を使います（検針票の「燃料費調整単価」。マイナスのこともあります）。売電の単価は、太陽光の買取の契約の単価です。\n" +
                 "※ 単価は各社の公式の料金表をもとにしていますが、実際の請求額と少しずれることがあります（ポイント・割引・端数の扱いなど）。料金表が変わったときは単価表を更新します。",
             style = MaterialTheme.typography.bodySmall,
         )

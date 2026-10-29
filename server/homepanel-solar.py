@@ -64,6 +64,7 @@ DEFAULT_CONF = {
     "tariff_fuel": 0.0,                     # 燃料費調整額（円/kWh。毎月の検針票の値。マイナスもある）
     "tariff_sell": 0.0,                     # 売電の単価（円/kWh）
     "tariff_custom": {},                    # 自分で入力：{basic, day_rate, night_rate, night_start, night_end}
+    "tariff_discounts": [],                 # 使う割引（プランの discounts の id。例：電化割引）
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -651,6 +652,23 @@ def subsidy_of(d):
     return next((float(x["yen"]) for x in tariffs().get("subsidy") or [] if x.get("month") == ym), 0.0)
 
 
+def adders_of(pr, dt):
+    """1kWh あたりに足す額（再エネ賦課金＋燃料費調整−国の補助）と、燃料費調整が電力会社の公表値か"""
+    ym = dt.strftime("%Y-%m")
+    f = ((pr or {}).get("fuel") or {})
+    auto = (f.get("by_usage_month") or {}).get(ym)
+    if auto is not None:
+        sub = 0.0 if f.get("includes_subsidy") else subsidy_of(dt)
+        return surcharge_of(dt) + float(auto) - sub, float(auto), True
+    fuel = float(conf.get("tariff_fuel") or 0)
+    return surcharge_of(dt) + fuel - subsidy_of(dt), fuel, False
+
+
+def discount_of(pl):
+    on = set(conf.get("tariff_discounts") or [])
+    return sum(float(d.get("pct") or 0) for d in pl.get("discounts") or [] if d.get("id") in on) / 100.0
+
+
 def basic_of(pl, ver):
     b = ver.get("basic") or {}
     c = float(conf.get("tariff_contract") or 0)
@@ -675,7 +693,8 @@ def cost_hours(hours):
     pr, pl = find_plan(conf.get("tariff_plan") or "")
     if not pl:
         return None
-    fuel, sell_price = float(conf.get("tariff_fuel") or 0), float(conf.get("tariff_sell") or 0)
+    sell_price = float(conf.get("tariff_sell") or 0)
+    disc = discount_of(pl)
     months, cum = {}, {}
     for h in hours:
         try:
@@ -705,13 +724,15 @@ def cost_hours(hours):
             band = "段階料金"
         else:
             yen = kwh * rate
-        add = surcharge_of(dt) + fuel - subsidy_of(dt)
+        yen *= (1 - disc)
+        rate *= (1 - disc)
+        add, _, _ = adders_of(pr, dt)
         yen += kwh * add
         h["yen"] = round(yen, 2)
         h["rate"] = round(rate + add, 2)
         h["band"] = band
         h["sell_yen"] = round(float(h.get("sell") or 0) / 1000 * sell_price, 2)
-        m = months.setdefault(ym, {"kwh": 0.0, "energy_yen": 0.0, "sell_kwh": 0.0, "sell_yen": 0.0, "basic_yen": round(basic_of(pl, ver), 0)})
+        m = months.setdefault(ym, {"kwh": 0.0, "energy_yen": 0.0, "sell_kwh": 0.0, "sell_yen": 0.0, "basic_yen": round(basic_of(pl, ver) * (1 - disc), 0)})
         m["kwh"] += kwh
         m["energy_yen"] += yen
         m["sell_kwh"] += float(h.get("sell") or 0) / 1000
@@ -720,8 +741,9 @@ def cost_hours(hours):
         m["total_yen"] = round(m["energy_yen"] + m["basic_yen"])
         for k in ("kwh", "energy_yen", "sell_kwh", "sell_yen"):
             m[k] = round(m[k], 2)
+    _, fuel_now, fuel_auto = adders_of(pr, datetime.now())
     return {"provider": pr.get("name"), "plan": pl.get("name"), "plan_id": pl.get("id"), "months": months,
-            "fuel": fuel, "sell_price": sell_price, "surcharge": surcharge_of(date.today()), "subsidy": subsidy_of(date.today()),
+            "fuel": fuel_now, "fuel_auto": fuel_auto, "discount_pct": round(disc * 100, 1), "sell_price": sell_price, "surcharge": surcharge_of(date.today()), "subsidy": subsidy_of(date.today()),
             "checked": pl.get("checked"), "updated": tariffs().get("updated")}
 
 
@@ -735,9 +757,10 @@ def cost_summary():
         return None
     today = date.today().isoformat()
     th = [h for h in hours if h["h"].startswith(today)]
-    _, pl = find_plan(conf.get("tariff_plan") or "")
+    pr, pl = find_plan(conf.get("tariff_plan") or "")
     now = datetime.now()
     rate, band = band_of(pl, plan_version(pl, now.date()), now)
+    add, _, _ = adders_of(pr, now)
     m = c["months"].get(ym) or {}
     days_in = (date(now.year + (now.month == 12), now.month % 12 + 1, 1) - timedelta(days=1)).day
     return {"plan": f'{c["provider"]} {c["plan"]}', "today_yen": round(sum(h.get("yen", 0) for h in th)),
@@ -745,7 +768,7 @@ def cost_summary():
             "today_sell_yen": round(sum(h.get("sell_yen", 0) for h in th)),
             "month_yen": m.get("total_yen"), "month_kwh": m.get("kwh"), "month_sell_yen": round(m.get("sell_yen", 0)),
             "month_estimate_yen": round((m.get("energy_yen", 0) / max(1, now.day - 1 + now.hour / 24)) * days_in + m.get("basic_yen", 0)) if m else None,
-            "rate_now": round(rate + surcharge_of(now) + float(conf.get("tariff_fuel") or 0) - subsidy_of(now), 2) if rate is not None else None,
+            "rate_now": round(rate * (1 - discount_of(pl)) + add, 2) if rate is not None else None,
             "band_now": band}
 
 
@@ -753,7 +776,7 @@ def tariff_list():
     t = tariffs()
     out = [{"id": pr["id"], "name": pr["name"], "plans": [{"id": pl["id"], "name": pl["name"], "contract": pl.get("contract", "none"), "checked": pl.get("checked")}
                                                        for pl in pr.get("plans", [])]} for pr in t.get("providers", [])]
-    _, pl = find_plan(conf.get("tariff_plan") or "")
+    pr, pl = find_plan(conf.get("tariff_plan") or "")
     detail = None
     if pl:
         ver = plan_version(pl, date.today())
@@ -762,7 +785,11 @@ def tariff_list():
             detail = [{"name": b.get("name"), "rate": b.get("rate")} for b in en.get("bands") or []]
         else:
             detail = [{"name": (f"{lim}kWhまで" if lim else "それより上"), "rate": r} for lim, r in en.get("tiers") or []]
-        detail = {"bands": detail, "basic_yen": round(basic_of(pl, ver)), "from": ver.get("from"), "contract": pl.get("contract", "none")}
+        _, fuel_now, fuel_auto = adders_of(pr, datetime.now())
+        on = set(conf.get("tariff_discounts") or [])
+        detail = {"bands": detail, "basic_yen": round(basic_of(pl, ver)), "from": ver.get("from"), "contract": pl.get("contract", "none"),
+                  "note": pl.get("note"), "fuel": fuel_now, "fuel_auto": fuel_auto, "fuel_source": ((pr or {}).get("fuel") or {}).get("source"),
+                  "discounts": [dict(d, on=d.get("id") in on) for d in pl.get("discounts") or []]}
     return {"providers": out, "note": t.get("note"), "updated": t.get("updated"), "current": detail,
             "surcharge": surcharge_of(date.today()), "subsidy": subsidy_of(date.today())}
 
