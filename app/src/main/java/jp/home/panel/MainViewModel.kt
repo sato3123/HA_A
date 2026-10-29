@@ -2667,6 +2667,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .put("threshold_w", shThreshold.value).put("shift", shShift.value).put("plan_hour", shPlanHour.value)
         ecoDevice()?.let { c.put("eco_ip", it.ip).put("eco_eoj", it.eoj.hex()) }
         meterDevice()?.let { c.put("meter_ip", it.ip).put("meter_eoj", it.eoj.hex()) }
+        // 消費電力を読める機器（エアコンなど。AiSEG2 の200Vの回路は値が出ないため、機器から直接読む）
+        val names = allEntities.value.associate { it.entityId to it.name }
+        val pd = JSONArray()
+        elDevices.value.filter { d -> 0x84 in d.getMap && d.eoj.classCode !in setOf(0x026B, 0x0288, 0x0287, 0x0279, 0x027D, 0x02A5) }.forEach { d ->
+            val n = elLinks.value[d.entityId]?.let { names[it] } ?: d.name
+            pd.put(JSONObject().put("ip", d.ip).put("eoj", d.eoj.hex()).put("name", n))
+        }
+        c.put("power_devices", pd)
         client?.let { cl ->
             runCatching {
                 val r = cl.request(JSONObject().put("type", "get_config")).optJSONObject("result")

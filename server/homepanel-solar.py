@@ -65,6 +65,7 @@ DEFAULT_CONF = {
     "tariff_sell": 0.0,                     # 売電の単価（円/kWh）
     "tariff_custom": {},                    # 自分で入力：{basic, day_rate, night_rate, night_start, night_end}
     "tariff_discounts": [],                 # 使う割引（プランの discounts の id。例：電化割引）
+    "power_devices": [],                    # 消費電力を直接読む機器（エアコンなど）：[{ip, eoj, name}]
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -456,6 +457,29 @@ def eco_power_w():
     return float(w)
 
 
+dev_power_fail = {}
+
+
+def device_power_w(d):
+    """ECHONET Lite の機器のいまの消費電力（0x84, W）。読めない機器は1時間ごとにだけ試す"""
+    key = f'{d.get("ip")}/{d.get("eoj")}'
+    if time.time() - dev_power_fail.get(key, 0) < 3600:
+        return None
+    try:
+        v = el.get(d["ip"], d["eoj"], [0x84], timeout=2)
+    except Exception:
+        v = None
+    if not v or 0x84 not in v or len(v[0x84]) < 2:
+        dev_power_fail[key] = time.time()
+        return None
+    w = int.from_bytes(v[0x84][:2], "big")
+    if w >= 0xFFFE:
+        dev_power_fail[key] = time.time()
+        return None
+    dev_power_fail.pop(key, None)
+    return float(w)
+
+
 def aiseg_circuit_pages():
     """回路の一覧の確認用：AiSEG2 の回路のページごとの名前と、いまの電力"""
     import re
@@ -500,26 +524,32 @@ def energy_collect():
             src = "スマートメーター"
             use, gen = (max(0.0, -w), 0.0)  # 買電だけ分かる（発電は分からない）
             state["power"] = {"generation_w": None, "consumption_w": None, "net_w": w, "from": src}
+    # エアコンなど、機器から直接読めるもの（AiSEG2 の200Vの回路は値が出ないため）
+    for d in conf.get("power_devices") or []:
+        w = device_power_w(d)
+        if w is not None:
+            nm = f'{d.get("name") or d.get("ip")}（直接）'
+            circuits[nm] = circuits.get(nm, 0.0) + w
     # エコキュートの電気：AiSEG2 の回路に値が出ないときは、エコキュートから直接読む（ECHONET Lite の 0x84）。
     # それもできない機種は、沸き上げ中の「家全体 − 回路の合計」の増え方から推定する
-    if conf.get("eco_ip") and src == "AiSEG2" and use is not None:
-        eco_names = [n for n in circuits if "エコキュート" in n or "給湯" in n]
-        eco_w = sum(circuits[n] for n in eco_names)
+    if src == "AiSEG2" and use is not None:
         rest = max(0.0, use - sum(circuits.values()))
-        heating = bool((state.get("eco") or {}).get("heating"))
-        if eco_w <= 0:
-            w = eco_power_w()
-            if w is not None:
-                circuits["エコキュート（直接）"] = w
-                rest = max(0.0, rest - w)
-            elif heating:
-                base = eco_rest["base"] if eco_rest["base"] is not None else 0.0
-                est = max(0.0, rest - base)
-                circuits["エコキュート（推定）"] = est
-                rest -= est
-            if not heating:
-                # 沸き上げをしていないときの「回路に出ない分」をならしておく（推定の基準）
-                eco_rest["base"] = rest if eco_rest["base"] is None else eco_rest["base"] * 0.9 + rest * 0.1
+        if conf.get("eco_ip"):
+            eco_w = sum(w for n, w in circuits.items() if "エコキュート" in n or "給湯" in n)
+            heating = bool((state.get("eco") or {}).get("heating"))
+            if eco_w <= 0:
+                w = eco_power_w()
+                if w is not None:
+                    circuits["エコキュート（直接）"] = w
+                    rest = max(0.0, rest - w)
+                elif heating:
+                    base = eco_rest["base"] if eco_rest["base"] is not None else 0.0
+                    est = max(0.0, rest - base)
+                    circuits["エコキュート（推定）"] = est
+                    rest -= est
+                if not heating:
+                    # 沸き上げをしていないときの「回路に出ない分」をならしておく（推定の基準）
+                    eco_rest["base"] = rest if eco_rest["base"] is None else eco_rest["base"] * 0.9 + rest * 0.1
         if rest > 0:
             circuits["その他（回路に出ない分）"] = rest
     last = energy_last["t"]
