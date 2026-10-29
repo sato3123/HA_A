@@ -1025,6 +1025,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun call(e: Entity, service: String, data: JSONObject = JSONObject(), domain: String = e.domain) {
         // 対応付けた機器は、家の中では ECHONET Lite で直接、外出先では Home Assistant 経由で操作する
         linkedEl(e.entityId)?.takeIf { useEchonet(it) }?.let { d ->
+            // エアコンは、ECHONET Lite の返事を待たずに Home Assistant にも同じ操作を送る（どちらか早いほうで動く）。
+            // 機種によっては ECHONET Lite の返事のあと実際に止まるまで時間がかかり、「しばらく止まらない」ことがあるため
+            val c0 = client
+            if (e.domain == "climate" && c0 != null && !e.entityId.contains(".el_")) {
+                viewModelScope.launch {
+                    var haErr: String? = null
+                    val haJob = launch {
+                        try { c0.callService(domain, service, e.entityId, data) } catch (ex: CancellationException) { throw ex } catch (ex: Exception) {
+                            haErr = ex.message ?: "エラー"
+                            addLog("「${e.name}」：Home Assistant での操作に失敗（${ex.message}）")
+                        }
+                    }
+                    val err = echonet.callService(d.entityId, service, data)
+                    if (err != null) addLog("「${e.name}」：ECHONET Lite での操作に失敗（$err）")
+                    haJob.join()
+                    if (err != null && haErr != null) message.value = "「${e.name}」を操作できませんでした：$haErr（ECHONET Lite：$err）"
+                }
+                return
+            }
             viewModelScope.launch {
                 val err = echonet.callService(d.entityId, service, data)
                 if (err == null) return@launch
