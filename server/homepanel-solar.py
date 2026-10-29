@@ -1084,13 +1084,21 @@ def climate_tick():
         cs["temps"] = [p for p in cs["temps"] if p[0] > now - 86400]
         if not cs["temps"] or now - cs["temps"][-1][0] >= 600:
             cs["temps"].append([now, temp, mode, target])
-        if cs["last_cmd"] and now - cs["last_cmd"] > 120 and (mode != cs["last_mode"] or (target is not None and cs["last_target"] is not None and target != cs["last_target"])):
-            cs["manual_until"] = now + 600
+        # 人（アプリ・リモコン・Home Assistant）が操作したら、しばらくその設定を優先する。
+        # 以前は「このサーバーが操作したあと」に変わったときだけ気づいていたため、人が切ってもすぐに入れ直すことがあった
+        seen = cs.get("seen")
+        changed = seen is not None and (mode != seen[0] or (target is not None and seen[1] is not None and target != seen[1]))
+        cs["seen"] = [mode, target]
+        if changed and not (cs["last_cmd"] and now - cs["last_cmd"] < 90):
+            mins = 120 if mode == "off" else 30
+            cs["manual_until"] = now + mins * 60
             cs["last_cmd"] = 0
             cs["by_us"] = False
-            cs["actions"] = ([[now, "手で操作されたので10分間はそのままにします"]] + cs["actions"])[:50]
+            what = "止められた" if mode == "off" else "操作された"
+            cs["actions"] = ([[now, f"手で{what}ので{mins // 60 if mins >= 60 else mins}{'時間' if mins >= 60 else '分'}はそのままにします"]] + cs["actions"])[:50]
+            log(f"温度調整：{cs.get('name') or eid} が手で{what}ので、{mins}分間は自動で動かしません")
         if now < cs["manual_until"]:
-            cs["status"] = f"いま {temp:.1f}℃（{src_name}）・手で操作されたのでそのままにしています"
+            cs["status"] = f"いま {temp:.1f}℃（{src_name}）・手で操作されたので {datetime.fromtimestamp(cs['manual_until']).strftime('%H:%M')} まではそのままにしています"
             continue
         lo, hi = float(r.get("min", 20)), float(r.get("max", 27))
         modes = a.get("hvac_modes") or ["cool", "heat", "off"]
