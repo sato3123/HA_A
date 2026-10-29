@@ -433,6 +433,7 @@ energy_last = {"t": None}
 ENERGY5_PATH = os.path.join(DIR, "energy5.json")
 energy5 = load_json(ENERGY5_PATH, {})
 eco_power = {"ok": None, "checked": 0}
+eco_rest = {"base": None}
 
 
 def eco_power_w():
@@ -499,11 +500,28 @@ def energy_collect():
             src = "スマートメーター"
             use, gen = (max(0.0, -w), 0.0)  # 買電だけ分かる（発電は分からない）
             state["power"] = {"generation_w": None, "consumption_w": None, "net_w": w, "from": src}
-    # エコキュートが AiSEG2 の回路に無いときは、エコキュートから直接いまの消費電力を読む（ECHONET Lite の 0x84）
-    if conf.get("eco_ip") and not any(("エコキュート" in n or "給湯" in n) for n in circuits):
-        w = eco_power_w()
-        if w is not None:
-            circuits["エコキュート（直接）"] = w
+    # エコキュートの電気：AiSEG2 の回路に値が出ないときは、エコキュートから直接読む（ECHONET Lite の 0x84）。
+    # それもできない機種は、沸き上げ中の「家全体 − 回路の合計」の増え方から推定する
+    if conf.get("eco_ip") and src == "AiSEG2" and use is not None:
+        eco_names = [n for n in circuits if "エコキュート" in n or "給湯" in n]
+        eco_w = sum(circuits[n] for n in eco_names)
+        rest = max(0.0, use - sum(circuits.values()))
+        heating = bool((state.get("eco") or {}).get("heating"))
+        if eco_w <= 0:
+            w = eco_power_w()
+            if w is not None:
+                circuits["エコキュート（直接）"] = w
+                rest = max(0.0, rest - w)
+            elif heating:
+                base = eco_rest["base"] if eco_rest["base"] is not None else 0.0
+                est = max(0.0, rest - base)
+                circuits["エコキュート（推定）"] = est
+                rest -= est
+            if not heating:
+                # 沸き上げをしていないときの「回路に出ない分」をならしておく（推定の基準）
+                eco_rest["base"] = rest if eco_rest["base"] is None else eco_rest["base"] * 0.9 + rest * 0.1
+        if rest > 0:
+            circuits["その他（回路に出ない分）"] = rest
     last = energy_last["t"]
     energy_last["t"] = now
     if use is None or last is None:
