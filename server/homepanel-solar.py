@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -1140,6 +1141,68 @@ def climate_tick():
             cs["status"] = f"エアコンを操作できませんでした：{e}"
 
 
+# ================= 機器のタイマー（「1時間後に切る」「6時半に暖房」など。Home Assistant 経由で操作） =================
+TIMERS_PATH = os.path.join(DIR, "device_timers.json")
+device_timers = load_json(TIMERS_PATH, [])
+ACTION_NAME = {"turn_on": "つける", "turn_off": "切る", "toggle": "切り替える"}
+HVAC_NAME = {"cool": "冷房", "heat": "暖房", "dry": "除湿", "fan_only": "送風", "auto": "自動", "heat_cool": "自動", "off": "停止"}
+
+
+def timer_label(t):
+    a = t.get("action")
+    if a == "set_hvac_mode":
+        mode = (t.get("data") or {}).get("hvac_mode")
+        temp = (t.get("data") or {}).get("temperature")
+        if mode == "off":
+            return "止める"
+        return HVAC_NAME.get(mode, mode or "") + (f" {temp:g}℃" if isinstance(temp, (int, float)) else "") + "にする"
+    return ACTION_NAME.get(a, a or "")
+
+
+def run_device_timer(t):
+    eid = t["entity"]
+    domain = eid.split(".")[0]
+    a = t.get("action")
+    data = dict(t.get("data") or {})
+    if a == "set_hvac_mode":
+        temp = data.pop("temperature", None)
+        if data.get("hvac_mode") == "off":
+            ha_call("climate", "turn_off", {"entity_id": eid})
+        else:
+            ha_call("climate", "set_hvac_mode", {"entity_id": eid, "hvac_mode": data.get("hvac_mode")})
+            if temp is not None:
+                ha_call("climate", "set_temperature", {"entity_id": eid, "temperature": temp})
+    else:
+        svc_domain = "homeassistant" if domain in ("switch", "light", "fan", "input_boolean", "climate", "cover", "media_player") else domain
+        ha_call(svc_domain, a, {"entity_id": eid})
+
+
+def device_timer_loop():
+    while True:
+        try:
+            now = time.time()
+            due = [t for t in list(device_timers) if t.get("at", 0) <= now]
+            for t in due:
+                try:
+                    run_device_timer(t)
+                    log(f"タイマー：{t.get('name') or t['entity']} を{timer_label(t)}（{t.get('by') or '画面'}で設定）")
+                except Exception as e:
+                    log(f"タイマー：{t.get('name') or t['entity']} を{timer_label(t)}ことができませんでした（{e}）")
+                with lock:
+                    if t in device_timers:
+                        device_timers.remove(t)
+                    save_json(TIMERS_PATH, device_timers)
+        except Exception as e:
+            print("タイマーでエラー:", e, flush=True)
+        time.sleep(10)
+
+
+def timers_public():
+    with lock:
+        out = [dict(t, label=timer_label(t)) for t in sorted(device_timers, key=lambda x: x.get("at", 0))]
+    return {"timers": out, "ha_token_set": bool(conf.get("ha_token")), "now": time.time()}
+
+
 def climate_loop():
     while True:
         try:
@@ -1581,6 +1644,8 @@ class Api(BaseHTTPRequestHandler):
             return self._ok(public_state())
         if p == "/climate":
             return self._ok(climate_public())
+        if p == "/timers":
+            return self._ok(timers_public())
         if p == "/tariffs":
             return self._ok(tariff_list())
         if p == "/energy5":
@@ -1608,6 +1673,34 @@ class Api(BaseHTTPRequestHandler):
             log("設定を変えました：" + "、".join(k for k in b if k in allowed))
             wake.set()
             return self._ok(public_state())
+        if p == "/timers":
+            # 追加：{entity, name, action, data, at（時刻・秒）または after_min}
+            if not conf.get("ha_token"):
+                return self._ok({"error": "サーバーに Home Assistant の鍵が登録されていません（アプリの「エアコンの自動温度調整」で登録してください）"})
+            eid = str(b.get("entity") or "")
+            if "." not in eid or b.get("action") not in ("turn_on", "turn_off", "toggle", "set_hvac_mode"):
+                return self._ok({"error": "機器か操作が正しくありません"})
+            at = float(b["at"]) if b.get("at") else time.time() + float(b.get("after_min") or 0) * 60
+            if at < time.time() - 60 or at > time.time() + 8 * 86400:
+                return self._ok({"error": "時刻が正しくありません（1週間以内）"})
+            t = {"id": uuid.uuid4().hex[:10], "entity": eid, "name": str(b.get("name") or "")[:60], "action": b["action"],
+                 "data": b.get("data") or {}, "at": at, "by": str(b.get("by") or "")[:30], "created": time.time()}
+            with lock:
+                if b.get("replace"):
+                    # 同じ機器の前のタイマーは消す
+                    device_timers[:] = [x for x in device_timers if x["entity"] != eid]
+                device_timers.append(t)
+                save_json(TIMERS_PATH, device_timers)
+            log(f"タイマーを設定しました：{t['name'] or eid} を {datetime.fromtimestamp(at).strftime('%m/%d %H:%M')} に{timer_label(t)}")
+            return self._ok(timers_public())
+        if p == "/timers/delete":
+            with lock:
+                before = len(device_timers)
+                device_timers[:] = [x for x in device_timers if x["id"] != b.get("id") and not (b.get("entity") and x["entity"] == b.get("entity"))]
+                save_json(TIMERS_PATH, device_timers)
+            if len(device_timers) != before:
+                log("タイマーを取り消しました")
+            return self._ok(timers_public())
         if p == "/retry":
             log("手動で設定をやり直します")
             run_plan(manual=True)
@@ -1658,6 +1751,7 @@ def main():
     threading.Thread(target=energy_loop, daemon=True).start()
     threading.Thread(target=weather_loop, daemon=True).start()
     threading.Thread(target=climate_loop, daemon=True).start()
+    threading.Thread(target=device_timer_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

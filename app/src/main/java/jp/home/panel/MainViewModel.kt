@@ -660,6 +660,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ================= 機器のタイマー（サーバーで動かす。タブレットを切っていても動く） =================
+    data class DeviceTimer(val id: String, val entity: String, val name: String, val label: String, val atMs: Long, val by: String)
+
+    val deviceTimers = MutableStateFlow<List<DeviceTimer>>(emptyList())
+    val deviceTimerMsg = MutableStateFlow<String?>(null)
+
+    private fun applyTimers(j: JSONObject) {
+        val a = j.optJSONArray("timers") ?: JSONArray()
+        deviceTimers.value = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
+            DeviceTimer(it.optString("id"), it.optString("entity"), it.optString("name"), it.optString("label"), (it.optDouble("at") * 1000).toLong(), it.optString("by"))
+        }
+        j.optString("error").takeIf { it.isNotBlank() }?.let { deviceTimerMsg.value = it }
+    }
+
+    fun loadDeviceTimers() = viewModelScope.launch {
+        try { applyTimers(serverCall("/timers", null)) } catch (e: CancellationException) { throw e } catch (e: Exception) { }
+    }
+
+    /**
+     * 機器のタイマーを足す。action：turn_on / turn_off / set_hvac_mode（data に hvac_mode・temperature）。
+     * atMs（時刻）か afterMin（何分後）のどちらか。replace = その機器の前のタイマーを消してから
+     */
+    fun addDeviceTimer(e: Entity, action: String, data: JSONObject = JSONObject(), atMs: Long? = null, afterMin: Int? = null, replace: Boolean = false) =
+        viewModelScope.launch {
+            deviceTimerMsg.value = null
+            val body = JSONObject().put("entity", e.entityId).put("name", e.name).put("action", action).put("data", data)
+                .put("by", userName.value ?: "画面").put("replace", replace)
+            if (atMs != null) body.put("at", atMs / 1000.0) else body.put("after_min", afterMin ?: 0)
+            try {
+                applyTimers(serverCall("/timers", body))
+            } catch (ex: CancellationException) {
+                throw ex
+            } catch (ex: Exception) {
+                deviceTimerMsg.value = "タイマーを設定できませんでした：${ex.message}"
+            }
+        }
+
+    fun cancelDeviceTimer(id: String) = viewModelScope.launch {
+        try { applyTimers(serverCall("/timers/delete", JSONObject().put("id", id))) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            deviceTimerMsg.value = "取り消せませんでした：${e.message}"
+        }
+    }
+
+    private fun startDeviceTimers() = viewModelScope.launch {
+        delay(3_000)
+        while (isActive) {
+            if (foreground) loadDeviceTimers()
+            delay(30_000)
+        }
+    }
+
     // ================= 画面の更新（ホーム画面を引っぱって更新） =================
     val refreshing = MutableStateFlow(false)
 
@@ -677,6 +728,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 loadEnergy()
                 loadEvents()
+                loadDeviceTimers()
                 solarWake.trySend(Unit)
                 if (climateOnServer.value) loadClimateServer()
                 if (camRecording.value.isNotEmpty()) loadCamServer()
@@ -1411,6 +1463,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 a.speak(c, heard, speakDay(events.value, offset), effectivePipeline, ::onVoice)
                 return
             }
+        }
+        parseDeviceTimerCommand(heard, entities.value)?.let { d ->
+            addLog("アプリの命令として処理：機器のタイマー（${d.entity.name}）")
+            addDeviceTimer(d.entity, d.action, d.data, d.atMs, d.afterMin).join()
+            val err = deviceTimerMsg.value
+            val whenText = d.afterMin?.let { m -> (if (m >= 60) "${m / 60}時間" + (if (m % 60 > 0) "${m % 60}分" else "") else "${m}分") + "後に" }
+                ?: (timerTimeText(d.atMs!!) + "に")
+            a.speak(c, heard, err ?: "${d.entity.name}を${whenText}${d.label}ように、タイマーをセットしました", effectivePipeline, ::onVoice)
+            return
         }
         val cmd = parseTimerCommand(heard)
         if (cmd == null) {
@@ -3272,6 +3333,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 開発用のビルドの「デモ表示」：Home Assistant につながず、見本のデータで画面を出す（画面の確認用）
         if (!solarStarted) { solarStarted = true; startSolarHeat() }
         startClimateAuto()
+        startDeviceTimers()
         if (BuildConfig.DEBUG && prefs.demoMode) loadDemo() else start()
         startEchonet()
         // タイマーの終了とスクリーンセーバーの開始を監視（初期化が終わってから始める）

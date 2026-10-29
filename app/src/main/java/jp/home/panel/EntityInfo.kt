@@ -133,6 +133,11 @@ fun EntityInfoDialog(vm: MainViewModel) {
                     InfoRow("ID", e.entityId)
                 }
 
+                // スイッチなど（タップで切り替わる機器）は、ここからタイマーを設定する
+                if (e.domain in setOf("switch", "input_boolean", "media_player") && timerCapable(e)) {
+                    HorizontalDivider()
+                    DeviceTimerSection(e, vm)
+                }
                 val attrs: JSONObject = e.attributes
                 val shown = ATTR_LABELS.filterKeys { attrs.has(it) && !attrs.isNull(it) }
                 if (shown.isNotEmpty()) {

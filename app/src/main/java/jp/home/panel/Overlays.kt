@@ -131,7 +131,9 @@ fun TimerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         }
                     }
                 }
+                DeviceTimerList(vm)
                 Text("音声でも「5分のタイマー」「パスタの3分タイマー」「タイマーの残りは？」「タイマーを止めて」と言えます。", style = MaterialTheme.typography.bodySmall)
+                Text("エアコンや照明などを「1時間後に切る」「6時半に暖房」にするときは、その機器の名前をタップして開く画面の「⏲ タイマー」から設定します。", style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } },

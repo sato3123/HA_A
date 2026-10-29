@@ -483,7 +483,7 @@
       else if (d === "climate") body = climateTileHTML(e);
     }
     const cls = ["tile", isWide(e) ? "wide" : "", isOn(e) && d !== "scene" && d !== "script" ? "on" : "", unav ? "unav" : "", SIMPLE.includes(d) ? "simple" : ""].join(" ");
-    return `<div class="${cls}" data-entity="${esc(e.entity_id)}">${headHTML(e, false)}${body}</div>`;
+    return `<div class="${cls}" data-entity="${esc(e.entity_id)}">${headHTML(e, false)}${timerBadgeHTML(e)}${body}</div>`;
   }
 
   function detailHTML(e) {
@@ -514,7 +514,7 @@
     } else {
       h += `<div class="brow"><button class="btn" data-act="primary">${d === "scene" || d === "script" ? "実行する" : "切り替える"}</button></div>`;
     }
-    return h;
+    return h + devTimerSectionHTML(e);
   }
 
   // ---- 描画（操作中の機器は描き直さない） ----
@@ -1374,6 +1374,9 @@
     ["💴 電気料金", [
       "Android 版の ⚙ 設定 →「電気料金」で電力会社とプランを選ぶと、サーバーが時間帯・季節・休日ごとの単価で電気代を計算し、ホーム画面に今日・今月・見込みの電気代を出します。",
     ]],
+    ["⏲ 機器のタイマー", [
+      "機器の詳細の画面（スイッチはⓘ）の「⏲ タイマー」で、「30分後〜4時間後」か時刻を指定して、切る・つける（エアコンは停止・冷房・暖房など）を予約できます。サーバーが動かすので、iPad を閉じていても動きます。",
+    ]],
     ["↻ 画面の読み直し", [
       "ホーム画面のいちばん上で下に引っぱって離すと、機器の状態・電気・予定などを読み直します。",
     ]],
@@ -2156,6 +2159,7 @@
         <input type="text" id="tLabel" class="search" placeholder="名前（例：パスタ）※なくてもOK" style="max-width:420px">
         <div><button class="btn" data-set="timerStart">スタート</button></div></div>
       <div class="field"><div class="fl">動いているタイマー</div><div id="timerList"></div></div>
+      ${SERVER_MODE ? `<div class="field"><div class="fl">機器のタイマー</div><div id="devTimerList">${devTimerListHTML()}</div></div>` : ""}
       <div class="note">音声でも「5分のタイマー」「パスタの3分タイマー」「タイマーの残りは？」「タイマーを止めて」と言えます。</div></div>`;
   }
 
@@ -2458,6 +2462,7 @@
       <div class="kv"><span>最後に変わった</span><span>${e.last_changed ? hm(Date.parse(e.last_changed)) + "（" + ago(Date.parse(e.last_changed)) + "）" : "－"}</span></div>
       <div class="kv"><span>最後に更新</span><span>${e.last_updated ? hm(Date.parse(e.last_updated)) : "－"}</span></div>
       <div class="kv"><span>ID</span><span>${esc(e.entity_id)}</span></div>
+      ${["switch", "input_boolean", "media_player"].includes(dom(e)) ? devTimerSectionHTML(e) : ""}
       <div class="sec">直近24時間の動き</div>
       ${i.status ? `<div class="note">${esc(i.status)}</div>` : (i.history || []).slice(0, 60).map((p) => `<div class="kv"><span>${hm(p.t)}</span><span>${esc(stateLabel(Object.assign({}, e, { state: p.s })))}</span></div>`).join("")}
       ${attrs ? `<div class="sec">詳しい情報</div>${attrs}` : ""}</div>`;
@@ -3033,6 +3038,18 @@
         loadClimate(); return true;
       case "climDetail": S.climDetail = S.climDetail === id ? null : id; fillExtra(); return true;
       case "camTile": store.set("camTile", id); syncLiveTiles(); openPageKeep(); return true;
+      case "dtAction": if (S.dt) { S.dt.action = id; renderSheet(); renderInfo(); } return true;
+      case "dtTemp": if (S.dt) { const e = S.ha.states[S.dt.id]; const step = num(e.attributes, "target_temp_step") || 0.5; S.dt.temp = Math.round(((S.dt.temp || 24) + Number(id) * step) * 10) / 10; renderSheet(); renderInfo(); } return true;
+      case "dtAfter": addDevTimer({ after_min: Number(id) }); return true;
+      case "dtAt": {
+        const v = ($("#dtTime") || {}).value;
+        if (!v) { S.dtMsg = "時刻を入れてください"; renderSheet(); renderInfo(); return true; }
+        const [hh, mm] = v.split(":").map(Number);
+        const t = new Date(); t.setHours(hh, mm, 0, 0); if (t.getTime() < Date.now()) t.setDate(t.getDate() + 1);
+        addDevTimer({ at: t.getTime() / 1000 });
+        return true;
+      }
+      case "dtCancel": try { const j = await solarApi("/timers/delete", { id }); S.devTimers = j.timers || []; } catch (e) { /* 次の読み込みで */ } renderEntities(); renderSheet(); renderInfo(); { const l = $("#devTimerList"); if (l) l.innerHTML = devTimerListHTML(); } return true;
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
       case "camRecToggle": {
         const cams = ((S.camRec && S.camRec.cameras) || []).map((c) => ({ id: c.id, name: c.name, kind: c.kind, entity: c.entity })).filter((c) => c.id !== id);
@@ -3073,6 +3090,58 @@
     if (S.ssOn || S.cam || document.visibilityState !== "visible") return;
     document.querySelectorAll("img[data-snap]").forEach((img) => refreshSnapshot(img.dataset.snap));
   }
+  // ---- 機器のタイマー（サーバーが Home Assistant を通して動かす） ----
+  const TIMER_DOMAINS = ["switch", "light", "fan", "input_boolean", "climate", "media_player"];
+  const timerCapable = (e) => TIMER_DOMAINS.includes(dom(e));
+  async function loadDeviceTimers() {
+    if (!SERVER_MODE) return;
+    try {
+      const j = await solarApi("/timers");
+      S.devTimers = j.timers || [];
+      if (j.error) S.dtMsg = j.error;
+    } catch (e) { /* サーバーなし */ }
+    renderEntities(); renderSheet(); renderInfo();
+    const l = $("#devTimerList"); if (l) l.innerHTML = devTimerListHTML();
+  }
+  const dtWhen = (sec) => {
+    const d = new Date(sec * 1000), t = new Date();
+    const day = d.toDateString() === t.toDateString() ? "" : new Date(t.getTime() + 86400000).toDateString() === d.toDateString() ? "明日 " : `${d.getMonth() + 1}/${d.getDate()} `;
+    return `${day}${d.getHours()}:${pad(d.getMinutes())}`;
+  };
+  const dtRemain = (sec) => { const m = Math.max(0, Math.round((sec * 1000 - Date.now()) / 60000)); return m >= 60 ? `${Math.floor(m / 60)}時間${m % 60 ? (m % 60) + "分" : ""}` : `${m}分`; };
+  function timerBadgeHTML(e) {
+    const t = (S.devTimers || []).filter((x) => x.entity === e.entity_id).sort((a, b) => a.at - b.at)[0];
+    return t ? `<div class="dtbadge">⏲ ${dtWhen(t.at)} に${esc(t.label)}</div>` : "";
+  }
+  function devTimerSectionHTML(e) {
+    if (!SERVER_MODE || !timerCapable(e)) return "";
+    const st = (S.dt && S.dt.id === e.entity_id) ? S.dt : (S.dt = { id: e.entity_id, action: dom(e) === "climate" ? (e.state === "off" ? ((e.attributes.hvac_modes || []).find((m) => m !== "off") || "off") : "off") : (isOn(e) ? "turn_off" : "turn_on"), temp: num(e.attributes, "temperature") });
+    const acts = dom(e) === "climate" ? [["off", "停止"], ...(e.attributes.hvac_modes || []).filter((m) => m !== "off").map((m) => [m, hvacLabel(m)])] : [["turn_off", "切る"], ["turn_on", "つける"]];
+    const mine = (S.devTimers || []).filter((x) => x.entity === e.entity_id).sort((a, b) => a.at - b.at);
+    return `<div class="sec">⏲ タイマー</div>
+      ${mine.map((t) => `<div class="kv"><span>${dtWhen(t.at)} に${esc(t.label)}（あと${dtRemain(t.at)}）</span><button class="tbtn" data-set="dtCancel" data-id="${esc(t.id)}">取り消す</button></div>`).join("")}
+      <div class="chips">${acts.map(([k, l]) => `<button class="chip${st.action === k ? " sel" : ""}" data-set="dtAction" data-id="${esc(k)}">${esc(l)}</button>`).join("")}</div>
+      ${dom(e) === "climate" && st.action !== "off" ? `<div class="brow" style="align-items:center"><span class="note">設定温度</span><button class="tbtn" data-set="dtTemp" data-id="-1">−</button><b>${st.temp != null ? fmt(st.temp) + "℃" : "そのまま"}</b><button class="tbtn" data-set="dtTemp" data-id="1">＋</button></div>` : ""}
+      <div class="brow">${[30, 60, 90, 120, 180, 240].map((m) => `<button class="tb" data-set="dtAfter" data-id="${m}">${m >= 60 ? (m / 60) + "時間後" : m + "分後"}</button>`).join("")}</div>
+      <div class="brow" style="align-items:center"><input type="time" id="dtTime" class="search" style="max-width:150px;margin:0"><button class="tbtn" data-set="dtAt">この時刻に</button></div>
+      ${S.dtMsg ? `<div class="warn">${esc(S.dtMsg)}</div>` : ""}
+      <div class="note">ホームパネルのサーバーが動かすので、iPad を閉じていても動きます。</div>`;
+  }
+  function devTimerListHTML() {
+    const list = (S.devTimers || []).slice().sort((a, b) => a.at - b.at);
+    return list.length ? list.map((t) => `<div class="kv"><span>${dtWhen(t.at)}　${esc(t.name)} を${esc(t.label)}（あと${dtRemain(t.at)}）</span><button class="tbtn" data-set="dtCancel" data-id="${esc(t.id)}">取消</button></div>`).join("") : `<div class="note">ありません（機器の詳細の画面から設定できます）</div>`;
+  }
+  async function addDevTimer(body) {
+    const e = S.ha && S.ha.states[S.dt.id];
+    if (!e) return;
+    S.dtMsg = null;
+    const b = Object.assign({ entity: e.entity_id, name: nameOf(e), by: S.user ? S.user.name : "iPad" }, body);
+    if (dom(e) === "climate") { b.action = "set_hvac_mode"; b.data = { hvac_mode: S.dt.action }; if (S.dt.action !== "off" && S.dt.temp != null) b.data.temperature = S.dt.temp; }
+    else b.action = S.dt.action;
+    try { const j = await solarApi("/timers", b); if (j.error) S.dtMsg = j.error; S.devTimers = j.timers || S.devTimers; } catch (err) { S.dtMsg = "タイマーを設定できませんでした：" + err.message; }
+    renderEntities(); renderSheet(); renderInfo();
+  }
+
   // ---- ホーム画面を上の端で下に引っぱると、読み直す ----
   async function refreshAll() {
     const ind = $("#ptr");
@@ -3083,7 +3152,7 @@
         arr.forEach((x) => { S.ha.states[x.entity_id] = x; });
         renderEntities(); renderThermos(); renderWeather();
       }
-      loadEnergy(); loadEvents(); loadSolar(); loadClimate(); refreshSnapshots();
+      loadEnergy(); loadEvents(); loadSolar(); loadClimate(); loadDeviceTimers(); refreshSnapshots();
     } catch (e) { /* つながっていなければ接続のやり直しに任せる */ }
     setTimeout(() => { if (ind) { ind.classList.remove("busy", "show"); ind.style.height = "0px"; } }, 600);
   }
@@ -3585,6 +3654,8 @@
     setInterval(() => loadSolar(), 30000);
     loadClimate();
     setInterval(() => loadClimate(), 60000);
+    loadDeviceTimers();
+    setInterval(() => loadDeviceTimers(), 60000);
     setInterval(loadEvents, 15 * 60 * 1000);
     setInterval(checkTimers, 500);
     setInterval(checkIdle, 2000);

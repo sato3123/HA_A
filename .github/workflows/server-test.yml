@@ -90,6 +90,7 @@ jobs:
           curl -fsS -X POST -H 'Content-Type: application/json' -d '{"tariff_plan":"tepco_smartlife_s","tariff_contract":60}' http://127.0.0.1/solar-api/config > /dev/null
           curl -fsS http://127.0.0.1/solar-api/tariffs | grep -q 'basic_yen' || fail "プランを選べません"
           curl -fsS "http://127.0.0.1/solar-api/energy5?date=2026-01-01" | grep -q '"slots"' || fail "/solar-api/energy5 に届きません"
+          curl -fsS http://127.0.0.1/solar-api/timers | grep -q '"timers"' || fail "/solar-api/timers に届きません"
           # TimeTree の予定の公開（.ics だけ・家の中だけ）
           systemctl is-active homepanel-calendar.timer || fail "TimeTree の取り込みのタイマーが動いていません"
           test -x /opt/timetree/bin/timetree-exporter || fail "timetree-exporter が入っていません"

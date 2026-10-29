@@ -140,6 +140,7 @@ fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
                 overflow = TextOverflow.Ellipsis,
             )
             Text(stateLabel(e), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TimerBadge(e, vm)
         }
     }
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -228,6 +229,7 @@ fun EntityDetail(e: Entity, vm: MainViewModel) {
                 Text(if (e.domain in setOf("scene", "script")) "実行する" else "切り替える")
             }
         }
+        DeviceTimerSection(e, vm)
     }
 }
 
