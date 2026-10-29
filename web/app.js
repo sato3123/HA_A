@@ -2486,7 +2486,9 @@
     });
     const out = [];
     for (const [key, list] of Object.entries(groups)) {
-      const t = list.find(isTemp), h = list.find(isHum), b = list.find(isBat);
+      // 同じ機器にセンサーが複数あるときは、つながっていて、いちばん新しく更新されたものを使う
+      const best = (f) => list.filter(f).sort((a, b) => ((isUnav(a) || isNaN(Number(a.state))) - (isUnav(b) || isNaN(Number(b.state)))) || String(b.last_updated || "").localeCompare(String(a.last_updated || "")))[0];
+      const t = best(isTemp), h = best(isHum), b = list.find(isBat);
       if (!t && !h) continue;
       let temp = t ? Number(t.state) : NaN;
       if (t && unitOf(t) === "°F" && !isNaN(temp)) temp = (temp - 32) * 5 / 9;

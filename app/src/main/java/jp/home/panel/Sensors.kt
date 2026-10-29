@@ -38,8 +38,13 @@ fun buildThermos(states: Collection<Entity>, entityDevice: Map<String, String>, 
     fun keyOf(e: Entity) = entityDevice[e.entityId]?.let { "dev:$it" } ?: ("name:" + baseName(e.name))
     val byKey = sensors.groupBy(::keyOf)
     return byKey.mapNotNull { (key, list) ->
-        val t = list.firstOrNull(::isTemperatureSensor)
-        val h = list.firstOrNull(::isHumiditySensor)
+        // 同じ機器に温度・湿度のセンサーが複数あるとき（古いもの・使われていないものが残っているなど）は、
+        // つながっていて、いちばん新しく更新されたものを使う
+        fun best(f: (Entity) -> Boolean) = list.filter(f).sortedWith(
+            compareBy<Entity> { it.unavailable || it.state.toDoubleOrNull() == null }.thenByDescending { it.lastUpdated },
+        ).firstOrNull()
+        val t = best(::isTemperatureSensor)
+        val h = best(::isHumiditySensor)
         if (t == null && h == null) return@mapNotNull null // 電池だけの機器は出さない
         val b = list.firstOrNull(::isBatterySensor)
         fun num(e: Entity?) = e?.state?.toDoubleOrNull()

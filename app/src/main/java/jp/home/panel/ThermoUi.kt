@@ -101,6 +101,7 @@ fun ThermoSettings(vm: MainViewModel) {
     val hidden by vm.thermoHidden.collectAsState()
     val names by vm.thermoNames.collectAsState()
     var renaming by remember { mutableStateOf<Thermo?>(null) }
+    val states by vm.allStates.collectAsState()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             "Home Assistant に取り込んだ温度計（SwitchBot 温湿度計など）の温度と湿度を、ホーム画面に表示します。" +
@@ -130,6 +131,17 @@ fun ThermoSettings(vm: MainViewModel) {
                         ).joinToString("・").ifBlank { "値なし" },
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    // どのセンサーを使っているかと、最後に値が変わった時刻（湿度が変わらないときの確認用）
+                    listOfNotNull(t.tempEntity?.let { "温度" to it }, t.humEntity?.let { "湿度" to it }).forEach { (label, id) ->
+                        val st = states[id]
+                        val changed = st?.lastChanged?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
+                        val stale = changed != null && System.currentTimeMillis() - changed > 6 * 3_600_000L
+                        Text(
+                            "$label：$id・最後に変わった ${st?.lastChanged?.let { agoText(it) } ?: "－"}" + if (stale) "　⚠ 6時間以上変わっていません" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (stale) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 TextButton(onClick = { renaming = t }) { Text("✎ 名前") }
             }
