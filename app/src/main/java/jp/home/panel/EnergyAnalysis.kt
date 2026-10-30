@@ -331,6 +331,7 @@ private fun DailyWeatherTable(days: List<String>, data: List<EnergyHour>, daily:
                 listOfNotNull(
                     num("sun_h")?.let { "日照 ${fmt1(it)}時間" }, num("rain_mm")?.takeIf { it > 0 }?.let { "雨 ${fmt1(it)}mm" },
                     num("hot_use_l")?.let { "お湯 ${it.toInt()}L" },
+                    num("pv_fc_kwh")?.let { fc -> "発電の予想 ${fmt1(fc)}kWh" + (num("gen_kwh")?.let { g -> "・実績 ${fmt1(g)}kWh" } ?: "") },
                 ).joinToString("・").ifBlank { " " },
                 style = MaterialTheme.typography.bodySmall,
             )

@@ -88,6 +88,16 @@ fun EcoCuteCard(vm: MainViewModel) {
                     if (!p.ok) TextButton(onClick = { vm.retrySolarPlan() }) { Text("もう一度設定") }
                 }
             }
+            val fc by vm.serverForecast.collectAsState()
+            fc?.let { f ->
+                val d = runCatching { java.time.LocalDate.parse(f.optString("date")) }.getOrNull()
+                val label = when (d) { java.time.LocalDate.now() -> "今日"; java.time.LocalDate.now().plusDays(1) -> "明日"; else -> d?.let { "${it.monthValue}/${it.dayOfMonth}" } ?: "" }
+                Text(
+                    "🌤 $label の昼の予想：発電 ${String.format("%.1f", f.optDouble("gen"))}kWh・余り ${String.format("%.1f", f.optDouble("surplus"))}kWh" +
+                        "（沸かすのに必要 ${String.format("%.1f", f.optDouble("need"))}kWh）",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             val hot by vm.hotHistory.collectAsState()
             val hourly by vm.hotHourly.collectAsState()
             if (hot.size >= 2 || hourly != null) HotWaterChart(hot, s.tankL, Modifier.fillMaxWidth(), hourly)
@@ -201,6 +211,43 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 if (ns) Text("いまは夜の沸き上げを止めています（昼に沸かします）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 if (np) Text("いまは夜の沸き上げの途中です（${lit((sc["night_heat_pct"] as? Number)?.toInt() ?: 50)} まで沸かしたら止めます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 HotWaterDaily(vm, tank)
+            }
+
+            // 日射量の予報（晴れ扱いにするかの判断）
+            Text("日射量の予報（昼に沸かすかの判断）", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "前の日の夜に、気象庁（JMA）・ECMWF・GFS の3つの日射量の予報を合わせて、昼の時間帯の発電量を予想します。" +
+                    "この家のパネルの「日射量→発電量」は、AiSEG2 の発電の記録から自動で学習します。予想した余り（発電−ふだんの使用）が、沸かすのに必要な量以上なら晴れ扱いにします。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            val fc2 by vm.serverForecast.collectAsState()
+            fc2?.let { f ->
+                Text("いまの係数：日射量1kWh/m²あたり ${String.format("%.2f", f.optDouble("factor"))}kWh（${f.optString("factor_how")}）・必要な余り ${String.format("%.1f", f.optDouble("need"))}kWh（${f.optString("need_how")}）",
+                    style = MaterialTheme.typography.bodySmall)
+                f.optJSONObject("models")?.let { m ->
+                    Text("予報ごとの日射量（昼の時間帯）：" + m.keys().asSequence().joinToString("・") { k ->
+                        (when { k.startsWith("jma") -> "気象庁"; k.startsWith("ecmwf") -> "ECMWF"; k.startsWith("gfs") -> "GFS"; else -> k }) + " " + m.optDouble(k) + "kWh/m²"
+                    }, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            val tilt = (sc["pv_tilt"] as? Number)?.toInt() ?: 30
+            val az = (sc["pv_azimuth"] as? Number)?.toInt() ?: 0
+            Text("パネルの向き", style = MaterialTheme.typography.bodySmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(-90 to "東", -45 to "南東", 0 to "南", 45 to "南西", 90 to "西").forEach { (v, l) ->
+                    FilterChip(selected = az == v, onClick = { vm.setServerConf("pv_azimuth", v) }, label = { Text(l) }, colors = chipColors)
+                }
+            }
+            Text("パネルの傾き", style = MaterialTheme.typography.bodySmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(10, 20, 30, 40).forEach { v -> FilterChip(selected = tilt == v, onClick = { vm.setServerConf("pv_tilt", v) }, label = { Text("${v}度") }, colors = chipColors) }
+            }
+            val need = (sc["solar_need_kwh"] as? Number)?.toDouble() ?: 0.0
+            Text("沸かすのに必要な余り", style = MaterialTheme.typography.bodySmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(0.0 to "自動（記録から）", 2.0 to "2kWh", 3.0 to "3kWh", 4.0 to "4kWh", 5.0 to "5kWh").forEach { (v, l) ->
+                    FilterChip(selected = need == v, onClick = { vm.setServerConf("solar_need_kwh", v) }, label = { Text(l) }, colors = chipColors)
+                }
             }
 
             // AiSEG2 から売電・買電を読む（スマートメーターの代わり）

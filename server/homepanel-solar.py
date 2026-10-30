@@ -68,6 +68,10 @@ DEFAULT_CONF = {
     "tariff_custom": {},                    # 自分で入力：{basic, day_rate, night_rate, night_start, night_end}
     "tariff_discounts": [],                 # 使う割引（プランの discounts の id。例：電化割引）
     "power_devices": [],                    # 消費電力を直接読む機器（エアコンなど）：[{ip, eoj, name}]
+    # 日射量の予報から発電量を予想するための、太陽光パネルの情報
+    "pv_kw": 0,                             # パネルの容量（kW）。0 なら記録から推定
+    "pv_tilt": 30, "pv_azimuth": 0,         # 傾き（度）・向き（0＝南、-90＝東、90＝西）
+    "solar_need_kwh": 0,                    # 昼に沸かすのに必要な余剰（kWh）。0 なら記録（エコキュートの1日の使用量）から決める
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -279,6 +283,149 @@ el = None
 
 
 # ================= 天気予報 =================
+
+# ---- 日射量の予報から、昼の時間帯の発電量と余る電気を予想する ----
+# 気象庁のモデル（JMA）・ECMWF・GFS の3つの予報を重み付きで平均し、
+# 実際の発電量（AiSEG2 の記録）と予報の日射量の比から、この家のパネルの「日射量→発電量」の係数を学習する。
+FC_MODELS = [("jma_seamless", 0.5), ("ecmwf_ifs025", 0.3), ("gfs_seamless", 0.2)]
+
+
+def _om_hourly(lat, lon, past_days, forecast_days):
+    q = {"latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "past_days": past_days, "forecast_days": forecast_days,
+         "hourly": "global_tilted_irradiance,shortwave_radiation,cloud_cover",
+         "tilt": conf.get("pv_tilt", 30), "azimuth": conf.get("pv_azimuth", 0),
+         "models": ",".join(m for m, _ in FC_MODELS)}
+    with urllib.request.urlopen("https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(q), timeout=25) as r:
+        return json.load(r).get("hourly") or {}
+
+
+def _irr_by_day(h, hours_range):
+    """日付 → {model: 窓の時間の日射量（kWh/m²）}"""
+    times = h.get("time") or []
+    out = {}
+    for m, _ in FC_MODELS:
+        vals = h.get(f"global_tilted_irradiance_{m}") or h.get(f"shortwave_radiation_{m}")
+        if vals is None and len(FC_MODELS) and m == FC_MODELS[0][0]:
+            vals = h.get("global_tilted_irradiance") or h.get("shortwave_radiation")
+        if not vals:
+            continue
+        for t, v in zip(times, vals):
+            if v is None:
+                continue
+            d, hh = t[:10], int(t[11:13])
+            if hours_range is None or hours_range[0] <= hh < hours_range[1]:
+                out.setdefault(d, {}).setdefault(m, 0.0)
+                out[d][m] += float(v) / 1000.0
+    return out
+
+
+def _blend(per_model):
+    """重み付きの平均と、いちばん少ない予報（控えめに見るため）"""
+    w = {m: wt for m, wt in FC_MODELS}
+    tot = sum(w[m] for m in per_model)
+    if not tot:
+        return None, None
+    mean = sum(per_model[m] * w[m] for m in per_model) / tot
+    return mean, min(per_model.values())
+
+
+def pv_factor():
+    """日射量（kWh/m²）1 あたりの発電量（kWh）。過去の実績と、その日の日射量（予報モデルの値）から学習する"""
+    with lock:
+        days = dict(energy.get("days", {}))
+    ratios = []
+    for d, v in sorted(days.items())[-30:]:
+        irr, gen = v.get("irr_day"), v.get("gen_kwh")
+        if irr and gen and irr > 1.0:
+            ratios.append(gen / irr)
+    if len(ratios) >= 3:
+        ratios.sort()
+        return ratios[len(ratios) // 2], f"過去{len(ratios)}日の実績から学習"
+    kw = float(conf.get("pv_kw") or 0)
+    if kw <= 0:
+        # 記録の中でいちばん大きい1時間の発電量から、パネルの容量を推定（晴れた昼の1時間でおよそ容量の75%）
+        with lock:
+            mx = max((float(v.get("gen") or 0) for v in energy.get("hours", {}).values()), default=0.0) / 1000
+        kw = mx / 0.75 if mx > 0.5 else 5.0
+    return kw * 0.8, f"パネル{kw:.1f}kW から計算"
+
+
+def update_irr_history():
+    """過去の日の日射量（予報モデルの値）と実際の発電量を日ごとに記録する（学習と、予報の当たり具合の確認用）"""
+    lat, lon = conf.get("lat"), conf.get("lon")
+    if lat is None or lon is None:
+        return
+    h = _om_hourly(lat, lon, 31, 1)
+    per = _irr_by_day(h, None)
+    with lock:
+        days = energy.setdefault("days", {})
+        for d, pm in per.items():
+            if d >= date.today().isoformat():
+                continue
+            mean, _ = _blend(pm)
+            gen = sum(float(v.get("gen") or 0) for k, v in energy["hours"].items() if k.startswith(d)) / 1000
+            day = days.setdefault(d, {})
+            if mean is not None:
+                day["irr_day"] = round(mean, 3)
+            if gen > 0 and not day.get("gen_from_aiseg"):
+                day["gen_kwh"] = round(gen, 2)
+
+
+def need_kwh():
+    """昼に沸かすのに必要な余剰（kWh）。設定が無ければ、AiSEG2 の記録のエコキュートの1日の使用量の平均"""
+    v = float(conf.get("solar_need_kwh") or 0)
+    if v > 0:
+        return v, "設定した値"
+    with lock:
+        vals = [float((d.get("circuits_kwh") or {}).get("エコキュート") or 0) for _, d in sorted(energy.get("days", {}).items())[-8:-1]]
+    vals = [x for x in vals if x > 0.3]
+    if vals:
+        return round(sum(vals) / len(vals), 2), f"エコキュートの直近{len(vals)}日の平均"
+    return 3.0, "目安"
+
+
+def forecast_solar(day):
+    """その日の、昼の時間帯（沸かす時間帯）の発電と余る電気の予想。晴れ扱いにするかと、説明の文を返す"""
+    lat, lon = conf.get("lat"), conf.get("lon")
+    if lat is None or lon is None:
+        raise RuntimeError("天気予報の場所が設定されていません（アプリの「おひさま沸き上げ」から、サーバーに自宅の位置を送ってください）")
+    try:
+        update_irr_history()
+    except Exception as e:
+        print("日射量の記録でエラー:", e, flush=True)
+    sh, eh = int(conf["start_hour"]), int(conf["end_hour"])
+    h = _om_hourly(lat, lon, 0, 3)
+    win = _irr_by_day(h, (sh, eh)).get(day.isoformat()) or {}
+    allday = _irr_by_day(h, None).get(day.isoformat()) or {}
+    mean, low = _blend(win)
+    if mean is None:
+        raise RuntimeError("日射量の予報がありません")
+    k, how = pv_factor()
+    # 控えめな見込み：平均とモデルの中でいちばん少ない予報の間
+    irr = 0.7 * mean + 0.3 * low
+    gen = k * irr
+    # 昼の時間帯にふだん使う電気（直近7日の平均）
+    with lock:
+        uses = {}
+        for kk, v in energy["hours"].items():
+            hh = int(kk[11:13])
+            if sh <= hh < eh:
+                uses[kk[:10]] = uses.get(kk[:10], 0.0) + float(v.get("use") or 0) / 1000
+    recent = [v for d, v in sorted(uses.items())[-8:] if d != date.today().isoformat()][-7:]
+    use = sum(recent) / len(recent) if recent else 1.5
+    surplus = max(0.0, gen - use)
+    need, need_how = need_kwh()
+    sunny = surplus >= need
+    spread = (max(win.values()) - min(win.values())) / mean if mean > 0 and len(win) > 1 else 0
+    all_mean, _ = _blend(allday)
+    with lock:
+        energy.setdefault("days", {}).setdefault(day.isoformat(), {}).update(
+            pv_fc_kwh=round(k * (all_mean or 0), 2), pv_fc_window_kwh=round(gen, 2), pv_fc_surplus_kwh=round(surplus, 2))
+    note = (f"（{sh}〜{eh}時の予想：発電 {gen:.1f}kWh・ふだんの使用 {use:.1f}kWh・余り {surplus:.1f}kWh／沸かすのに必要 {need:.1f}kWh"
+            f"{'・予報のばらつき大' if spread > 0.4 else ''}）")
+    return sunny, {"note": note, "gen": gen, "surplus": surplus, "need": need, "factor": k, "factor_how": how, "need_how": need_how,
+                   "models": {m: round(v, 2) for m, v in win.items()}, "spread": round(spread, 2)}
+
 
 def forecast_sunny(day):
     lat, lon = conf.get("lat"), conf.get("lon")
@@ -698,6 +845,25 @@ def aiseg_daily_tick():
             except Exception:
                 pass
             break
+    # 今月の日ごとの発電量（AiSEG2 の「発電量（月）」の画面）。日射量→発電量の学習に使う（1日1回）
+    if aiseg_daily.get("gen_month_day") != today.isoformat():
+        try:
+            import re
+            htm = aiseg_open("/page/graph/51311")
+            m = re.search(r"var graph_data\s*=\s*(\{.*?\});", htm, re.S)
+            if m:
+                vals = json.loads(m.group(1)).get("total1") or []
+                with lock:
+                    for i, v in enumerate(vals):
+                        dd = today.replace(day=1) + timedelta(days=i)
+                        if dd.month != today.month or dd >= today or not v:
+                            continue
+                        rec = energy.setdefault("days", {}).setdefault(dd.isoformat(), {})
+                        rec["gen_kwh"] = round(float(v), 2)
+                        rec["gen_from_aiseg"] = True
+            aiseg_daily["gen_month_day"] = today.isoformat()
+        except Exception as e:
+            print("AiSEG2 の月の発電量を読めませんでした:", e, flush=True)
     try:
         hot = aiseg_hot_hourly()
         if hot:
@@ -1285,9 +1451,20 @@ def run_plan(manual=False):
         state["shift_unsupported"] = False
     name = "今日" if target == date.today() else "明日"
     try:
-        sunny, code = forecast_sunny(target)
+        sunny, info = forecast_solar(target)
+        note = info["note"]
+        state["forecast"] = dict(info, date=target.isoformat(), at=time.time())
     except Exception as e:
-        return result(False, f"{name}の天気予報を読めませんでした：{e}")
+        print("日射量の予報を使えませんでした:", e, flush=True)
+        try:
+            sunny, code = forecast_sunny(target)
+            note = "（日射量の予報が使えないため、天気の種類で判断）"
+        except Exception as e2:
+            return result(False, f"{name}の天気予報を読めませんでした：{e2}")
+    base_result = result
+
+    def result(ok, msg, sunny_=None):
+        return base_result(ok, msg + (note if ok else ""), sunny_)
     if conf.get("night_method") == "stop":
         return stop_plan(sunny, name, eco, result)
     if state.get("shift_unsupported") or (eco_caps["set"] is not None and 0xC7 not in eco_caps["set"]):
@@ -1621,7 +1798,7 @@ def public_state():
         c["ha_token_set"] = bool(conf.get("ha_token"))
         hot = [p for p in energy.get("hot", []) if p[0] > time.time() - 86400]
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
-                "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(),
+                "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,

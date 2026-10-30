@@ -2708,6 +2708,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val serverDaily = MutableStateFlow<List<Pair<String, JSONObject>>>(emptyList())
     /** 今日・今月の電気料金（サーバーが電力会社のプランの単価で計算） */
     val serverCost = MutableStateFlow<JSONObject?>(null)
+    /** 日射量の予報から予想した、昼の時間帯の発電・余り（サーバーの毎日の設定のときに計算） */
+    val serverForecast = MutableStateFlow<JSONObject?>(null)
     /** 残りのお湯の変化（時刻, L）。24時間分 */
     val hotHistory = MutableStateFlow<List<Pair<Long, Int>>>(emptyList())
     /** AiSEG2 の「湯」の画面の、1時間ごとのお湯の使用量（L）：昨日・今日（0〜23時） */
@@ -2829,6 +2831,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         nightPending.value = j.optBoolean("night_pending")
         j.optJSONObject("daily")?.let { d -> serverDaily.value = d.keys().asSequence().sorted().map { it to (d.optJSONObject(it) ?: JSONObject()) }.toList() }
         serverCost.value = j.optJSONObject("cost")
+        serverForecast.value = j.optJSONObject("forecast")
         hotHourly.value = j.optJSONObject("hot_hourly")?.let { h ->
             fun arr(k: String) = h.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } } ?: emptyList()
             arr("yesterday") to arr("today")
