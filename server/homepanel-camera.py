@@ -13,6 +13,7 @@
 必要なもの：ffmpeg（セットアップで入れる）
 """
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -68,7 +69,9 @@ def ffmpeg():
 
 
 def ha_snapshot(entity):
-    req = urllib.request.Request(conf["ha_url"].rstrip("/") + "/api/camera_proxy/" + entity,
+    if not re.fullmatch(r"camera\.[a-z0-9_]+", str(entity)):
+        raise RuntimeError("カメラの名前が正しくありません")
+    req = urllib.request.Request(ha_base_url() + "/api/camera_proxy/" + entity,
                                  headers={"Authorization": "Bearer " + conf.get("ha_token", "")})
     with urllib.request.urlopen(req, timeout=15) as r:
         return r.read()
@@ -217,6 +220,51 @@ def sleep_report(cid):
     return out
 
 
+
+# ================= 画面からの操作の確認（Home Assistant にログインしている人だけ） =================
+# 家の中のネットワークの、ほかの機器（来客のスマートフォン・家電など）から勝手に操作されないように、
+# 画面（アプリ・iPad）が送ってくる Home Assistant のアクセストークンを、Home Assistant に問い合わせて確かめる。
+HA_BASE_ENV = os.environ.get("HOMEPANEL_HA_URL", "").rstrip("/")
+_auth_cache = {}
+
+
+def ha_base_url():
+    return HA_BASE_ENV or str(conf.get("ha_url") or "").rstrip("/")
+
+
+def check_ha_token(tok):
+    import hashlib
+    if not tok or len(tok) > 4096:
+        return False
+    k = hashlib.sha256(tok.encode()).hexdigest()
+    t = _auth_cache.get(k)
+    if t and time.time() - t < 600:
+        return True
+    try:
+        req = urllib.request.Request(ha_base_url() + "/api/", headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            ok = r.status == 200
+    except Exception:
+        ok = False
+    if ok:
+        if len(_auth_cache) > 200:
+            _auth_cache.clear()
+        _auth_cache[k] = time.time()
+    return ok
+
+
+def request_authorized(handler):
+    # このコンテナの中から直接（Caddy を通さずに）呼ぶとき（コンソールでの確認など）は、そのまま通す
+    if not handler.headers.get("X-Forwarded-For"):
+        return True
+    h = handler.headers.get("Authorization") or ""
+    tok = h[7:].strip() if h.lower().startswith("bearer ") else ""
+    if not tok:
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        tok = (q.get("token") or [""])[0]
+    return check_ha_token(tok)
+
+
 class Api(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -234,6 +282,8 @@ class Api(BaseHTTPRequestHandler):
         return u.path.replace("/camera-api", "", 1).rstrip("/") or "/", {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
 
     def do_GET(self):
+        if not request_authorized(self):
+            return self._send(401, {"error": "Home Assistant にログインしているアプリ・画面からだけ使えます"})
         p, q = self._q()
         if p in ("/", "/status"):
             cams = [{k: v for k, v in c.items() if k != "url"} | {"status": status.get(c["id"])} for c in conf["cameras"]]
@@ -258,6 +308,8 @@ class Api(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if not request_authorized(self):
+            return self._send(401, {"error": "Home Assistant にログインしているアプリ・画面からだけ使えます"})
         p, q = self._q()
         n = int(self.headers.get("Content-Length") or 0)
         try:
@@ -266,7 +318,8 @@ class Api(BaseHTTPRequestHandler):
             return self._send(400, {"error": "JSON を読めません"})
         if p == "/config":
             with lock:
-                for k in ("ha_url", "ha_token", "threshold"):
+                # Home Assistant のアドレスは画面からは変えない（鍵をほかの場所に送らされないように）
+                for k in (("ha_token", "threshold") if HA_BASE_ENV else ("ha_url", "ha_token", "threshold")):
                     if k in b:
                         conf[k] = b[k]
                 if "cameras" in b:
@@ -275,6 +328,11 @@ class Api(BaseHTTPRequestHandler):
                     new = []
                     for c in b["cameras"]:
                         if not c.get("id"):
+                            continue
+                        # 読む先は RTSP のカメラか、Home Assistant のカメラだけ（ほかのファイルやサーバーを読ませない）
+                        if c.get("kind") == "rtsp" and c.get("url") and not re.match(r"rtsps?://", str(c["url"])):
+                            continue
+                        if c.get("kind") != "rtsp" and not re.fullmatch(r"camera\.[a-z0-9_]+", str(c.get("entity", ""))):
                             continue
                         if c.get("kind") == "rtsp" and not c.get("url") and c["id"] in old:
                             c["url"] = old[c["id"]].get("url", "")

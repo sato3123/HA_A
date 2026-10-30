@@ -109,12 +109,15 @@ def setup():
             cals.append({"code": code, "name": name})
     if not cals:
         sys.exit("カレンダーが選ばれていません")
-    # ファイル名はカレンダーのコードから決める（設定をやり直しても URL が変わらないように）
+    # ファイル名はカレンダーのコードと、推測できない文字列から決める
+    # （家の中のほかの機器から、予定のファイルの名前を当てて読まれないように。設定をやり直しても URL は変わらない）
+    import secrets
+    secret = c.get("secret") or secrets.token_urlsafe(18).replace("-", "").replace("_", "")[:20]
     used = set()
     for x in cals:
-        x["file"] = slug("timetree_" + x["code"], used)
+        x["file"] = slug("timetree_" + x["code"], used) + "_" + secret.lower()
         used.add(x["file"])
-    save({"email": email, "password": pw, "calendars": cals})
+    save({"email": email, "password": pw, "calendars": cals, "secret": secret})
     print("\n保存しました。いまから書き出します（数分かかることがあります）…")
     ok = run()
     print_urls()
@@ -142,13 +145,13 @@ def run():
                 n = f.read().count("BEGIN:VEVENT")
             os.chmod(tmp, 0o644)
             os.replace(tmp, dst)
-            results.append({"name": x["name"], "file": x["file"] + ".ics", "events": n, "ok": True})
+            results.append({"name": x["name"], "events": n, "ok": True})
             print(f"✓ {x['name']}：{n}件")
         except Exception as e:
             if os.path.exists(tmp):
                 os.remove(tmp)
             # 前に書き出したファイルは残す（一時的なエラーで予定が消えないように）
-            results.append({"name": x["name"], "file": x["file"] + ".ics", "ok": False, "error": str(e)[:400]})
+            results.append({"name": x["name"], "ok": False, "error": str(e)[:400]})
             print(f"✕ {x['name']}：{e}")
         time.sleep(3)  # TimeTree の負担を減らす
     st = {"at": time.time(), "at_text": datetime.now().strftime("%m/%d %H:%M"), "calendars": results}

@@ -14,6 +14,7 @@
 標準ライブラリだけで動く。設定：/var/lib/homepanel-solar/config.json　状態：/var/lib/homepanel-solar/state.json
 """
 import ipaddress
+import re
 import json
 import os
 import socket
@@ -1027,7 +1028,7 @@ climate_state = {}
 
 
 def ha_req(method, path, body=None):
-    base = str(conf.get("ha_url") or "").rstrip("/")
+    base = ha_base_url()
     tok = conf.get("ha_token") or ""
     if not base or not tok:
         raise RuntimeError("Home Assistant のトークンが登録されていません（アプリの「エアコンの自動温度調整」で登録してください）")
@@ -1627,6 +1628,51 @@ def public_state():
                 "history": state["history"], "eco": state["eco"], "by_us": state["by_us"], "server_time": time.time()}
 
 
+
+# ================= 画面からの操作の確認（Home Assistant にログインしている人だけ） =================
+# 家の中のネットワークの、ほかの機器（来客のスマートフォン・家電など）から勝手に操作されないように、
+# 画面（アプリ・iPad）が送ってくる Home Assistant のアクセストークンを、Home Assistant に問い合わせて確かめる。
+HA_BASE_ENV = os.environ.get("HOMEPANEL_HA_URL", "").rstrip("/")
+_auth_cache = {}
+
+
+def ha_base_url():
+    return HA_BASE_ENV or str(conf.get("ha_url") or "").rstrip("/")
+
+
+def check_ha_token(tok):
+    import hashlib
+    if not tok or len(tok) > 4096:
+        return False
+    k = hashlib.sha256(tok.encode()).hexdigest()
+    t = _auth_cache.get(k)
+    if t and time.time() - t < 600:
+        return True
+    try:
+        req = urllib.request.Request(ha_base_url() + "/api/", headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            ok = r.status == 200
+    except Exception:
+        ok = False
+    if ok:
+        if len(_auth_cache) > 200:
+            _auth_cache.clear()
+        _auth_cache[k] = time.time()
+    return ok
+
+
+def request_authorized(handler):
+    # このコンテナの中から直接（Caddy を通さずに）呼ぶとき（コンソールでの確認など）は、そのまま通す
+    if not handler.headers.get("X-Forwarded-For"):
+        return True
+    h = handler.headers.get("Authorization") or ""
+    tok = h[7:].strip() if h.lower().startswith("bearer ") else ""
+    if not tok:
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        tok = (q.get("token") or [""])[0]
+    return check_ha_token(tok)
+
+
 class Api(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -1647,6 +1693,8 @@ class Api(BaseHTTPRequestHandler):
         return urllib.parse.urlparse(self.path).path.replace("/solar-api", "", 1).rstrip("/") or "/"
 
     def do_GET(self):
+        if not request_authorized(self):
+            return self._ok({"error": "Home Assistant にログインしているアプリ・画面からだけ使えます"}, 401)
         p = self._path()
         if p in ("/", "/status"):
             return self._ok(public_state())
@@ -1665,14 +1713,25 @@ class Api(BaseHTTPRequestHandler):
         self._ok({"error": "not found"}, 404)
 
     def do_POST(self):
+        if not request_authorized(self):
+            return self._ok({"error": "Home Assistant にログインしているアプリ・画面からだけ使えます"}, 401)
         p = self._path()
         try:
             b = self._body()
         except Exception:
             return self._ok({"error": "JSON を読めません"}, 400)
         if p == "/config":
-            allowed = set(DEFAULT_CONF)
+            # Home Assistant のアドレスは画面からは変えない（変えられると、鍵（トークン）をほかの場所に送らされてしまうため）
+            allowed = set(DEFAULT_CONF) - ({"ha_url"} if HA_BASE_ENV else set())
             with lock:
+                # AiSEG2 のアドレスを変えるときは、パスワードも入れ直してもらう（前のパスワードをほかの機器に送らないため）
+                if "aiseg_url" in b and str(b["aiseg_url"]).strip() != str(conf.get("aiseg_url") or "").strip() and "aiseg_password" not in b:
+                    conf["aiseg_password"] = ""
+                if "ha_url" in b and "ha_url" in allowed and str(b["ha_url"]).rstrip("/") != str(conf.get("ha_url") or "").rstrip("/") and "ha_token" not in b:
+                    conf["ha_token"] = ""
+                for r in b.get("climate_rules") or [] if isinstance(b.get("climate_rules"), list) else []:
+                    if not str(r.get("entity", "")).startswith("climate.") or (r.get("source") and not str(r["source"]).startswith("sensor.")):
+                        return self._ok({"error": "温度調整の設定が正しくありません"}, 400)
                 for k, v in b.items():
                     if k in allowed:
                         conf[k] = v
@@ -1686,7 +1745,8 @@ class Api(BaseHTTPRequestHandler):
             if not conf.get("ha_token"):
                 return self._ok({"error": "サーバーに Home Assistant の鍵が登録されていません（アプリの「エアコンの自動温度調整」で登録してください）"})
             eid = str(b.get("entity") or "")
-            if "." not in eid or b.get("action") not in ("turn_on", "turn_off", "toggle", "set_hvac_mode"):
+            if eid.split(".")[0] not in ("switch", "light", "fan", "input_boolean", "climate", "media_player") or not re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", eid) \
+                    or b.get("action") not in ("turn_on", "turn_off", "toggle", "set_hvac_mode"):
                 return self._ok({"error": "機器か操作が正しくありません"})
             at = float(b["at"]) if b.get("at") else time.time() + float(b.get("after_min") or 0) * 60
             if at < time.time() - 60 or at > time.time() + 8 * 86400:

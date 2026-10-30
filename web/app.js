@@ -2697,7 +2697,9 @@
 
   // ================= おひさま沸き上げ（サーバーで動いているものを表示） =================
   async function solarApi(path, body) {
-    const r = await fetch("/solar-api" + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+    // サーバーは、Home Assistant にログインしている画面か、このトークンで確かめる
+    const auth = { Authorization: "Bearer " + (await accessToken()) };
+    const r = await fetch("/solar-api" + path, body ? { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, auth), body: JSON.stringify(body) } : { cache: "no-store", headers: auth });
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
   }
@@ -2785,7 +2787,8 @@
 
   // ================= サーバーの機能（エアコンの自動温度調整・カメラの記録・操作の記録など） =================
   async function camApi(path, body) {
-    const r = await fetch("/camera-api" + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+    const auth = { Authorization: "Bearer " + (await accessToken()) };
+    const r = await fetch("/camera-api" + path, body ? { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, auth), body: JSON.stringify(body) } : { cache: "no-store", headers: auth });
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
   }
@@ -2863,7 +2866,7 @@
     fillExtra();
   }
   async function loadMotion(cam) {
-    S.motion = { cam, data: null, sel: null };
+    S.motion = { cam, data: null, sel: null, tok: await accessToken() };
     fillExtra();
     try { S.motion.data = await camApi(`/motion?cam=${encodeURIComponent(cam)}&hours=48`); } catch (e) { S.motion.err = e.message; }
     fillExtra();
@@ -2921,7 +2924,7 @@
         else {
           h += `<div class="fl">寝た・起きた時刻の目安</div>` + ((d.sleep || []).length ? d.sleep.map((n) => `<div style="font-size:17px">🌙 ${dayLabel(n.night)}の夜：寝た ${n.slept || "－"}　☀ 起きた ${n.woke || "－"}</div>`).join("") : `<div class="note">まだ分かりません（夜の記録がたまると表示します）</div>`);
           h += (d.motion || []).length ? motionSVG(d.motion, d.threshold || 2, mo.sel) + `<div class="note">濃い棒＝動きあり（${d.threshold}% 以上）、灰色の帯＝夜（19時〜7時）。棒をタップすると、その時刻の画像を出します。</div>` : `<div class="note">まだ記録がありません</div>`;
-          if (mo.sel) h += `<div class="fl">${jstTime(mo.sel * 1000)} ごろの画像</div><img class="motionimg" alt="" src="/camera-api/frame?cam=${encodeURIComponent(r.id)}&t=${mo.sel}">`;
+          if (mo.sel) h += `<div class="fl">${jstTime(mo.sel * 1000)} ごろの画像</div><img class="motionimg" alt="" src="/camera-api/frame?cam=${encodeURIComponent(r.id)}&t=${mo.sel}&token=${encodeURIComponent(mo.tok || "")}">`;
         }
       }
       h += `</div>`;
@@ -3060,7 +3063,7 @@
         fillExtra(); return true;
       }
       case "motionOpen": if (S.motion && S.motion.cam === id) { S.motion = null; fillExtra(); } else loadMotion(id); return true;
-      case "motionPick": if (S.motion) { S.motion.sel = Number(id); fillExtra(); } return true;
+      case "motionPick": if (S.motion) { S.motion.sel = Number(id); S.motion.tok = await accessToken(); fillExtra(); } return true;
       case "opHours": S.oplog = Object.assign(S.oplog || {}, { hours: Number(id) }); loadOpLog(); return true;
       case "opKind": S.oplog = Object.assign(S.oplog || {}, { kind: id }); fillExtra(); return true;
       case "helpGo": { const t = document.getElementById("help-" + id); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }

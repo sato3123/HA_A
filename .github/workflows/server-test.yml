@@ -21,6 +21,9 @@ jobs:
           from http.server import BaseHTTPRequestHandler, HTTPServer
           class H(BaseHTTPRequestHandler):
               def do_GET(self):
+                  # /api/ はトークンの確認：「good」だけ正しいことにする
+                  if self.path == "/api/" and self.headers.get("Authorization") != "Bearer good":
+                      self.send_response(401); self.end_headers(); return
                   body = json.dumps({"path": self.path, "headers": dict(self.headers)}).encode()
                   self.send_response(200)
                   self.send_header("Content-Type", "application/json")
@@ -84,13 +87,17 @@ jobs:
             systemctl is-active $svc || { sudo journalctl -u $svc --no-pager | tail -30; fail "$svc が動いていません"; }
           done
           sleep 2
-          curl -fsS http://127.0.0.1/solar-api/climate | grep -q '"enabled"' || fail "/solar-api/climate に届きません"
-          curl -fsS http://127.0.0.1/camera-api/status | grep -q '"cameras"' || fail "/camera-api/status に届きません"
-          curl -fsS http://127.0.0.1/solar-api/tariffs | grep -q '従量電灯' || fail "電気料金の単価表が読めません"
-          curl -fsS -X POST -H 'Content-Type: application/json' -d '{"tariff_plan":"tepco_smartlife_s","tariff_contract":60}' http://127.0.0.1/solar-api/config > /dev/null
-          curl -fsS http://127.0.0.1/solar-api/tariffs | grep -q 'basic_yen' || fail "プランを選べません"
-          curl -fsS "http://127.0.0.1/solar-api/energy5?date=2026-01-01" | grep -q '"slots"' || fail "/solar-api/energy5 に届きません"
-          curl -fsS http://127.0.0.1/solar-api/timers | grep -q '"timers"' || fail "/solar-api/timers に届きません"
+          # トークンが無い・違うときは断る（家の中のほかの機器から勝手に操作されないように）
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/solar-api/status)" = "401" ] || fail "トークンなしで /solar-api に入れてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer bad' http://127.0.0.1/camera-api/status)" = "401" ] || fail "違うトークンで /camera-api に入れてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{"ha_url":"http://evil"}' http://127.0.0.1/solar-api/config)" = "401" ] || fail "トークンなしで設定を変えられてしまいます"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/climate | grep -q '"enabled"' || fail "/solar-api/climate に届きません"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/camera-api/status | grep -q '"cameras"' || fail "/camera-api/status に届きません"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/tariffs | grep -q '従量電灯' || fail "電気料金の単価表が読めません"
+          curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"tariff_plan":"tepco_smartlife_s","tariff_contract":60}' http://127.0.0.1/solar-api/config > /dev/null
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/tariffs | grep -q 'basic_yen' || fail "プランを選べません"
+          curl -fsS -H "Authorization: Bearer good" "http://127.0.0.1/solar-api/energy5?date=2026-01-01" | grep -q '"slots"' || fail "/solar-api/energy5 に届きません"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/timers | grep -q '"timers"' || fail "/solar-api/timers に届きません"
           # TimeTree の予定の公開（.ics だけ・家の中だけ）
           systemctl is-active homepanel-calendar.timer || fail "TimeTree の取り込みのタイマーが動いていません"
           test -x /opt/timetree/bin/timetree-exporter || fail "timetree-exporter が入っていません"

@@ -188,7 +188,7 @@ mkdir -p /usr/local/share/homepanel
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/tariffs.json" -o /usr/local/share/homepanel/tariffs.json && chmod 644 /usr/local/share/homepanel/tariffs.json || echo "注意：電気料金の単価表を取れませんでした"
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o /usr/local/bin/homepanel-solar
 chmod 755 /usr/local/bin/homepanel-solar
-cat > /etc/systemd/system/homepanel-solar.service <<'UNITEOF'
+cat > /etc/systemd/system/homepanel-solar.service <<UNITEOF
 [Unit]
 Description=ホームパネル おひさま沸き上げ（エコキュート）
 After=network-online.target
@@ -201,6 +201,7 @@ RestartSec=10
 DynamicUser=yes
 StateDirectory=homepanel-solar
 Environment=TZ=Asia/Tokyo
+Environment=HOMEPANEL_HA_URL=http://$HA_IP:$HA_PORT
 
 [Install]
 WantedBy=multi-user.target
@@ -209,7 +210,7 @@ UNITEOF
 echo "== カメラの記録（2日分）と動きの分析のサービスを用意しています"
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-camera.py" -o /usr/local/bin/homepanel-camera
 chmod 755 /usr/local/bin/homepanel-camera
-cat > /etc/systemd/system/homepanel-camera.service <<'UNITEOF'
+cat > /etc/systemd/system/homepanel-camera.service <<UNITEOF
 [Unit]
 Description=ホームパネル カメラの記録と動きの分析
 After=network-online.target
@@ -222,6 +223,7 @@ RestartSec=10
 DynamicUser=yes
 StateDirectory=homepanel-camera
 Environment=TZ=Asia/Tokyo
+Environment=HOMEPANEL_HA_URL=http://$HA_IP:$HA_PORT
 
 [Install]
 WantedBy=multi-user.target

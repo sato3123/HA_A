@@ -2602,9 +2602,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** カメラの記録・動きの分析のサービス（/camera-api/） */
     private suspend fun cameraServerCall(path: String, body: JSONObject?): JSONObject = serverCallAt("/camera-api", "homepanel-camera", path, body)
 
-    private suspend fun serverCallAt(prefix: String, service: String, path: String, body: JSONObject?): JSONObject = withContext(Dispatchers.IO) {
+    /** サーバーに送る Home Assistant のアクセストークン（サーバーは、これで Home Assistant にログインしている画面か確かめる） */
+    private suspend fun serverAuthToken(): String? = try {
+        val r = route.value
+        val local = store.baseUrl
+        if (r != null && local != null) validAccessToken(r.base, local) else null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    private suspend fun serverCallAt(prefix: String, service: String, path: String, body: JSONObject?): JSONObject {
+        val token = serverAuthToken()
+        return serverCallAtWith(prefix, service, path, body, token)
+    }
+
+    private suspend fun serverCallAtWith(prefix: String, service: String, path: String, body: JSONObject?, token: String?): JSONObject = withContext(Dispatchers.IO) {
         val url = shServer.value + prefix + path
         val req = Request.Builder().url(url).apply {
+            token?.let { header("Authorization", "Bearer $it") }
             if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
         }.build()
         serverHttp.newCall(req).execute().use { r ->
@@ -2612,14 +2629,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (r.code == 404) throw HaException("サーバーにこの機能のサービスがありません（サーバーのセットアップ setup.sh をやり直してください）")
             if (r.code == 502) throw HaException("サーバーのサービスが止まっています（コンテナで systemctl status $service を確認してください）")
             if (r.code == 403) throw HaException("サーバーは家の中からだけ使えます")
+            if (r.code == 401) throw HaException("サーバーに Home Assistant のログインを確かめてもらえませんでした（Home Assistant につながってから、もう一度試してください）")
             if (!r.isSuccessful) throw HaException("サーバーでエラーになりました (HTTP ${r.code})")
             JSONObject(r.body?.string().orEmpty())
         }
     }
 
     /** サーバーの画像（カメラの記録など）を読む */
-    suspend fun serverBytes(path: String): ByteArray = withContext(Dispatchers.IO) {
-        serverHttp.newCall(Request.Builder().url(shServer.value + path).build()).execute().use { r ->
+    suspend fun serverBytes(path: String): ByteArray {
+        val token = serverAuthToken()
+        return serverBytesWith(path, token)
+    }
+
+    private suspend fun serverBytesWith(path: String, token: String?): ByteArray = withContext(Dispatchers.IO) {
+        serverHttp.newCall(Request.Builder().url(shServer.value + path).apply { token?.let { header("Authorization", "Bearer $it") } }.build()).execute().use { r ->
             if (!r.isSuccessful) throw HaException("読めませんでした (HTTP ${r.code})")
             r.body?.bytes() ?: ByteArray(0)
         }
