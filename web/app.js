@@ -2708,6 +2708,7 @@
     try { S.solar = await solarApi(path || "/status", body); S.solarErr = null; renderEnergy(); }
     catch (e) { if (path) S.solarErr = "サーバーに送れませんでした：" + e.message; else S.solar = null; }
     renderSolar();
+    renderGroups();
   }
   const yenFmt = (v) => (v === null || v === undefined ? "－" : Math.round(v).toLocaleString("ja-JP") + "円");
   /** サーバーが電力会社のプランの単価で計算した電気代 */
@@ -2766,10 +2767,83 @@
       <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
       ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.message.startsWith("⚠") ? "" : p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
       ${hotChartHTML(j.hot_history, e.tank, j.hot_hourly)}
+      ${awayHTML(j)}
       ${nightHeatHTML(j)}
       ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
       <div class="brow">${p && !p.ok ? `<button class="btn" data-set="solarRetry">もう一度設定</button>` : `<button class="tbtn" data-set="solarRetry">設定し直す</button>`}
         ${e.can_manual ? `<button class="btn outline" data-set="solarHeat" data-id="start">今すぐ沸き増し</button>${e.manual ? `<button class="tbtn" data-set="solarHeat" data-id="auto">自動に戻す</button>` : ""}` : ""}</div></div>`;
+  }
+
+  // ================= リアルタイム表示（発電・消費・売買電・エコキュート。10秒ごと） =================
+  async function loadLive() {
+    if (!SERVER_MODE) return;
+    try { S.live = await solarApi("/live"); } catch (e) { S.live = null; }
+    renderLive();
+  }
+  function renderLive() {
+    const box = $("#live");
+    if (!box) return;
+    const v = S.live;
+    if (!v) { box.innerHTML = ""; return; }
+    const kw = (w) => (w / 1000).toFixed(1) + "kW";
+    const e = v.eco || {};
+    const away = v.away_until && v.away_until * 1000 > Date.now();
+    const eco = away ? "🧳 留守" : e.online === false ? "応答なし" : e.heating ? "♨ 沸き上げ中" : e.heating === false ? "停止中" : "";
+    const rest = e.remain != null ? ` 残り${e.remain}L${e.tank ? `（${Math.round(e.remain * 100 / e.tank)}%）` : ""}` : "";
+    const d = v.demand;
+    const over = d && d.warn_kw != null && d.projected_kw > d.warn_kw;
+    const alert = v.demand_alert && Date.now() - v.demand_alert.at * 1000 < 30 * 60000 ? v.demand_alert.message : "";
+    box.innerHTML = `<div class="card estrip live">
+      ${v.generation_w != null ? `<span>☀ 発電 <b style="color:#43a047">${kw(v.generation_w)}</b></span>` : ""}
+      ${v.consumption_w != null ? `<span>🏠 消費 <b style="color:#fb8c00">${kw(v.consumption_w)}</b></span>` : ""}
+      ${v.surplus_w != null ? (v.surplus_w >= 0 ? `<span>⚡ 売電 <b style="color:#1e88e5">${kw(v.surplus_w)}</b></span>` : `<span>⚡ 買電 <b style="color:#e53935">${kw(-v.surplus_w)}</b></span>`) : ""}
+      ${eco ? `<span>🛁 <b>${eco}</b>${rest}</span>` : ""}
+      ${v.eco_today_kwh != null ? `<span>今日の沸き上げ <b>${Number(v.eco_today_kwh).toFixed(1)}kWh</b></span>` : ""}
+      ${d && d.projected_kw != null ? `<span class="${over ? "warn" : "note"}">30分の電力（${esc(String(d.slot).slice(-5))}〜）：このままだと ${d.projected_kw.toFixed(1)}kW${d.warn_kw != null ? `（注意 ${d.warn_kw.toFixed(1)}kW・上限 ${d.limit_kw.toFixed(1)}kW）` : ""}</span>` : ""}
+      ${alert ? `<span class="warn">⚠ ${esc(alert)}</span>` : ""}</div>`;
+  }
+
+  // ================= まとめて操作（ボタン1つで、いくつもの機器をつける・消す。ボタンは Android 版で作る） =================
+  function renderGroups() {
+    const box = $("#groups");
+    if (!box) return;
+    const gs = (S.solar && S.solar.config && S.solar.config.groups) || [];
+    if (!gs.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<div class="brow groups">${gs.map((g) => `<button class="btn outline" data-set="groupRun" data-id="${esc(g.id)}" data-act="${esc(g.action)}">${esc(g.icon || (g.action === "on" ? "💡" : "⏻"))} ${esc(g.name)}</button>
+      <button class="tbtn" data-set="groupRun" data-id="${esc(g.id)}" data-act="${g.action === "on" ? "off" : "on"}" title="反対の操作">${g.action === "on" ? "消す" : "つける"}</button>`).join("")}
+      ${S.groupMsg ? `<span class="note">${esc(S.groupMsg)}</span>` : ""}</div>`;
+  }
+  async function runGroup(id, action) {
+    const g = ((S.solar && S.solar.config && S.solar.config.groups) || []).find((x) => x.id === id);
+    if (!g) return;
+    S.groupMsg = `${g.name}：送っています…`; renderGroups();
+    try {
+      const r = await solarApi("/groups/run", { id, action });
+      S.groupMsg = r.error || `${g.name}：${r.done}台を${action === "on" ? "つけ" : "消し"}ました${r.failed && r.failed.length ? `（できなかった：${r.failed.length}台）` : ""}`;
+    } catch (e) { S.groupMsg = `${g.name}：送れませんでした（${e.message}）`; }
+    renderGroups();
+    setTimeout(() => { S.groupMsg = null; renderGroups(); }, 6000);
+  }
+
+  // ================= 留守（エコキュートの沸き上げを数日止める） =================
+  function awayHTML(j) {
+    const until = j.away_until ? j.away_until * 1000 : 0;
+    if (until > Date.now()) {
+      return `<div class="brow" style="align-items:center"><span class="fl" style="flex:1">🧳 留守：${jstTime(until)} に帰る予定（${j.away === "reheat" ? "帰る前なので沸かしています" : "沸き上げを止めています"}）</span>
+        <button class="tbtn" data-set="awayOpen">変更</button><button class="tbtn" data-set="awayCancel">取り消す</button></div>${S.awayOpen ? awayFormHTML(j) : ""}`;
+    }
+    return S.awayOpen ? awayFormHTML(j) : `<div class="brow"><button class="btn outline" data-set="awayOpen">🧳 留守にする（沸き上げを止める）</button></div>`;
+  }
+  function awayFormHTML(j) {
+    const cur = j.away_until && j.away_until * 1000 > Date.now() ? new Date(j.away_until * 1000) : new Date(Date.now() + 2 * 86400000);
+    if (!(j.away_until && j.away_until * 1000 > Date.now())) cur.setHours(18, 0, 0, 0);
+    const local = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}T${pad(cur.getHours())}:${pad(cur.getMinutes())}`;
+    const rh = (j.config && j.config.away_reheat_hours != null) ? j.config.away_reheat_hours : 6;
+    return `<div class="card" style="margin-top:6px"><div class="note">帰る日時まで、エコキュートの沸き上げ（夜の沸き上げも）を止めます。帰る少し前から沸かし始めます。</div>
+      <div class="brow" style="align-items:center">帰る日時 <input type="datetime-local" id="awayAt" value="${local}">
+        帰る <select id="awayReheat">${[[0, "沸かさない"], [3, "3時間前"], [6, "6時間前"], [9, "9時間前"], [12, "12時間前"]].map(([h, l]) => `<option value="${h}"${Number(rh) === h ? " selected" : ""}>${l}</option>`).join("")}</select> から沸かす</div>
+      <div class="brow"><button class="btn" data-set="awaySave">留守にする</button><button class="tbtn" data-set="awayClose">やめる</button></div>
+      <div class="note">※ 留守の間に誰かがリモコンで沸き上げを戻しても、10分ごとに止め直します。</div></div>`;
   }
 
   // ================= 日本時間の表示 =================
@@ -3056,6 +3130,24 @@
       }
       case "dtCancel": try { const j = await solarApi("/timers/delete", { id }); S.devTimers = j.timers || []; } catch (e) { /* 次の読み込みで */ } renderEntities(); renderSheet(); renderInfo(); { const l = $("#devTimerList"); if (l) l.innerHTML = devTimerListHTML(); } return true;
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
+      case "groupRun": runGroup(id, el.dataset.act); return true;
+      case "awayOpen": S.awayOpen = true; renderSolar(); return true;
+      case "awayClose": S.awayOpen = false; renderSolar(); return true;
+      case "awayCancel": S.awayOpen = false; await loadSolar("/away", { cancel: true }); loadLive(); return true;
+      case "awaySave": {
+        const v = ($("#awayAt") || {}).value;
+        const t = v ? new Date(v).getTime() : 0;
+        if (!t || t < Date.now()) { S.solarErr = "帰る日時が過ぎています"; renderSolar(); return true; }
+        S.awayOpen = false;
+        let err = null;
+        try {
+          const r = await solarApi("/away", { until: t / 1000, reheat_hours: Number(($("#awayReheat") || {}).value || 6) });
+          err = r.error || null;
+        } catch (e) { err = "サーバーに送れませんでした：" + e.message; }
+        await loadSolar(); loadLive();
+        if (err) { S.solarErr = err; renderSolar(); }
+        return true;
+      }
       case "camRecToggle": {
         const cams = ((S.camRec && S.camRec.cameras) || []).map((c) => ({ id: c.id, name: c.name, kind: c.kind, entity: c.entity })).filter((c) => c.id !== id);
         if (el.checked) cams.push({ id, name: el.dataset.name, kind: "ha", entity: el.dataset.entity });
@@ -3572,13 +3664,14 @@
         <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
       <div class="msg hidden" id="msg"></div>
+      <div id="groups"></div>
       <div id="home">
         <div data-sec="clock"><section class="hero"><div><div class="time" id="time"></div><div class="date" id="date"></div></div><div id="weather"></div>
           <div class="vbox"><div class="vtexts"><div class="vstatus" id="vstatus"></div><div class="vnote" id="vnote"></div></div><button class="mic" id="mic">🎤</button></div></section></div>
         <div data-sec="thermo"><div class="thermos" id="thermo"></div></div>
         <div data-sec="calendar"><div id="cal"></div></div>
         <div data-sec="timers"><div class="timerstrip hidden" id="timerStrip"></div></div>
-        <div data-sec="energy"><div id="energy"></div><div id="solar"></div></div>
+        <div data-sec="energy"><div id="live"></div><div id="energy"></div><div id="solar"></div></div>
         <div data-sec="automations"><div id="quick"></div></div>
         <div data-sec="devices"><div class="roombar" id="roombar"></div><main class="grid" id="grid"></main>
           <div class="note" id="empty" style="text-align:center;padding:32px"></div></div>
@@ -3657,6 +3750,8 @@
     setInterval(loadEnergy, 10 * 60 * 1000);
     loadSolar();
     setInterval(() => loadSolar(), 30000);
+    loadLive();
+    setInterval(() => { if (document.visibilityState === "visible") loadLive(); }, 10000);
     loadClimate();
     setInterval(() => loadClimate(), 60000);
     loadDeviceTimers();

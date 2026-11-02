@@ -1,6 +1,9 @@
 #!/bin/bash
 # ホームパネル（iPad 版）サーバーのセットアップ。LXC コンテナ（Debian 12）の中で root で実行する。
 #   curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/setup.sh | bash
+# リポジトリを非公開にしたあとは（TOKEN は GitHub の読み取り専用トークン）：
+#   T=github_pat_xxx; curl -fsSL -H "Authorization: Bearer $T" -H "Accept: application/vnd.github.raw" \
+#     https://api.github.com/repos/sato3123/HA_A/contents/server/setup.sh | GITHUB_TOKEN=$T bash
 #
 # 役割：
 #   - iPad 版を https://SELF_IP/ で配信する（Caddy の自前の証明書）
@@ -30,54 +33,114 @@ apt-get install -y -qq python3-venv >/dev/null
 /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null || echo "注意：timetree-exporter を入れられませんでした（TimeTree の取り込みは使えません）"
 
 echo "== 更新用スクリプトを作っています"
-mkdir -p "$WEB" "$CA_DIR"
-cat > /usr/local/bin/homepanel-update <<EOF
+mkdir -p "$WEB" "$CA_DIR" /etc/homepanel /srv/homepanel-android
+# リポジトリを非公開にしたときは、読み取り専用のトークン（GitHub の fine-grained token）をここに置く
+#   GITHUB_TOKEN=github_pat_xxx bash setup.sh   または   homepanel-github-token
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  (umask 077; printf '%s' "$GITHUB_TOKEN" > /etc/homepanel/github_token)
+fi
+echo "$REPO" > /etc/homepanel/repo
+cat > /usr/local/bin/homepanel-github-token <<'TOKEOF'
 #!/bin/bash
-# GitHub の最新リリースから iPad 版を取ってきて、変わっていれば入れ替える
+# 非公開のリポジトリから更新を取るための、GitHub のトークンを登録する（root だけが読めるファイルに保存）
 set -euo pipefail
-URL=\$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | jq -r '.assets[] | select(.name=="homepanel-web.zip") | .browser_download_url')
-[ -n "\$URL" ] || { echo "homepanel-web.zip が見つかりません"; exit 1; }
-TMP=\$(mktemp -d)
-trap 'rm -rf "\$TMP"' EXIT
-curl -fsSL "\$URL" -o "\$TMP/web.zip"
-unzip -q "\$TMP/web.zip" -d "\$TMP/new"
-if ! cmp -s "\$TMP/new/version.json" "$WEB/version.json"; then
-  rsync -a --delete "\$TMP/new/" "$WEB/"
-  chmod -R a+rX "$WEB"
-  echo "更新しました: \$(cat "$WEB/version.json")"
+read -rsp "GitHub のトークン（github_pat_…。入力は表示されません。空で削除）: " T; echo
+if [ -z "$T" ]; then rm -f /etc/homepanel/github_token; echo "削除しました"; exit 0; fi
+(umask 077; printf '%s' "$T" > /etc/homepanel/github_token)
+REPO=$(cat /etc/homepanel/repo)
+if curl -fsS -o /dev/null -H "Authorization: Bearer $T" "https://api.github.com/repos/$REPO"; then echo "OK：$REPO を読めました"; else echo "注意：$REPO を読めません（トークンの権限・期限を確認してください）"; fi
+TOKEOF
+chmod 700 /usr/local/bin/homepanel-github-token
+
+cat > /usr/local/bin/homepanel-update <<'UPDEOF'
+#!/bin/bash
+# GitHub の最新リリースから iPad 版・Android 版・サーバーのプログラムを取ってきて、変わっていれば入れ替える
+# リポジトリが非公開のときは /etc/homepanel/github_token のトークンで読む
+set -euo pipefail
+REPO=$(cat /etc/homepanel/repo)
+WEB=/srv/homepanel
+APK_DIR=/srv/homepanel-android
+mkdir -p "$APK_DIR"
+TOKEN=$(cat /etc/homepanel/github_token 2>/dev/null || true)
+AUTH=()
+[ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+# リポジトリのファイルを1つ取る（main ブランチ）
+ghfile() {
+  if [ -n "$TOKEN" ]; then
+    curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
+  else
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
+  fi
+}
+# 最新リリースの添付ファイルを1つ取る（名前か、名前の末尾で）
+ghasset() {
+  local url
+  if [ -n "$TOKEN" ]; then
+    url=$(jq -r --arg n "$1" '[.assets[] | select(.name==$n or (.name|endswith($n)))][0].url // empty' "$TMP/release.json")
+    [ -n "$url" ] && curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" "$url" -o "$2"
+  else
+    url=$(jq -r --arg n "$1" '[.assets[] | select(.name==$n or (.name|endswith($n)))][0].browser_download_url // empty' "$TMP/release.json")
+    [ -n "$url" ] && curl -fsSL "$url" -o "$2"
+  fi
+}
+
+curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/release.json" \
+  || { echo "最新リリースを読めません（リポジトリが非公開なら homepanel-github-token でトークンを登録してください）"; exit 1; }
+TAG=$(jq -r .tag_name "$TMP/release.json")
+
+# iPad 版
+if ghasset homepanel-web.zip "$TMP/web.zip"; then
+  unzip -q "$TMP/web.zip" -d "$TMP/new"
+  if ! cmp -s "$TMP/new/version.json" "$WEB/version.json"; then
+    rsync -a --delete "$TMP/new/" "$WEB/"
+    chmod -R a+rX "$WEB"
+    echo "更新しました: $(cat "$WEB/version.json")"
+  fi
+else
+  echo "homepanel-web.zip が見つかりません"
+fi
+# Android 版：家の中だけで配る（http://このサーバー/android/。Home Assistant にログインしたアプリだけが取れる）
+if [ "$(jq -r .tag "$APK_DIR/latest.json" 2>/dev/null || true)" != "$TAG" ] && ghasset .apk "$TMP/app.apk"; then
+  install -m 644 "$TMP/app.apk" "$APK_DIR/HomePanel.apk"
+  jq '{tag: .tag_name, name: ([.assets[] | select(.name|endswith(".apk"))][0].name), notes: .body}' "$TMP/release.json" > "$TMP/latest.json"
+  install -m 644 "$TMP/latest.json" "$APK_DIR/latest.json"
+  echo "Android 版を用意しました: $TAG"
 fi
 # 電気料金の単価表（電力会社・プラン）も新しくする
 mkdir -p /usr/local/share/homepanel
-if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/tariffs.json" -o "\$TMP/tariffs.json" && jq -e .providers "\$TMP/tariffs.json" >/dev/null; then
-  cmp -s "\$TMP/tariffs.json" /usr/local/share/homepanel/tariffs.json || install -m 644 "\$TMP/tariffs.json" /usr/local/share/homepanel/tariffs.json
+if ghfile server/tariffs.json "$TMP/tariffs.json" && jq -e .providers "$TMP/tariffs.json" >/dev/null; then
+  cmp -s "$TMP/tariffs.json" /usr/local/share/homepanel/tariffs.json || install -m 644 "$TMP/tariffs.json" /usr/local/share/homepanel/tariffs.json
 fi
 # TimeTree の取り込みの道具も新しくする（1日1回。TimeTree 側の変更に追いつくため）
-if [ -x /opt/timetree/bin/pip ] && [ -z "\$(find /opt/timetree/.updated -mtime -1 2>/dev/null)" ]; then
+if [ -x /opt/timetree/bin/pip ] && [ -z "$(find /opt/timetree/.updated -mtime -1 2>/dev/null)" ]; then
   /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null 2>&1 && touch /opt/timetree/.updated || true
 fi
-if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-calendar.py" -o "\$TMP/calendar.py" && python3 -m py_compile "\$TMP/calendar.py"; then
-  cmp -s "\$TMP/calendar.py" /usr/local/bin/homepanel-calendar || install -m 755 "\$TMP/calendar.py" /usr/local/bin/homepanel-calendar
+if ghfile server/homepanel-calendar.py "$TMP/calendar.py" && python3 -m py_compile "$TMP/calendar.py"; then
+  cmp -s "$TMP/calendar.py" /usr/local/bin/homepanel-calendar || install -m 755 "$TMP/calendar.py" /usr/local/bin/homepanel-calendar
 fi
 # カメラの記録のサービスも新しくする（止まっていれば動かす）
 if [ -f /etc/systemd/system/homepanel-camera.service ] && ! systemctl is-active -q homepanel-camera.service; then
   systemctl enable --now homepanel-camera.service >/dev/null 2>&1 || true
 fi
-if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-camera.py" -o "\$TMP/camera.py" && python3 -m py_compile "\$TMP/camera.py"; then
-  if ! cmp -s "\$TMP/camera.py" /usr/local/bin/homepanel-camera; then
-    install -m 755 "\$TMP/camera.py" /usr/local/bin/homepanel-camera
+if ghfile server/homepanel-camera.py "$TMP/camera.py" && python3 -m py_compile "$TMP/camera.py"; then
+  if ! cmp -s "$TMP/camera.py" /usr/local/bin/homepanel-camera; then
+    install -m 755 "$TMP/camera.py" /usr/local/bin/homepanel-camera
     systemctl restart homepanel-camera.service 2>/dev/null || true
     echo "カメラの記録のサービスを更新しました"
   fi
 fi
 # おひさま沸き上げのサービスも新しくする
-if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o "\$TMP/solar.py" && python3 -m py_compile "\$TMP/solar.py"; then
-  if ! cmp -s "\$TMP/solar.py" /usr/local/bin/homepanel-solar; then
-    install -m 755 "\$TMP/solar.py" /usr/local/bin/homepanel-solar
-    systemctl restart homepanel-solar.service
+if ghfile server/homepanel-solar.py "$TMP/solar.py" && python3 -m py_compile "$TMP/solar.py"; then
+  if ! cmp -s "$TMP/solar.py" /usr/local/bin/homepanel-solar; then
+    install -m 755 "$TMP/solar.py" /usr/local/bin/homepanel-solar
+    systemctl restart homepanel-solar.service 2>/dev/null || true
     echo "おひさま沸き上げのサービスを更新しました"
   fi
 fi
-EOF
+UPDEOF
 chmod +x /usr/local/bin/homepanel-update
 
 cat > /etc/systemd/system/homepanel-update.service <<'EOF'
@@ -102,6 +165,16 @@ OnUnitActiveSec=5min
 [Install]
 WantedBy=timers.target
 EOF
+
+# このセットアップの中でリポジトリのファイルを取る（非公開ならトークンで）
+ghfile() {
+  local T; T=$(cat /etc/homepanel/github_token 2>/dev/null || true)
+  if [ -n "$T" ]; then
+    curl -fsSL -H "Authorization: Bearer $T" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
+  else
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
+  fi
+}
 
 echo "== スクリーンセーバー用の写真サービスを用意しています"
 cat > /usr/local/bin/homepanel-photos <<'PYEOF'
@@ -185,8 +258,8 @@ UNITEOF
 
 echo "== おひさま沸き上げ（エコキュート）のサービスを用意しています"
 mkdir -p /usr/local/share/homepanel
-curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/tariffs.json" -o /usr/local/share/homepanel/tariffs.json && chmod 644 /usr/local/share/homepanel/tariffs.json || echo "注意：電気料金の単価表を取れませんでした"
-curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-solar.py" -o /usr/local/bin/homepanel-solar
+ghfile server/tariffs.json /usr/local/share/homepanel/tariffs.json && chmod 644 /usr/local/share/homepanel/tariffs.json || echo "注意：電気料金の単価表を取れませんでした"
+ghfile server/homepanel-solar.py /usr/local/bin/homepanel-solar
 chmod 755 /usr/local/bin/homepanel-solar
 cat > /etc/systemd/system/homepanel-solar.service <<UNITEOF
 [Unit]
@@ -208,7 +281,7 @@ WantedBy=multi-user.target
 UNITEOF
 
 echo "== カメラの記録（2日分）と動きの分析のサービスを用意しています"
-curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-camera.py" -o /usr/local/bin/homepanel-camera
+ghfile server/homepanel-camera.py /usr/local/bin/homepanel-camera
 chmod 755 /usr/local/bin/homepanel-camera
 cat > /etc/systemd/system/homepanel-camera.service <<UNITEOF
 [Unit]
@@ -230,7 +303,7 @@ WantedBy=multi-user.target
 UNITEOF
 
 echo "== TimeTree の予定の取り込み（30分ごと）を用意しています"
-curl -fsSL "https://raw.githubusercontent.com/$REPO/main/server/homepanel-calendar.py" -o /usr/local/bin/homepanel-calendar
+ghfile server/homepanel-calendar.py /usr/local/bin/homepanel-calendar
 chmod 755 /usr/local/bin/homepanel-calendar
 mkdir -p /var/lib/homepanel-calendar && chmod 755 /var/lib/homepanel-calendar
 cat > /etc/systemd/system/homepanel-calendar.service <<UNITEOF
@@ -289,6 +362,19 @@ http://$SELF_IP {
 		respond @outside 403
 		root * /var/lib/homepanel-calendar
 		@other not path *.ics *.json
+		respond @other 404
+		header Cache-Control "no-cache"
+		file_server
+	}
+	# Android 版のアプリ（家の中だけ。Home Assistant にログインしたアプリだけが取れる）
+	handle_path /android/* {
+		@outside not remote_ip private_ranges
+		respond @outside 403
+		forward_auth 127.0.0.1:8098 {
+			uri /auth-check
+		}
+		root * /srv/homepanel-android
+		@other not path /latest.json /HomePanel.apk
 		respond @other 404
 		header Cache-Control "no-cache"
 		file_server

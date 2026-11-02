@@ -189,7 +189,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             if (!silent) update.value = UpdateState.Checking
             try {
-                val info = updater.check()
+                val info = updater.check(shServer.value.takeIf { it.startsWith("http") }, serverAuthToken())
                 update.value = when {
                     info != null -> UpdateState.Available(info)
                     silent -> UpdateState.Idle
@@ -710,6 +710,130 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             delay(30_000)
         }
     }
+
+    // ================= 留守（エコキュートの沸き上げを数日止める） =================
+    /** 帰る予定の時刻（ミリ秒）。0 なら留守ではない */
+    val awayUntil = MutableStateFlow(0L)
+    val awayPhase = MutableStateFlow<String?>(null)
+    val awayReheatHours = MutableStateFlow(6.0)
+
+    val awayMsg = MutableStateFlow<String?>(null)
+
+    fun setAway(untilMs: Long, reheatHours: Double) = viewModelScope.launch {
+        awayMsg.value = null
+        try {
+            val j = serverCall("/away", JSONObject().put("until", untilMs / 1000.0).put("reheat_hours", reheatHours))
+            val err = j.optString("error")
+            if (err.isNotBlank()) awayMsg.value = err else applyServerState(j)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            awayMsg.value = "サーバーに送れませんでした：${e.message}"
+        }
+        updateSolarView()
+    }
+
+    fun cancelAway() = viewModelScope.launch { serverPost("/away", JSONObject().put("cancel", true)) }
+
+    // ================= リアルタイム表示（発電・消費・エコキュート。表示している間だけ10秒ごと） =================
+    data class LiveView(
+        val atMs: Long, val genW: Double?, val useW: Double?, val surplusW: Double?,
+        val ecoOnline: Boolean?, val heating: Boolean?, val remainL: Int?, val tankL: Int?, val ecoTodayKwh: Double?,
+        val demand: JSONObject?, val demandAlert: JSONObject?,
+    )
+
+    val live = MutableStateFlow<LiveView?>(null)
+    private val liveWatchers = java.util.concurrent.atomic.AtomicInteger(0)
+    private var liveJob: Job? = null
+
+    fun watchLive(on: Boolean) {
+        val n = if (on) liveWatchers.incrementAndGet() else liveWatchers.decrementAndGet().coerceAtLeast(0)
+        if (n > 0 && liveJob?.isActive != true) {
+            liveJob = viewModelScope.launch {
+                while (isActive && liveWatchers.get() > 0) {
+                    if (foreground && shServer.value.isNotBlank()) loadLive()
+                    delay(10_000)
+                }
+            }
+        }
+    }
+
+    private suspend fun loadLive() {
+        try {
+            val j = serverCall("/live", null)
+            fun d(o: JSONObject, k: String): Double? = if (o.has(k) && !o.isNull(k)) o.optDouble(k).takeIf { !it.isNaN() } else null
+            val e = j.optJSONObject("eco") ?: JSONObject()
+            live.value = LiveView(
+                (j.optDouble("at") * 1000).toLong(), d(j, "generation_w"), d(j, "consumption_w"), d(j, "surplus_w"),
+                if (e.isNull("online")) null else e.optBoolean("online"), if (e.isNull("heating")) null else e.optBoolean("heating"),
+                d(e, "remain")?.toInt(), d(e, "tank")?.toInt(), d(j, "eco_today_kwh"),
+                j.optJSONObject("demand"), j.optJSONObject("demand_alert"),
+            )
+            awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
+            awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) { }
+    }
+
+    // ================= まとめて操作（ボタン1つで、いくつもの機器をつける・消す。サーバーが同時に送る） =================
+    data class DeviceGroup(val id: String, val name: String, val icon: String, val action: String, val entities: List<String>)
+
+    val groups = MutableStateFlow<List<DeviceGroup>>(emptyList())
+    val groupMsg = MutableStateFlow<String?>(null)
+
+    private fun parseGroups(a: JSONArray?) = (0 until (a?.length() ?: 0)).mapNotNull { a!!.optJSONObject(it) }.map { g ->
+        val es = g.optJSONArray("entities") ?: JSONArray()
+        DeviceGroup(g.optString("id"), g.optString("name"), g.optString("icon"), g.optString("action", "off"), (0 until es.length()).map { es.optString(it) })
+    }
+
+    fun saveGroups(list: List<DeviceGroup>) = viewModelScope.launch {
+        val a = JSONArray()
+        list.forEach { g ->
+            a.put(JSONObject().put("id", g.id).put("name", g.name).put("icon", g.icon).put("action", g.action).put("entities", JSONArray(g.entities)))
+        }
+        groups.value = list
+        serverPost("/config", JSONObject().put("groups", a))
+    }
+
+    fun runGroup(g: DeviceGroup, action: String = g.action) = viewModelScope.launch {
+        groupMsg.value = "${g.name}：送っています…"
+        try {
+            val r = serverCall("/groups/run", JSONObject().put("id", g.id).put("action", action))
+            groupMsg.value = r.optString("error").takeIf { it.isNotBlank() }
+                ?: ("${g.name}：${r.optInt("done")}台を${if (action == "on") "つけ" else "消し"}ました" +
+                    (r.optJSONArray("failed")?.takeIf { it.length() > 0 }?.let { "（できなかった：${it.length()}台）" } ?: ""))
+            delay(1500)
+            reloadStatesQuiet()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            groupMsg.value = "${g.name}：送れませんでした（${e.message}）"
+        }
+        delay(6000)
+        groupMsg.value = null
+    }
+
+    private suspend fun reloadStatesQuiet() { runCatching { client?.reloadStates() } }
+
+    // ================= 30分ごとの電力（デマンド）と、上限に近づいたときのお知らせ =================
+    suspend fun demand(day: String): JSONObject = serverCall("/demand?date=$day", null)
+
+    suspend fun notifyServices(): List<String> = runCatching {
+        val a = serverCall("/notify-services", null).optJSONArray("services") ?: JSONArray()
+        (0 until a.length()).map { a.optString(it) }
+    }.getOrDefault(emptyList())
+
+    fun setDemand(enabled: Boolean? = null, target: String? = null, limitKw: Double? = null, marginKw: Double? = null, notify: List<String>? = null) =
+        viewModelScope.launch {
+            val c = JSONObject()
+            enabled?.let { c.put("demand_enabled", it) }
+            target?.let { c.put("demand_target", it) }
+            limitKw?.let { c.put("demand_limit_kw", it) }
+            marginKw?.let { c.put("demand_margin_kw", it) }
+            notify?.let { c.put("demand_notify", JSONArray(it)) }
+            serverPost("/config", c)
+        }
 
     // ================= 画面の更新（ホーム画面を引っぱって更新） =================
     val refreshing = MutableStateFlow(false)
@@ -2827,6 +2951,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         )
         serverAisegUrl.value = conf.optString("aiseg_url")
         serverConf.value = conf.keys().asSequence().associateWith { k -> conf.opt(k) }
+        awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
+        awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }
+        awayReheatHours.value = conf.optDouble("away_reheat_hours", 6.0)
+        groups.value = parseGroups(conf.optJSONArray("groups"))
         nightStop.value = j.optBoolean("night_stop")
         nightPending.value = j.optBoolean("night_pending")
         j.optJSONObject("daily")?.let { d -> serverDaily.value = d.keys().asSequence().sorted().map { it to (d.optJSONObject(it) ?: JSONObject()) }.toList() }

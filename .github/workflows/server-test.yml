@@ -98,6 +98,12 @@ jobs:
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/tariffs | grep -q 'basic_yen' || fail "プランを選べません"
           curl -fsS -H "Authorization: Bearer good" "http://127.0.0.1/solar-api/energy5?date=2026-01-01" | grep -q '"slots"' || fail "/solar-api/energy5 に届きません"
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/timers | grep -q '"timers"' || fail "/solar-api/timers に届きません"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/live | grep -q '"away_until"' || fail "/solar-api/live に届きません"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/demand | grep -q '"slots"' || fail "/solar-api/demand に届きません"
+          curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"groups":[{"name":"t","entities":["light.a"],"action":"off"}]}' http://127.0.0.1/solar-api/config | grep -q '"light.a"' || fail "まとめて操作のボタンを保存できません"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"groups":[{"name":"t","entities":["shell_command.x"]}]}' http://127.0.0.1/solar-api/config)" = "400" ] || fail "まとめて操作に危ない機器を入れられてしまいます"
+          # Android 版の配布（Home Assistant のトークンが無いと取れない）
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/android/latest.json)" = "401" ] || fail "トークンなしで Android 版を取れてしまいます"
           # TimeTree の予定の公開（.ics だけ・家の中だけ）
           systemctl is-active homepanel-calendar.timer || fail "TimeTree の取り込みのタイマーが動いていません"
           test -x /opt/timetree/bin/timetree-exporter || fail "timetree-exporter が入っていません"

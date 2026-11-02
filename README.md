@@ -24,6 +24,10 @@ Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの 
 | 家からの距離 | 自動化のきっかけに「家から○km以内に近づいた／離れた」（Home Assistant の person の位置。HA で動く） |
 | 電気の分析 | サーバーが AiSEG2 から1分ごとに記録し、時間別・回路別に分析（40日分）。日ごとの電気に天気・最高/最低気温・日照・雨・お湯の量を並べて表示（サーバーに保存）。回路を選んで1つのグラフで比較。5分ごとの電気を回路別に表示（8日分）。AiSEG2 にエコキュートの回路が無いときは、エコキュートから直接消費電力を読む |
 | 電気料金 | 電力会社とプランを選ぶと、時間帯・季節・休日ごとの単価と再エネ賦課金・国の補助で電気代を計算（単価表 server/tariffs.json はサーバーが毎日更新）。今日・今月・見込みと、いまの単価を表示 |
+| 留守（エコキュート） | 旅行などで帰る日時を選ぶと、それまで沸き上げ（夜も）を止め、帰る3〜12時間前から沸かし始める。リモコンで戻されても10分ごとに止め直す（サーバーで動く） |
+| いまの電気 | ホーム画面に、いまの発電・消費・売電／買電とエコキュートの沸き上げの様子を10秒ごとに表示 |
+| まとめて操作 | 「おやすみ」「出かける」などのボタン1つで、いくつもの機器をまとめて消す・つける（ボタンはサーバーに保存、iPad にも出る） |
+| 30分ごとの電力 | 30分ごとの平均の電力（デマンド）のグラフと月ごとの最大。いまの30分が「直近12か月の最大 − 0.5kW」を超えそうなら、Home Assistant のスマートフォンのアプリに通知 |
 | 画面の読み直し | ホーム画面のいちばん上で下に引っぱると、状態などを読み直す |
 | 接続の表示 | トップに 🏠 家の中 / 🌏 外出先 のアイコン |
 | 温度計 | SwitchBot 温湿度計などの温度・湿度を表示。タップで温度・湿度の変化のグラフ（24時間／3日／7日）。名前は部屋の名前などに変更可 |
@@ -100,20 +104,37 @@ Proxmox 上の Home Assistant OS（HAOS）を操作する、Fire HD 8 向けの 
 ## 2. 自動アップデートの準備（最初に1回だけ）
 
 `main` ブランチに変更が入ると、GitHub Actions が自動でビルドして「リリース」を作ります。
-アプリ（Android 版・iPad 版とも）は、この最新リリースを見て自分で更新します。
+家のサーバー（192.168.1.46）が5分おきに最新リリースを取ってきて、iPad 版を入れ替え、Android 版の APK を家の中だけで配ります
+（`http://192.168.1.46/android/`。Home Assistant にログインしたアプリだけが取れる）。Android 版は、まず家のサーバーを見て、届かないときだけ GitHub を見ます。
 
-1. **リポジトリを公開にする**：GitHub のリポジトリ画面 →「Settings」→ 一番下の「Danger Zone」→「Change visibility」→「Public」。
-   - 非公開のままだと、タブレットから更新ファイルをダウンロードできません。
-   - コードにパスワードなどの秘密情報は含まれていません。
-2. **署名鍵を登録する（Android 版用）**：「Settings → Secrets and variables → Actions → New repository secret」で、次の2つを登録します。
+1. **署名鍵を登録する（Android 版用）**：「Settings → Secrets and variables → Actions → New repository secret」で、次の2つを登録します。
    - `KEYSTORE_BASE64`：署名鍵ファイルを base64 にした文字列
    - `KEYSTORE_PASSWORD`：署名鍵のパスワード
    - Android は、毎回同じ鍵で署名したアプリでないと上書き更新できません。鍵ファイルは大切に保管してください（なくすと、アプリを入れ直す必要があります）。
-3. 登録後に `main` へ変更が入ると、Android 版の APK もリリースに載るようになります。
+2. 登録後に `main` へ変更が入ると、Android 版の APK もリリースに載るようになります。
+
+### 2-1. 自分と家族以外がインストールできないようにする（リポジトリを非公開にする）
+
+公開のままだと、だれでも Releases から APK をダウンロードできます（ただし、Home Assistant のアドレス・ユーザー名・パスワードが無いと何もできません）。
+APK そのものも配らないようにするには、次の順にします。
+
+1. **サーバーのセットアップをやり直す**（`/android/` の配信と、トークンを使う更新を入れるため。リポジトリが公開のうちに1回だけ）：
+   Proxmox のシェルで `pct enter 146` → `curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/setup.sh | bash`
+2. **読み取り専用のトークンを作る**：GitHub の右上のアイコン →「Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token」。
+   - Repository access：「Only select repositories」で `HA_A` だけ
+   - Permissions → Repository permissions：「Contents」を **Read-only**（ほかはなし。Metadata は自動で Read-only）
+   - 期限（Expiration）は最長1年。切れる前に作り直して、手順3をやり直します。
+3. **サーバーに登録する**：コンテナの中で `homepanel-github-token` を実行し、トークンを貼り付けます（root だけが読めるファイルに保存。「OK」と出れば成功）。続けて `/usr/local/bin/homepanel-update` を実行すると「Android 版を用意しました」と出ます。
+4. **Android 版が家のサーバーから更新を確認できるか確かめる**：⚙ 設定 →「更新・設定の保存」→「更新を確認」で、エラーが出なければ OK です。
+5. **リポジトリを非公開にする**：リポジトリの「Settings」→ 一番下の「Danger Zone」→「Change visibility」→「Private」。
+6. 家族の新しいタブレットに初めて入れるときは、GitHub にログインした端末で Releases から APK をダウンロードし、タブレットに移して入れます（家のサーバーの `/android/` は、Home Assistant にログインしたアプリからしか取れません）。
+
+非公開にしたあとで setup.sh をやり直すときは、`server/setup.sh` の先頭に書いてあるトークンつきのコマンドを使います。
+※ 非公開のリポジトリでは、GitHub Actions の無料の時間は月2,000分です。足りなくなるときは、起動テスト（launch-test）を手動だけにします。
 
 ## 3. Fire HD 8 へのインストール
 
-**APK の入手**：リポジトリの「Releases」から最新の `HomePanel-1.0.xx.apk` をダウンロードします。
+**APK の入手**：リポジトリの「Releases」から最新の `HomePanel-1.0.xx.apk` をダウンロードします（非公開にしたあとは、GitHub にログインしてから）。
 
 **初回のインストール**
 1. Fire の「設定 → セキュリティとプライバシー → 提供元不明のアプリ」で、Silk ブラウザ（またはファイルアプリ）を許可します。
@@ -193,7 +214,7 @@ curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/setup.sh 
 
 ### 5-5. 更新
 - コンテナが5分おきに自動で更新します。画面上部に「更新する」が出たら押すと、入れ替わり次第、自動で読み込み直します。
-- すぐ更新したいとき：Proxmox でコンテナのコンソールを開き `homepanel-update` を実行します。
+- すぐ更新したいとき：Proxmox のシェルで `pct enter 146` → `/usr/local/bin/homepanel-update` を実行します。
 
 ### 5-6. うまくいかないとき
 - **「この接続ではプライバシーが保護されません」**：5-2 の証明書が入っていないか、「証明書信頼設定」がオフです。

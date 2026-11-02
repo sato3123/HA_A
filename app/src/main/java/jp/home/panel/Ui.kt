@@ -267,6 +267,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             }
         }
         item(span = { full(this) }) { UpdateCard(vm, showWhenIdle = false) }
+        item(span = { full(this) }) { GroupButtons(vm, compact) }
         message?.let { m ->
             item(span = { full(this) }) {
                 Text(m, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -283,6 +284,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 HomeSection.AUTOMATIONS -> item(span = { full(this) }) { AutomationQuick(vm) }
                 HomeSection.ENERGY -> item(span = { full(this) }) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LiveStrip(vm)
                         EnergyStrip(vm, onOpen = { showEnergy = true })
                         EcoCuteCard(vm)
                     }

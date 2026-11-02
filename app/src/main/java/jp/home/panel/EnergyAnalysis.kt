@@ -100,7 +100,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         FilterChip(selected = period == k, onClick = { period = k; circuit = null }, label = { Text(l) }, colors = chip)
                     }
                     Text("　")
-                    listOf("hour" to "時間別", "five" to "5分ごと（回路別）", "day" to "日ごと（天気・気温）", "circuit" to "回路別", "compare" to "回路の比較").forEach { (k, l) ->
+                    listOf("hour" to "時間別", "five" to "5分ごと（回路別）", "demand" to "30分ごと（上限の見張り）", "day" to "日ごと（天気・気温）", "circuit" to "回路別", "compare" to "回路の比較").forEach { (k, l) ->
                         FilterChip(selected = tab == k, onClick = { tab = k }, label = { Text(l) }, colors = chip)
                     }
                 }
@@ -148,6 +148,8 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         peak?.takeIf { it.second.isNotEmpty() }?.let {
                             Text("いちばん多く使ったのは ${it.first}（${kwhOf(it.second.sumOf { h -> h.use })}）", style = MaterialTheme.typography.bodySmall)
                         }
+                    } else if (tab == "demand") {
+                        DemandView(vm)
                     } else if (tab == "five") {
                         FiveMinuteView(vm)
                     } else if (tab == "day") {

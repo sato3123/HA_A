@@ -72,6 +72,12 @@ DEFAULT_CONF = {
     "pv_kw": 0,                             # パネルの容量（kW）。0 なら記録から推定
     "pv_tilt": 30, "pv_azimuth": 0,         # 傾き（度）・向き（0＝南、-90＝東、90＝西）
     "solar_need_kwh": 0,                    # 昼に沸かすのに必要な余剰（kWh）。0 なら記録（エコキュートの1日の使用量）から決める
+    # 留守（外出・旅行）：この時刻まで沸き上げを止める。reheat_hours 時間前から沸かし始める
+    "away_until": 0, "away_reheat_hours": 6,
+    # まとめて操作のボタン：[{id, name, icon, action: on/off, entities: [...]}]
+    "groups": [],
+    # 30分ごとの電力（デマンド）の見張り：対象（use＝使った電気 / buy＝買った電気）、上限（0 なら直近12か月の最大）、余裕（kW）、通知先（Home Assistant の notify）
+    "demand_target": "use", "demand_limit_kw": 0, "demand_margin_kw": 0.5, "demand_notify": [], "demand_enabled": False,
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -530,6 +536,7 @@ def aiseg_surplus_w():
         state["aiseg_error"] = "AiSEG2 の発電・消費の値を読めませんでした"
         return None
     state["aiseg_error"] = None
+    state["power_at"] = time.time()
     state["power"] = {"generation_w": g * 1000, "consumption_w": u * 1000,
                       "buy_sell": {0: "buy", 1: "sell", 2: "none"}.get(j.get("lo_buy_sell"), "unknown"), "from": "AiSEG2"}
     return (g - u) * 1000
@@ -725,6 +732,7 @@ def energy_collect():
         for n, w in circuits.items():
             h["circuits"][n] = h["circuits"].get(n, 0.0) + w * dt
         h["src"] = src
+        demand_args = ((use if src == "AiSEG2" else 0.0), max(0.0, -net), dt)
         # 5分ごとの記録（8日分）
         n5 = datetime.now()
         k5 = n5.strftime("%Y-%m-%dT%H:") + f"{n5.minute // 5 * 5:02d}"
@@ -741,6 +749,10 @@ def energy_collect():
         cut = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H")
         for k in [k for k in energy["hours"] if k < cut]:
             del energy["hours"][k]
+    try:
+        demand_tick(*demand_args)
+    except Exception as e:
+        print("電力の見張りでエラー:", e, flush=True)
 
 
 # ---- AiSEG2 の「回路ごとの使用電力量（日）」と「湯」の画面（200V の回路も入っている） ----
@@ -878,6 +890,104 @@ def aiseg_daily_tick():
         print("AiSEG2 の湯の量を読めませんでした:", e, flush=True)
 
 
+# ---- 30分ごとの電力（デマンド）。30分の使用量 ÷ 0.5時間 ＝ 平均の電力（kW） ----
+ENERGY30_PATH = os.path.join(DIR, "energy30.json")
+energy30 = load_json(ENERGY30_PATH, {})  # "YYYY-MM-DDTHH:MM"（:00 か :30）→ {"use": Wh, "buy": Wh}
+demand_state = {"notified": None, "last": None}
+
+
+def slot30(dt):
+    return dt.strftime("%Y-%m-%dT%H:") + ("00" if dt.minute < 30 else "30")
+
+
+def demand_limit():
+    """見張る上限（kW）と、その理由。設定が無ければ、直近12か月の30分ごとの最大"""
+    v = float(conf.get("demand_limit_kw") or 0)
+    if v > 0:
+        return v, "設定した値"
+    key = "buy" if conf.get("demand_target") == "buy" else "use"
+    cut = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M")
+    cur = slot30(datetime.now())
+    with lock:
+        items = [(k, float(x.get(key) or 0) * 2 / 1000) for k, x in energy30.items() if cut <= k < cur]
+    if not items:
+        return None, "記録がまだありません"
+    k, v = max(items, key=lambda t: t[1])
+    days = len({kk[:10] for kk, _ in items})
+    return v, f"直近12か月の最大・{int(k[5:7])}/{int(k[8:10])} {k[11:]}（記録 {days} 日分から）"
+
+
+def demand_tick(use_w, buy_w, dt_h):
+    """1分ごと：いまの30分の使用量を積み上げ、このまま使い続けたときの30分の電力を予想して、上限に近づいたら知らせる"""
+    now = datetime.now()
+    k = slot30(now)
+    with lock:
+        x = energy30.setdefault(k, {"use": 0.0, "buy": 0.0})
+        x["use"] += (use_w or 0) * dt_h
+        x["buy"] += (buy_w or 0) * dt_h
+        cut = (now - timedelta(days=400)).strftime("%Y-%m-%dT%H:%M")
+        if len(energy30) > 400 * 48 + 100:
+            for kk in [kk for kk in energy30 if kk < cut]:
+                del energy30[kk]
+    key = "buy" if conf.get("demand_target") == "buy" else "use"
+    w_now = (buy_w if key == "buy" else use_w) or 0
+    start = now.replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0)
+    left_h = max(0.0, (start + timedelta(minutes=30) - now).total_seconds() / 3600)
+    projected = (x[key] + w_now * left_h) * 2 / 1000  # kW
+    limit, how = demand_limit()
+    margin = float(conf.get("demand_margin_kw") or 0.5)
+    demand_state["last"] = {"slot": k, "so_far_kw": round(x[key] * 2 / 1000, 2), "projected_kw": round(projected, 2), "now_kw": round(w_now / 1000, 2),
+                            "limit_kw": round(limit, 2) if limit else None, "limit_how": how, "warn_kw": round(limit - margin, 2) if limit else None, "target": key}
+    if not conf.get("demand_enabled") or not limit:
+        return
+    # 30分の初めのうちは予想がぶれやすいので、5分たってから判断する
+    if (now - start).total_seconds() < 300 or demand_state["notified"] == k:
+        return
+    if projected > limit - margin:
+        demand_state["notified"] = k
+        what = "買っている電気" if key == "buy" else "使っている電気"
+        rest = (f"上限 {limit:.1f}kW を超えそうです" if projected >= limit else f"上限 {limit:.1f}kW まであと {limit - projected:.1f}kW です")
+        msg = (f"この30分（{start.strftime('%H:%M')}〜）の{what}が {projected:.1f}kW になりそうです。{rest}（{how}）。"
+               f"いま {w_now / 1000:.1f}kW 使っています。")
+        log("電力の見張り：" + msg)
+        state["demand_alert"] = {"at": time.time(), "message": msg, "slot": k}
+        for target in conf.get("demand_notify") or []:
+            try:
+                dom, svc = str(target).split(".", 1)
+                if dom != "notify":
+                    continue
+                ha_call("notify", svc, {"title": "⚡ 電気の使いすぎに注意", "message": msg})
+            except Exception as e:
+                log(f"電力の見張り：{target} に知らせられませんでした（{e}）")
+
+
+def demand_report(day):
+    key_day = day
+    lim, how = demand_limit()
+    with lock:
+        slots = [dict(v, t=k[11:]) for k, v in sorted(energy30.items()) if k.startswith(key_day)]
+        # 月ごとの最大（直近12か月）
+        months = {}
+        for k, v in energy30.items():
+            for f in ("use", "buy"):
+                kw = float(v.get(f) or 0) * 2 / 1000
+                m = months.setdefault(k[:7], {"use": 0.0, "buy": 0.0})
+                m[f] = max(m[f], round(kw, 2))
+    return {"date": day, "slots": slots, "limit_kw": lim, "limit_how": how, "margin_kw": float(conf.get("demand_margin_kw") or 0.5),
+            "target": conf.get("demand_target"), "months": dict(sorted(months.items())[-13:]), "now": demand_state.get("last")}
+
+
+def ha_notify_services():
+    try:
+        svcs = ha_req("GET", "/api/services") or []
+        for d in svcs:
+            if d.get("domain") == "notify":
+                return sorted("notify." + k for k in (d.get("services") or {}))
+    except Exception:
+        pass
+    return []
+
+
 def energy_loop():
     saved = time.time()
     while True:
@@ -895,6 +1005,7 @@ def energy_loop():
             with lock:
                 save_json(ENERGY_PATH, energy)
                 save_json(ENERGY5_PATH, energy5)
+                save_json(ENERGY30_PATH, energy30)
             saved = time.time()
         time.sleep(60)
 
@@ -1660,6 +1771,51 @@ def diagnose():
     return "\n".join(lines)
 
 
+def away_tick(eco):
+    """留守の間は沸き上げを止める（沸き上げ自動設定 0xB0 = 手動沸き上げ停止）。True のあいだは、ほかの沸き上げの制御をしない"""
+    until = float(conf.get("away_until") or 0)
+    if not until or not conf.get("eco_ip"):
+        return False
+    now = time.time()
+    reheat = until - float(conf.get("away_reheat_hours") or 0) * 3600
+    if now >= until:
+        with lock:
+            conf["away_until"] = 0
+            save_json(CONF_PATH, conf)
+        if state.get("away") == "stop":
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
+        state.pop("away", None)
+        log("留守が終わりました（ふだんの沸き上げに戻ります）")
+        return False
+    if now >= reheat:
+        if state.get("away") != "reheat":
+            err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
+            if not err:
+                state["away"] = "reheat"
+                log("留守：帰る前なので、沸き上げを自動に戻しました（お湯を沸かします）")
+                # 残りが少なければ、すぐに沸き増しする
+                pct = remain_pct(eco)
+                if pct is not None and pct < 60 and (eco or {}).get("can_manual", True):
+                    el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
+        state["status"] = f"留守：{datetime.fromtimestamp(until).strftime('%m/%d %H:%M')} に帰る予定。お湯を沸かしています"
+        return True
+    # 止めておく（エコキュートのリモコンで戻されても、10分ごとに止め直す）
+    if state.get("away") != "stop" or now - state.get("away_checked", 0) > 600:
+        state["away_checked"] = now
+        if True:
+            err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+            if not err and state.get("away") != "stop":
+                state["away"] = "stop"
+                log(f"留守：{datetime.fromtimestamp(until).strftime('%m/%d %H:%M')} まで沸き上げを止めました")
+            elif err:
+                log(f"留守：沸き上げを止められませんでした（{err}）")
+    state["status"] = (f"留守：{datetime.fromtimestamp(until).strftime('%m/%d %H:%M')} まで沸き上げを止めています"
+                       f"（{datetime.fromtimestamp(reheat).strftime('%m/%d %H:%M')} から沸かします）")
+    state["night_stop"] = False
+    state["night_pending"] = False
+    return True
+
+
 def tick():
     now = datetime.now()
     in_window = conf["start_hour"] <= now.hour < conf["end_hour"]
@@ -1673,6 +1829,9 @@ def tick():
             state["history"] = [p for p in state["history"] if p[0] >= cut]
             state["surplus_w"] = surplus
     hot_water_track(eco)
+    # 留守：決めた時刻まで沸き上げを止めておき、帰る前に沸かし始める（おひさま沸き上げがオフでも働く）
+    if away_tick(eco):
+        return
     if not conf["enabled"]:
         state["status"] = "おひさま沸き上げはオフです"
         return
@@ -1791,6 +1950,71 @@ def cost_summary_safe():
         return None
 
 
+GROUP_DOMAINS = ("switch", "light", "fan", "input_boolean", "climate", "media_player", "cover", "humidifier")
+
+
+def clean_groups(v):
+    if not isinstance(v, list) or len(v) > 30:
+        return None
+    out = []
+    for g in v:
+        if not isinstance(g, dict):
+            return None
+        ents = [str(e) for e in g.get("entities") or []]
+        if len(ents) > 60 or not all(re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", e) and e.split(".")[0] in GROUP_DOMAINS for e in ents):
+            return None
+        act = g.get("action") if g.get("action") in ("on", "off", "toggle") else "off"
+        out.append({"id": str(g.get("id") or uuid.uuid4().hex[:8])[:16], "name": str(g.get("name") or "まとめて")[:30],
+                    "icon": str(g.get("icon") or "")[:4], "action": act, "entities": ents})
+    return out
+
+
+def run_group(g, action):
+    """ボタン1つで、いくつもの機器をまとめてつける・消す（同時に送る）"""
+    if action not in ("on", "off"):
+        action = "off"
+    res = {}
+
+    def one(eid):
+        try:
+            dom = eid.split(".")[0]
+            if dom == "cover":
+                ha_call("cover", "open_cover" if action == "on" else "close_cover", {"entity_id": eid})
+            else:
+                ha_call("homeassistant", "turn_" + action, {"entity_id": eid})
+            res[eid] = "ok"
+        except Exception as e:
+            res[eid] = str(e)[:80]
+    th = [threading.Thread(target=one, args=(e,), daemon=True) for e in g.get("entities") or []]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(15)
+    ng = [e for e in g.get("entities") or [] if res.get(e) != "ok"]
+    log(f"まとめて操作「{g.get('name')}」：{len(res) - len(ng)}台を{'つけ' if action == 'on' else '消し'}ました" + (f"（できなかった：{len(ng)}台）" if ng else ""))
+    return {"ok": not ng, "done": len(res) - len(ng), "failed": ng, "results": res}
+
+
+def live_state():
+    """いまの発電・消費・売買電とエコキュートの様子（画面のリアルタイム表示用）。古ければ AiSEG2 から読み直す"""
+    p = state.get("power") or {}
+    if conf.get("aiseg_url") and time.time() - state.get("power_at", 0) > 8:
+        try:
+            if aiseg_surplus_w() is not None:
+                state["power_at"] = time.time()
+                p = state.get("power") or {}
+        except Exception:
+            pass
+    eco = state.get("eco") or {}
+    today = (energy.get("days", {}).get(date.today().isoformat()) or {})
+    return {"at": state.get("power_at") or time.time(), "generation_w": p.get("generation_w"), "consumption_w": p.get("consumption_w"),
+            "surplus_w": (p.get("generation_w") or 0) - (p.get("consumption_w") or 0) if p.get("consumption_w") is not None else state.get("surplus_w"),
+            "eco": {k: eco.get(k) for k in ("online", "heating", "manual", "remain", "tank")},
+            "eco_today_kwh": (today.get("circuits_kwh") or {}).get("エコキュート"),
+            "away_until": conf.get("away_until") or 0, "away": state.get("away"),
+            "demand": demand_state.get("last"), "demand_alert": state.get("demand_alert")}
+
+
 def public_state():
     with lock:
         c = {k: v for k, v in conf.items() if k not in SECRET_CONF}
@@ -1799,6 +2023,7 @@ def public_state():
         hot = [p for p in energy.get("hot", []) if p[0] > time.time() - 86400]
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
+                "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
@@ -1879,6 +2104,16 @@ class Api(BaseHTTPRequestHandler):
             return self._ok(climate_public())
         if p == "/timers":
             return self._ok(timers_public())
+        if p == "/auth-check":
+            # Caddy の forward_auth から：Android のアプリの配布（/android/）を、Home Assistant にログインしたアプリにだけ渡す
+            return self._ok({"ok": True})
+        if p == "/live":
+            return self._ok(live_state())
+        if p == "/demand":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._ok(demand_report((q.get("date") or [date.today().isoformat()])[0]))
+        if p == "/notify-services":
+            return self._ok({"services": ha_notify_services()})
         if p == "/tariffs":
             return self._ok(tariff_list())
         if p == "/energy5":
@@ -1909,6 +2144,14 @@ class Api(BaseHTTPRequestHandler):
                 for r in b.get("climate_rules") or [] if isinstance(b.get("climate_rules"), list) else []:
                     if not str(r.get("entity", "")).startswith("climate.") or (r.get("source") and not str(r["source"]).startswith("sensor.")):
                         return self._ok({"error": "温度調整の設定が正しくありません"}, 400)
+                if "groups" in b:
+                    g = clean_groups(b["groups"])
+                    if g is None:
+                        return self._ok({"error": "まとめて操作の設定が正しくありません"}, 400)
+                    b["groups"] = g
+                if "demand_notify" in b:
+                    if not isinstance(b["demand_notify"], list) or not all(re.fullmatch(r"notify\.[a-z0-9_]+", str(x)) for x in b["demand_notify"]):
+                        return self._ok({"error": "通知先が正しくありません（notify.〇〇）"}, 400)
                 for k, v in b.items():
                     if k in allowed:
                         conf[k] = v
@@ -1938,6 +2181,37 @@ class Api(BaseHTTPRequestHandler):
                 save_json(TIMERS_PATH, device_timers)
             log(f"タイマーを設定しました：{t['name'] or eid} を {datetime.fromtimestamp(at).strftime('%m/%d %H:%M')} に{timer_label(t)}")
             return self._ok(timers_public())
+        if p == "/away":
+            # {until: 時刻（秒）, reheat_hours} / {cancel: true}
+            with lock:
+                if b.get("cancel"):
+                    conf["away_until"] = 0
+                else:
+                    u = float(b.get("until") or 0)
+                    if not (time.time() < u < time.time() + 31 * 86400):
+                        return self._ok({"error": "帰る日時が正しくありません（1か月以内）"})
+                    conf["away_until"] = u
+                    if b.get("reheat_hours") is not None:
+                        conf["away_reheat_hours"] = max(0.0, min(24.0, float(b["reheat_hours"])))
+                save_json(CONF_PATH, conf)
+            if b.get("cancel"):
+                state.pop("away", None)
+                if conf.get("eco_ip"):
+                    el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
+                log("留守を取り消しました（沸き上げを自動に戻しました）")
+            else:
+                state.pop("away", None)
+                log(f"留守を設定しました：{datetime.fromtimestamp(conf['away_until']).strftime('%m/%d %H:%M')} に帰る予定")
+            wake.set()
+            return self._ok(public_state())
+        if p == "/groups/run":
+            # {id, action（省略時はボタンの設定どおり：on / off）}
+            g = next((x for x in conf.get("groups") or [] if x.get("id") == b.get("id")), None)
+            if not g:
+                return self._ok({"error": "ボタンが見つかりません"})
+            if not conf.get("ha_token"):
+                return self._ok({"error": "サーバーに Home Assistant の鍵が登録されていません"})
+            return self._ok(run_group(g, b.get("action") or g.get("action") or "off"))
         if p == "/timers/delete":
             with lock:
                 before = len(device_timers)

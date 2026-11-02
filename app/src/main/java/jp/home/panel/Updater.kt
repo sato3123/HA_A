@@ -15,7 +15,7 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-data class UpdateInfo(val version: String, val code: Int, val apkUrl: String, val notes: String)
+data class UpdateInfo(val version: String, val code: Int, val apkUrl: String, val notes: String, val auth: String? = null, val from: String = "GitHub")
 
 sealed interface UpdateState {
     data object Idle : UpdateState
@@ -29,8 +29,10 @@ sealed interface UpdateState {
 }
 
 /**
- * GitHub の最新リリースを確認して、新しい APK があればダウンロード → インストール画面を開く。
- * 通信先は api.github.com と GitHub のダウンロード用サーバーだけ（Home Assistant 用の通信とは別）。
+ * 新しい APK があればダウンロード → インストール画面を開く。
+ * 1. 家のサーバー（http://サーバー/android/）を先に見る。Home Assistant にログインしたアプリだけが取れる
+ *    （リポジトリを非公開にしても、家族のタブレットは家の中で更新できる）
+ * 2. 届かなければ GitHub の最新リリース（公開のときだけ）
  */
 class Updater(private val context: Context) {
     private val http = OkHttpClient.Builder()
@@ -38,13 +40,42 @@ class Updater(private val context: Context) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    /** 新しいバージョンがあれば返す。最新なら null */
-    suspend fun check(): UpdateInfo? = withContext(Dispatchers.IO) {
+    /** 新しいバージョンがあれば返す。最新なら null。server：家のサーバー（http://…）、token：Home Assistant のトークン */
+    suspend fun check(server: String? = null, token: String? = null): UpdateInfo? = withContext(Dispatchers.IO) {
+        var lanError: Exception? = null
+        if (!server.isNullOrBlank() && token != null) {
+            try {
+                return@withContext checkLan(server.trimEnd('/'), token)
+            } catch (e: Exception) {
+                lanError = e
+            }
+        }
+        try {
+            checkGitHub()
+        } catch (e: IOException) {
+            // GitHub が非公開などで読めないときは、家のサーバーの理由を見せる
+            throw lanError?.let { IOException("家のサーバーから更新を確認できませんでした（${it.message}）") } ?: e
+        }
+    }
+
+    private fun checkLan(server: String, token: String): UpdateInfo? {
+        val req = Request.Builder().url("$server/android/latest.json").header("Authorization", "Bearer $token").build()
+        http.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+            val j = JSONObject(r.body?.string().orEmpty())
+            val tag = j.optString("tag")
+            val code = tag.substringAfterLast('.').toIntOrNull() ?: throw IOException("版がわかりません")
+            if (code <= BuildConfig.VERSION_CODE) return null
+            return UpdateInfo(tag.removePrefix("v"), code, "$server/android/HomePanel.apk", j.optString("notes").trim(), auth = token, from = "家のサーバー")
+        }
+    }
+
+    private fun checkGitHub(): UpdateInfo? {
         val req = Request.Builder()
             .url("https://api.github.com/repos/${BuildConfig.UPDATE_REPO}/releases/latest")
             .header("Accept", "application/vnd.github+json")
             .build()
-        http.newCall(req).execute().use { r ->
+        return http.newCall(req).execute().use { r ->
             if (r.code == 404) {
                 throw IOException("更新情報が見つかりません（リポジトリが非公開か、まだリリースがありません）")
             }
@@ -72,7 +103,8 @@ class Updater(private val context: Context) {
             listFiles()?.forEach { it.delete() }
         }
         val out = File(dir, "HomePanel-${info.version}.apk")
-        http.newCall(Request.Builder().url(info.apkUrl).build()).execute().use { r ->
+        val req = Request.Builder().url(info.apkUrl).apply { info.auth?.let { header("Authorization", "Bearer $it") } }.build()
+        http.newCall(req).execute().use { r ->
             if (!r.isSuccessful) throw IOException("ダウンロードに失敗しました (HTTP ${r.code})")
             val body = r.body ?: throw IOException("ダウンロードに失敗しました")
             val total = body.contentLength()

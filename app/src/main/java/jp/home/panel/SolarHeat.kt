@@ -104,6 +104,7 @@ fun EcoCuteCard(vm: MainViewModel) {
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
+            if (s.server) AwayRow(vm)
             var analysis by remember { mutableStateOf(false) }
             if (analysis) EnergyAnalysisDialog(vm) { analysis = false }
             if (s.canManual || s.server) {
