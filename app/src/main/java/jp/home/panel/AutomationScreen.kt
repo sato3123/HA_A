@@ -184,7 +184,12 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    val nameOf = { id: String -> states[id]?.name ?: id }
+    val thermos by vm.thermos.collectAsState()
+    val nameOf = { id: String ->
+        thermos.firstOrNull { it.tempEntity == id }?.let { it.name + "の温度" }
+            ?: thermos.firstOrNull { it.humEntity == id }?.let { it.name + "の湿度" }
+            ?: states[id]?.name ?: id
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
