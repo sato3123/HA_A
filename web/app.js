@@ -2851,6 +2851,7 @@
       ${eco ? `<span>🛁 <b>${eco}</b>${rest}</span>` : ""}
       ${v.eco_today_kwh != null ? `<span>今日の沸き上げ <b>${Number(v.eco_today_kwh).toFixed(1)}kWh</b></span>` : ""}
       ${d && d.projected_kw != null ? `<span class="${over ? "warn" : "note"}">30分の電力（${esc(String(d.slot).slice(-5))}〜）：このままだと ${d.projected_kw.toFixed(1)}kW${d.warn_kw != null ? `（注意 ${d.warn_kw.toFixed(1)}kW・上限 ${d.limit_kw.toFixed(1)}kW）` : ""}</span>` : ""}
+      ${v.heat_guard && v.heat_guard.active ? `<span class="warn">⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${esc(v.heat_guard.reason)}）</span>` : ""}
       ${alert ? `<span class="warn">⚠ ${esc(alert)}</span>` : ""}</div>`;
   }
 
@@ -2982,7 +2983,10 @@
   function hotPlanHTML(j) {
     const c = j.config || {}, p = j.hot_plan || {};
     const chip = (sel, set, id, label) => `<button class="chip${sel ? " sel" : ""}" data-set="${set}" data-id="${id}">${label}</button>`;
-    let h = `<label class="row" style="margin-top:6px"><span class="rt">お湯の量を過去の使用量から自動で決める<div class="sub">直近4週間の同じ種類の日（平日／土日祝）から夜に使う量を予想し、夕方までに「予想＋余裕」を用意します。足りなければ間に合う時刻から沸かします。</div></span>
+    const g = j.heat_guard || {};
+    let h = `<label class="row" style="margin-top:6px"><span class="rt">⏸ 買電が多いときはお湯を沸かさない<div class="sub">買電が目安（${g.level_kw != null ? g.level_kw + "kW・" + esc(g.level_how || "") : "自動"}）以上か、30分の電力が注意の値を超えそうなときは沸き上げを一時停止し、下がったら戻します（最長1時間・お湯が20%未満なら止めません）。目安は Android 版で変えられます。${g.active ? `<br><b>いま一時停止中（${esc(g.reason)}）</b>` : ""}</div></span>
+      <input type="checkbox" data-set="heatGuard" ${c.heat_guard !== false ? "checked" : ""}></label>`;
+    h += `<label class="row" style="margin-top:6px"><span class="rt">お湯の量を過去の使用量から自動で決める<div class="sub">直近4週間の同じ種類の日（平日／土日祝）から夜に使う量を予想し、夕方までに「予想＋余裕」を用意します。足りなければ間に合う時刻から沸かします。</div></span>
       <input type="checkbox" data-set="hotAuto" ${c.hot_auto ? "checked" : ""}></label>`;
     if (!c.hot_auto) return h;
     const m = c.hot_margin_l ?? 50, ph = c.prep_hour ?? 17;
@@ -3224,6 +3228,7 @@
       case "dtCancel": try { const j = await solarApi("/timers/delete", { id }); S.devTimers = j.timers || []; } catch (e) { /* 次の読み込みで */ } renderEntities(); renderSheet(); renderInfo(); { const l = $("#devTimerList"); if (l) l.innerHTML = devTimerListHTML(); } return true;
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
       case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
+      case "heatGuard": loadSolar("/config", { heat_guard: el.checked }); return true;
       case "hotMargin": loadSolar("/config", { hot_margin_l: Number(id) }); return true;
       case "prepHour": loadSolar("/config", { prep_hour: Number(id) }); return true;
       case "hotExtraOpen": S.hotExtraOpen = true; renderSolar(); return true;

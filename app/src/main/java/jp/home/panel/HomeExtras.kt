@@ -100,6 +100,9 @@ fun LiveStrip(vm: MainViewModel) {
                     )
                 }
             }
+            v.guard?.takeIf { it.optBoolean("active") }?.let { g ->
+                Text("⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${g.optString("reason")}）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+            }
             v.demandAlert?.let { a ->
                 if (System.currentTimeMillis() - (a.optDouble("at") * 1000).toLong() < 30 * 60_000) {
                     Text("⚠ " + a.optString("message"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -439,6 +442,7 @@ private fun DemandSettings(vm: MainViewModel) {
                 OutlinedTextField(limitText, { limitText = it }, label = { Text("上限（kW）。空なら直近12か月の最大") }, singleLine = true, modifier = Modifier.weight(1f))
                 TextButton(onClick = { vm.setDemand(limitKw = limitText.toDoubleOrNull()?.coerceIn(0.0, 100.0) ?: 0.0) }) { Text("保存") }
             }
+            HeatGuardSettings(vm)
             Text("知らせる先（Home Assistant のスマートフォンのアプリ）", style = MaterialTheme.typography.labelLarge)
             when {
                 services == null -> Text("読んでいます…", style = MaterialTheme.typography.bodySmall)
@@ -452,4 +456,33 @@ private fun DemandSettings(vm: MainViewModel) {
             }
         }
     }
+}
+
+
+/** 買電が多いときはお湯を沸かさない */
+@Composable
+fun HeatGuardSettings(vm: MainViewModel) {
+    val conf by vm.serverConf.collectAsState()
+    val live by vm.live.collectAsState()
+    val on = conf["heat_guard"] != false
+    val kw = (conf["heat_guard_kw"] as? Number)?.toDouble() ?: 0.0
+    val g = live?.guard
+    val chip = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("⏸ 買電が多いときはお湯を沸かさない", style = MaterialTheme.typography.titleSmall)
+            Text("買電が目安以上になったとき（または30分の電力が注意の値を超えそうなとき）に、エコキュートの沸き上げを一時停止し、下がったら元に戻します。" +
+                "夜の沸き上げにも効きます。お湯が少ないとき（20%未満）は止めず、止めるのは長くても1時間です。", style = MaterialTheme.typography.labelSmall)
+        }
+        Switch(checked = on, onCheckedChange = { vm.setServerConf("heat_guard", it) })
+    }
+    if (!on) return
+    Text("目安（買電）：" + if (kw > 0) "${numText(kw)}kW" else "自動（${g?.optDouble("level_kw")?.takeIf { !it.isNaN() }?.let { numText(Math.round(it * 10) / 10.0) + "kW・" } ?: ""}${g?.optString("level_how") ?: "30分の電力の注意の値"}）",
+        style = MaterialTheme.typography.bodySmall)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf(0.0 to "自動", 2.0 to "2kW", 3.0 to "3kW", 4.0 to "4kW", 5.0 to "5kW", 6.0 to "6kW").forEach { (v, l) ->
+            FilterChip(selected = kw == v, onClick = { vm.setServerConf("heat_guard_kw", v) }, label = { Text(l) }, colors = chip)
+        }
+    }
+    if (g?.optBoolean("active") == true) Text("いま一時停止しています（${g.optString("reason")}）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
 }

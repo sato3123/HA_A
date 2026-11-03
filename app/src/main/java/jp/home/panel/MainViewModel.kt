@@ -740,6 +740,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val atMs: Long, val genW: Double?, val useW: Double?, val surplusW: Double?,
         val ecoOnline: Boolean?, val heating: Boolean?, val remainL: Int?, val tankL: Int?, val ecoTodayKwh: Double?,
         val demand: JSONObject?, val demandAlert: JSONObject?,
+        val guard: JSONObject? = null,
     )
 
     val live = MutableStateFlow<LiveView?>(null)
@@ -767,7 +768,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 (j.optDouble("at") * 1000).toLong(), d(j, "generation_w"), d(j, "consumption_w"), d(j, "surplus_w"),
                 if (e.isNull("online")) null else e.optBoolean("online"), if (e.isNull("heating")) null else e.optBoolean("heating"),
                 d(e, "remain")?.toInt(), d(e, "tank")?.toInt(), d(j, "eco_today_kwh"),
-                j.optJSONObject("demand"), j.optJSONObject("demand_alert"),
+                j.optJSONObject("demand"), j.optJSONObject("demand_alert"), j.optJSONObject("heat_guard"),
             )
             awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
             awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }

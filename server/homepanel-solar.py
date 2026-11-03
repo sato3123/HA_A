@@ -64,6 +64,9 @@ DEFAULT_CONF = {
     "heat_rate_lph": 0,                     # 沸き上げの速さ（L/時）。0 なら記録から求める
     # 多めにお湯が必要な日：[{date: "YYYY-MM-DD", liters, part: evening（夕方〜夜）/ morning（朝）, note}]
     "hot_extra": [],
+    # 買電が多いときはお湯を沸かさない：買電が guard_kw 以上（0 なら「30分の電力」の注意の値、それも無ければ 3kW）か、
+    # 30分の電力が注意の値を超えそうなときは、沸き上げを一時停止し、下がったら元に戻す
+    "heat_guard": True, "heat_guard_kw": 0,
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
     "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
     "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
@@ -1853,7 +1856,7 @@ def prep_tick(eco, now):
     lead_h = short / rate + 0.25
     start_at = datetime.combine(now.date(), datetime.min.time()) + timedelta(hours=ph - lead_h)
     st["start_at"] = start_at.strftime("%H:%M")
-    if now >= start_at and not eco.get("heating") and eco.get("can_manual", True):
+    if now >= start_at and not eco.get("heating") and eco.get("can_manual", True) and not guard["active"]:
         s_ = eco_caps["set"]
         if s_ is None or 0xC0 in s_:
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xC0, b"\x41")
@@ -1868,6 +1871,80 @@ def prep_tick(eco, now):
         else:
             log(f"夕方の準備：沸かし始められませんでした（{err}）")
     state["prep"] = st
+
+
+# ---- 買電が多いときはお湯を沸かさない ----
+guard = {"active": False, "since": 0, "over": 0, "under": 0, "mode": None, "buy_before": None, "eco_w": None,
+         "cool_until": 0, "last_pause": 0, "reason": ""}
+
+
+def guard_level_kw():
+    v = float(conf.get("heat_guard_kw") or 0)
+    if v > 0:
+        return v, "設定"
+    d = demand_state.get("last") or {}
+    if d.get("target") == "buy" and d.get("warn_kw"):
+        return float(d["warn_kw"]), "30分の電力の注意の値"
+    return 3.0, "目安"
+
+
+def guard_tick(eco, surplus, step_s):
+    """買電が多いあいだは沸き上げを止める（沸き上げ自動設定 B0=0x43）。下がったら、止める前の設定（自動／手動沸き増し）に戻す。
+    お湯が少ないとき（20%未満）や、止めて1時間たったときは止めない（湯切れを防ぐ）"""
+    if not conf.get("heat_guard") or not eco or not eco.get("can_manual", True) or surplus is None:
+        if guard["active"]:
+            guard_release("見張りをやめたため")
+        return
+    buy_w = max(0.0, -surplus)
+    level_kw, how = guard_level_kw()
+    d = demand_state.get("last") or {}
+    demand_hot = d.get("target") == "buy" and d.get("warn_kw") and (d.get("projected_kw") or 0) > d["warn_kw"]
+    over = buy_w >= level_kw * 1000 or demand_hot
+    now = time.time()
+    pct = remain_pct(eco)
+    if not guard["active"]:
+        guard["over"] = guard["over"] + step_s if over and eco.get("heating") else 0
+        if guard["over"] >= 60 and now >= guard["cool_until"] and (pct is None or pct >= 20):
+            mode = b"\x42" if eco.get("manual") else b"\x41"
+            if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43"):
+                guard.update(active=True, since=now, under=0, mode=mode, buy_before=buy_w, eco_w=None, last_pause=now,
+                             reason=(f"30分の電力が {d.get('projected_kw')}kW になりそう" if demand_hot and buy_w < level_kw * 1000
+                                     else f"買電 {buy_w / 1000:.1f}kW"))
+                log(f"買電が多いので沸き上げを一時停止しました（{guard['reason']}・目安 {level_kw:.1f}kW：{how}）")
+        return
+    # 止めている：止めた直後の買電の下がり方から、エコキュートの電力を覚える（戻したらまた上がるので、その分を見込む）
+    if guard["eco_w"] is None and now - guard["since"] >= 120:
+        guard["eco_w"] = max(500.0, min(4000.0, (guard["buy_before"] or 0) - buy_w)) if guard["buy_before"] else 1500.0
+    eco_w = guard["eco_w"] or 1500.0
+    # ほかの処理で沸き上げが戻されたら、止め直す
+    if eco.get("heating") and now - guard["last_pause"] > 120:
+        guard["last_pause"] = now
+        el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+    resume_ok = buy_w + eco_w < level_kw * 1000 * 0.9 and not demand_hot
+    guard["under"] = guard["under"] + step_s if resume_ok else 0
+    if guard["under"] >= 300:
+        guard_release(f"買電が {buy_w / 1000:.1f}kW に下がったため")
+    elif now - guard["since"] > 3600:
+        guard_release("1時間止めたため（お湯切れを防ぐため、しばらく止めません）", cool=1800)
+    elif pct is not None and pct < 15:
+        guard_release(f"残りのお湯が少ない（{pct}%）ため", cool=1800)
+
+
+def guard_release(reason, cool=0):
+    mode = guard["mode"] or b"\x41"
+    # 止めているあいだに「夜止め」（目標まで沸いた・晴れの夜）になったときは、止めたままにする
+    if mode == b"\x41" and state.get("night_stop"):
+        mode = b"\x43"
+    err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, mode)
+    log(f"沸き上げの一時停止をやめました（{reason}）" if not err else f"沸き上げを元に戻せませんでした（{err}）")
+    guard.update(active=False, over=0, under=0, cool_until=time.time() + cool)
+
+
+def guard_public():
+    lv, how = guard_level_kw()
+    return {"enabled": bool(conf.get("heat_guard")), "active": guard["active"], "since": guard["since"] if guard["active"] else None,
+            "reason": guard["reason"] if guard["active"] else "", "level_kw": round(lv, 2), "level_how": how,
+            "eco_w": round(guard["eco_w"]) if guard["eco_w"] else None}
 
 
 def remain_pct(eco):
@@ -2033,6 +2110,13 @@ def tick():
             state["history"] = [p for p in state["history"] if p[0] >= cut]
             state["surplus_w"] = surplus
     hot_water_track(eco)
+    # 買電が多いときはお湯を沸かさない（だれが沸かしていても止める）
+    if conf["eco_ip"]:
+        try:
+            h_ = now.hour
+            guard_tick(eco, surplus, 15 if conf["enabled"] and conf["start_hour"] <= h_ < conf["end_hour"] else 60)
+        except Exception as e:
+            print("買電の見張りでエラー:", e, flush=True)
     # 留守：決めた時刻まで沸き上げを止めておき、帰る前に沸かし始める（おひさま沸き上げがオフでも働く）
     if away_tick(eco):
         return
@@ -2095,6 +2179,11 @@ def tick():
             state["by_us"] = True
             state["ensure"] = True
             log(f"残りのお湯が少ない（{pct}%）ため、売電が無くても沸き増しを始めました（お湯切れを防ぐため）")
+
+    # 買電が多くて一時停止しているあいだは、沸かし始めない（夕方の準備・昼の沸き増しも待つ）
+    if guard["active"]:
+        state["status"] = f"買電が多いので沸き上げを一時停止しています（{guard['reason']}）"
+        return
 
     # 夕方の準備（過去の使用量から）
     try:
@@ -2234,7 +2323,7 @@ def live_state():
             "eco": {k: eco.get(k) for k in ("online", "heating", "manual", "remain", "tank")},
             "eco_today_kwh": (today.get("circuits_kwh") or {}).get("エコキュート"),
             "away_until": conf.get("away_until") or 0, "away": state.get("away"),
-            "demand": demand_state.get("last"), "demand_alert": state.get("demand_alert")}
+            "demand": demand_state.get("last"), "demand_alert": state.get("demand_alert"), "heat_guard": guard_public()}
 
 
 def public_state():
@@ -2246,7 +2335,7 @@ def public_state():
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
-                "hot_plan": hot_plan_safe(),
+                "hot_plan": hot_plan_safe(), "heat_guard": guard_public(),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,

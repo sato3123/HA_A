@@ -189,6 +189,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             HotPlanSettings(vm, view?.tankL)
+            HeatGuardSettings(vm)
             if (method == "stop") {
                 val tank = view?.tankL
                 val hotAuto = sc["hot_auto"] == true
