@@ -2825,6 +2825,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** サーバーに登録した AiSEG2 の状態（画面用） */
     val serverAiseg = MutableStateFlow<String?>(null)
+    /** お湯の量の予想（夕方の準備・夜に沸かす量）。サーバーが過去の使用量から計算 */
+    val hotPlan = MutableStateFlow<JSONObject?>(null)
     val nightStop = MutableStateFlow(false)
     /** 夜止めの日に、目標の量まで夜に沸かしている途中 */
     val nightPending = MutableStateFlow(false)
@@ -2959,6 +2961,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         nightPending.value = j.optBoolean("night_pending")
         j.optJSONObject("daily")?.let { d -> serverDaily.value = d.keys().asSequence().sorted().map { it to (d.optJSONObject(it) ?: JSONObject()) }.toList() }
         serverCost.value = j.optJSONObject("cost")
+        hotPlan.value = j.optJSONObject("hot_plan")
         serverForecast.value = j.optJSONObject("forecast")
         hotHourly.value = j.optJSONObject("hot_hourly")?.let { h ->
             fun arr(k: String) = h.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } } ?: emptyList()

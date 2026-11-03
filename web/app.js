@@ -2968,16 +2968,58 @@
   }
 
   // ---- エコキュート：夜に沸かす量・日ごとのお湯 ----
+  // ---- お湯の量を過去の使用量から自動で決める（夕方の準備・多めの日） ----
+  function hotDay(iso) {
+    const t = new Date(); const td = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+    const tm = new Date(t.getTime() + 86400000); const tmd = `${tm.getFullYear()}-${pad(tm.getMonth() + 1)}-${pad(tm.getDate())}`;
+    return iso === td ? "今日" : iso === tmd ? "明日" : dayLabel(iso);
+  }
+  function hotNeedText(n) {
+    const parts = [n.predicted != null ? `予想 ${n.predicted}L` : null, n.margin ? `余裕 ${n.margin}L` : null,
+      n.extra ? `多めの日 ${n.extra}L${n.note ? `（${esc(n.note)}）` : ""}` : null].filter(Boolean);
+    return parts.join(" ＋ ") + (n.need != null ? ` ＝ ${n.need}L` : "") + (n.predicted == null ? `（${esc(n.how || "")}）` : "");
+  }
+  function hotPlanHTML(j) {
+    const c = j.config || {}, p = j.hot_plan || {};
+    const chip = (sel, set, id, label) => `<button class="chip${sel ? " sel" : ""}" data-set="${set}" data-id="${id}">${label}</button>`;
+    let h = `<label class="row" style="margin-top:6px"><span class="rt">お湯の量を過去の使用量から自動で決める<div class="sub">直近4週間の同じ種類の日（平日／土日祝）から夜に使う量を予想し、夕方までに「予想＋余裕」を用意します。足りなければ間に合う時刻から沸かします。</div></span>
+      <input type="checkbox" data-set="hotAuto" ${c.hot_auto ? "checked" : ""}></label>`;
+    if (!c.hot_auto) return h;
+    const m = c.hot_margin_l ?? 50, ph = c.prep_hour ?? 17;
+    h += `<div class="fl">余裕（予想に足す量）：${m}L</div><div class="chips">${[0, 30, 50, 80, 100, 150].map((v) => chip(v === m, "hotMargin", v, v + "L")).join("")}</div>
+      <div class="fl">何時までに用意するか：${ph}時</div><div class="chips">${[15, 16, 17, 18, 19, 20].map((v) => chip(v === ph, "prepHour", v, v + "時")).join("")}</div>`;
+    const e = p.evening, n = p.night, st = p.prep || {};
+    if (e) h += `<div class="note" style="color:var(--primary)">🛁 ${hotDay(e.date)}の${e.from}時までに用意：${hotNeedText(e)}${e.max != null ? `（多い日は ${e.max}L・${esc(e.how)}）` : ""}</div>`;
+    if (st.heating) h += `<div class="fl">♨ 夕方の準備のために沸かしています</div>`;
+    else if (st.short > 0 && st.start_at && !st.done) h += `<div class="note">今のままだと ${st.short}L 足りないので、${st.start_at} ごろから沸かします（昼に余った電気で沸けば不要）</div>`;
+    if (n) h += `<div class="note">${hotDay(n.date)}の朝（0時〜${n.to}時）：${hotNeedText(n)}${n.pct != null ? ` → 夜止めの日は ${n.pct}% まで沸かします` : ""}</div>`;
+    const ex = p.extra || [];
+    h += `<div class="fl">多めにお湯を使う日</div>${ex.length ? ex.map((x, i) => `<div class="brow" style="align-items:center"><span style="flex:1">${hotDay(x.date)}${x.part === "morning" ? "の朝" : "の夕方〜夜"} +${x.liters}L${x.note ? `（${esc(x.note)}）` : ""}</span><button class="tbtn" data-set="hotExtraDel" data-id="${i}">取り消す</button></div>`).join("") : `<div class="note">ありません</div>`}`;
+    if (S.hotExtraOpen) {
+      const t = new Date(Date.now() + 86400000);
+      h += `<div class="card" style="margin-top:6px"><div class="brow" style="align-items:center">日 <input type="date" id="hxDate" value="${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}">
+          <select id="hxPart"><option value="evening">夕方〜夜（お風呂など）</option><option value="morning">朝</option></select>
+          <select id="hxLiters">${[50, 100, 150, 200, 300].map((v) => `<option value="${v}"${v === 100 ? " selected" : ""}>+${v}L</option>`).join("")}</select>
+          <input type="text" id="hxNote" placeholder="メモ（例：来客）" maxlength="30" style="width:140px"></div>
+        <div class="brow"><button class="btn" data-set="hotExtraSave">追加</button><button class="tbtn" data-set="hotExtraClose">やめる</button></div>
+        <div class="note">※ 浴槽のお湯はりは1回で約180〜200Lです。</div></div>`;
+    } else h += `<div class="brow"><button class="btn outline" data-set="hotExtraOpen">🛁 多めにお湯を使う日を指定する</button></div>`;
+    return h;
+  }
+  async function saveHotExtra(list) {
+    await loadSolar("/config", { hot_extra: list });
+  }
+
   function nightHeatHTML(j) {
     const c = j.config || {}, e = j.eco || {};
-    if (c.night_method !== "stop") return "";
+    if (c.night_method !== "stop") return hotPlanHTML(j);
     const tank = e.tank || (Object.values(j.daily || {}).reverse().find((d) => d.hot_tank_l) || {}).hot_tank_l;
     const lit = (p) => (tank ? `${p}%（約${Math.round(tank * p / 100)}L）` : `${p}%`);
     const cur = c.night_heat_pct ?? 50;
     const days = Object.entries(j.daily || {}).filter(([, v]) => v.hot_use_l != null || v.hot_heat_l != null).slice(-7);
     const max = Math.max(1, ...days.map(([, v]) => Math.max(v.hot_use_l || 0, v.hot_heat_l || 0)));
     const avg = days.length ? days.reduce((s, [, v]) => s + (v.hot_use_l || 0), 0) / days.length : null;
-    return `<div class="fl" style="margin-top:6px">晴れの日の夜に沸かす量：${lit(cur)}${j.night_pending ? "（いま夜の沸き上げ中）" : j.night_stop ? "（いま夜の沸き上げを止めています）" : ""}</div>
+    return hotPlanHTML(j) + `<div class="fl" style="margin-top:6px">${c.hot_auto ? "記録が無いときに夜に沸かす量" : "晴れの日の夜に沸かす量"}：${lit(cur)}${j.night_pending ? "（いま夜の沸き上げ中）" : j.night_stop ? "（いま夜の沸き上げを止めています）" : ""}</div>
       <div class="chips">${[0, 20, 30, 40, 50, 60, 70, 80].map((p) => `<button class="chip${p === cur ? " sel" : ""}" data-set="nightPct" data-id="${p}">${p}%${tank ? "・" + Math.round(tank * p / 100) + "L" : ""}</button>`).join("")}</div>
       ${days.length ? `<details><summary class="fl" style="cursor:pointer">直近の日ごとのお湯（参考・1日平均 約${Math.round(avg)}L）</summary>` + days.map(([d, v]) => `<div class="hwrow"><span style="width:84px">${dayLabel(d)}</span>
         <span class="hwbars"><span class="hwb" style="width:${Math.max(1, (v.hot_use_l || 0) * 100 / max)}%"></span><span class="hwb h" style="width:${Math.max(1, (v.hot_heat_l || 0) * 100 / max)}%"></span></span>
@@ -3181,6 +3223,22 @@
       }
       case "dtCancel": try { const j = await solarApi("/timers/delete", { id }); S.devTimers = j.timers || []; } catch (e) { /* 次の読み込みで */ } renderEntities(); renderSheet(); renderInfo(); { const l = $("#devTimerList"); if (l) l.innerHTML = devTimerListHTML(); } return true;
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
+      case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
+      case "hotMargin": loadSolar("/config", { hot_margin_l: Number(id) }); return true;
+      case "prepHour": loadSolar("/config", { prep_hour: Number(id) }); return true;
+      case "hotExtraOpen": S.hotExtraOpen = true; renderSolar(); return true;
+      case "hotExtraClose": S.hotExtraOpen = false; renderSolar(); return true;
+      case "hotExtraDel": {
+        const ex = ((S.solar && S.solar.hot_plan && S.solar.hot_plan.extra) || []).filter((_, i) => i !== Number(id));
+        await saveHotExtra(ex); return true;
+      }
+      case "hotExtraSave": {
+        const d = ($("#hxDate") || {}).value;
+        if (!d) return true;
+        const ex = ((S.solar && S.solar.hot_plan && S.solar.hot_plan.extra) || []).concat([{ date: d, part: $("#hxPart").value, liters: Number($("#hxLiters").value), note: $("#hxNote").value.trim() }]);
+        S.hotExtraOpen = false;
+        await saveHotExtra(ex); return true;
+      }
       case "groupRun": runGroup(id, el.dataset.act); return true;
       case "awayOpen": S.awayOpen = true; renderSolar(); return true;
       case "awayClose": S.awayOpen = false; renderSolar(); return true;

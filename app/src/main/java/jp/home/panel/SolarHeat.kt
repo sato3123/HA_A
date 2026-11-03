@@ -104,6 +104,7 @@ fun EcoCuteCard(vm: MainViewModel) {
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
+            if (s.server) HotPlanSummary(vm)
             if (s.server) AwayRow(vm)
             var analysis by remember { mutableStateOf(false) }
             if (analysis) EnergyAnalysisDialog(vm) { analysis = false }
@@ -187,8 +188,10 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 else "エネルギーシフト（夜の沸き上げを昼にずらす設定）を使います。使えない機種では、晴れの夜だけタンクの運転モードを「節約」にします。",
                 style = MaterialTheme.typography.bodySmall,
             )
+            HotPlanSettings(vm, view?.tankL)
             if (method == "stop") {
                 val tank = view?.tankL
+                val hotAuto = sc["hot_auto"] == true
                 fun lit(p: Int) = if (tank != null && tank > 0) "$p%（約${tank * p / 100}L）" else "$p%"
                 @Composable
                 fun pctRow(label: String, key: String, def: Int, options: List<Int>) {
@@ -203,14 +206,17 @@ fun SolarHeatSettings(vm: MainViewModel) {
                         }
                     }
                 }
-                pctRow("晴れの日の夜に沸かす量（ここまで沸かしたら止めて、残りは昼に沸かす）", "night_heat_pct", 50, listOf(0, 20, 30, 40, 50, 60, 70, 80))
+                if (hotAuto) Text("晴れの日の夜に沸かす量は、上の「自動で決める」で翌朝の予想から決めます（記録が無いときは次の値）。", style = MaterialTheme.typography.bodySmall)
+                pctRow(if (hotAuto) "記録が無いときに夜に沸かす量" else "晴れの日の夜に沸かす量（ここまで沸かしたら止めて、残りは昼に沸かす）", "night_heat_pct", 50, listOf(0, 20, 30, 40, 50, 60, 70, 80))
                 Text("夜の初めにすでにこの量以上残っていれば、夜は沸かしません。0% にすると夜はまったく沸かしません。", style = MaterialTheme.typography.bodySmall)
                 pctRow("夜中に残りがこれより減ったら沸かす（お湯切れ防止）", "safety_pct", 30, listOf(10, 20, 30, 40))
-                pctRow("昼の終わりの2時間前に、これより少なければ沸かす", "ensure_pct", 60, listOf(40, 50, 60, 70, 80))
+                if (!hotAuto) pctRow("昼の終わりの2時間前に、これより少なければ沸かす", "ensure_pct", 60, listOf(40, 50, 60, 70, 80))
                 val ns by vm.nightStop.collectAsState()
                 val np by vm.nightPending.collectAsState()
                 if (ns) Text("いまは夜の沸き上げを止めています（昼に沸かします）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                if (np) Text("いまは夜の沸き上げの途中です（${lit((sc["night_heat_pct"] as? Number)?.toInt() ?: 50)} まで沸かしたら止めます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                val hpn by vm.hotPlan.collectAsState()
+                val npPct = hpn?.optJSONObject("night")?.takeIf { hotAuto && it.has("pct") }?.optInt("pct") ?: (sc["night_heat_pct"] as? Number)?.toInt() ?: 50
+                if (np) Text("いまは夜の沸き上げの途中です（${lit(npPct)} まで沸かしたら止めます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 HotWaterDaily(vm, tank)
             }
 

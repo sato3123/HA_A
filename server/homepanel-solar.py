@@ -57,7 +57,13 @@ DEFAULT_CONF = {
     "lat": None, "lon": None,               # 天気予報の場所（Home Assistant の自宅の位置を画面から送る）
     # AiSEG2（Panasonic の HEMS）から、いまの発電・消費を読む（スマートメーターの代わり。こちらが優先）
     "aiseg_url": "", "aiseg_user": "aiseg", "aiseg_password": "",
-    "night_heat_pct": 50,                   # 夜止め：夜はこの残量（%）まで沸かしたら止める
+    "night_heat_pct": 50,                   # 夜止め：夜はこの残量（%）まで沸かしたら止める（hot_auto のときは自動で決める）
+    # お湯の量を過去の使用量から自動で決める：夕方 prep_hour 時までに「夜（prep_hour〜night_start_hour 時）に使う予想＋余裕」を用意し、
+    # 夜止めの夜に沸かす量も「翌朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕」にする
+    "hot_auto": False, "hot_margin_l": 50, "prep_hour": 17, "night_start_hour": 23,
+    "heat_rate_lph": 0,                     # 沸き上げの速さ（L/時）。0 なら記録から求める
+    # 多めにお湯が必要な日：[{date: "YYYY-MM-DD", liters, part: evening（夕方〜夜）/ morning（朝）, note}]
+    "hot_extra": [],
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
     "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
     "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
@@ -883,8 +889,12 @@ def aiseg_daily_tick():
                 state["hot_hourly"] = hot
                 day = energy["days"].setdefault(today.isoformat(), {})
                 day["hot_use_l"] = sum(x or 0 for x in hot["today"])
+                day["hot_h"] = [round(float(x or 0), 1) for x in hot["today"]][:24]
                 y = (today - timedelta(days=1)).isoformat()
-                energy["days"].setdefault(y, {})["hot_use_l"] = sum(x or 0 for x in hot["yesterday"])
+                yd = energy["days"].setdefault(y, {})
+                yd["hot_use_l"] = sum(x or 0 for x in hot["yesterday"])
+                if len(hot["yesterday"] or []) >= 24:
+                    yd["hot_h"] = [round(float(x or 0), 1) for x in hot["yesterday"]][:24]
                 state["hot_from_aiseg"] = True
     except Exception as e:
         print("AiSEG2 の湯の量を読めませんでした:", e, flush=True)
@@ -1653,6 +1663,8 @@ def hot_water_track(eco):
         day = energy.setdefault("days", {}).setdefault(d, {})
         if r < prev and not state.get("hot_from_aiseg"):
             day["hot_use_l"] = day.get("hot_use_l", 0) + (prev - r)
+            hh = day.setdefault("hot_h", [0.0] * 24)
+            hh[datetime.now().hour] = round(hh[datetime.now().hour] + (prev - r), 1)
         elif r > prev:
             day["hot_heat_l"] = day.get("hot_heat_l", 0) + (r - prev)
         day["hot_tank_l"] = (eco or {}).get("tank")
@@ -1664,6 +1676,193 @@ def hot_water_track(eco):
             cut = now - 2 * 86400
             while hist and hist[0][0] < cut:
                 hist.pop(0)
+
+
+# ---- お湯の量の予想（過去の使用量から） ----
+# 1時間ごとの記録が無い日（日の合計だけの日）に使う、ふつうの家の1日の使い方の割合（0〜23時）
+HOT_PROFILE = [1, 0.5, 0.3, 0.3, 0.5, 1.5, 4, 6, 4, 2.5, 2, 2, 2.5, 2, 1.5, 1.5, 2.5, 5, 9, 13, 14, 12, 8, 4]
+
+
+def hot_day_type(d):
+    """平日か休日（土日祝）か。休日はお湯の使い方が違うことが多いので分けて予想する"""
+    if d.weekday() >= 5:
+        return "holiday"
+    try:
+        if d.isoformat() in set(tariffs().get("holidays") or []):
+            return "holiday"
+    except Exception:
+        pass
+    return "weekday"
+
+
+def hot_used(rec, h0, h1):
+    """その日の h0 時〜h1 時（h1 は含まない）に使ったお湯（L）。1時間ごとの記録が無ければ日の合計から割合で"""
+    hh = rec.get("hot_h")
+    if hh and len(hh) >= 24 and sum(hh) > 0:
+        return sum(hh[h0:h1]), True
+    tot = rec.get("hot_use_l")
+    if not tot:
+        return None, False
+    return tot * sum(HOT_PROFILE[h0:h1]) / sum(HOT_PROFILE), False
+
+
+def predict_hot(d, h0, h1):
+    """d の日の h0〜h1 時に使うお湯の予想（L）：直近4週間の同じ種類の日（平日／休日）の平均。少なければ全部の日"""
+    days = energy.get("days") or {}
+    typ = hot_day_type(d)
+    same, other = [], []
+    for i in range(1, 29):
+        dd = d - timedelta(days=i)
+        if dd >= date.today():
+            continue
+        rec = days.get(dd.isoformat())
+        if not rec:
+            continue
+        v, hourly = hot_used(rec, h0, h1)
+        if v is None:
+            continue
+        (same if hot_day_type(dd) == typ else other).append((v, hourly))
+    use = same if len(same) >= 3 else same + other
+    if not use:
+        return None
+    vals = [v for v, _ in use]
+    return {"liters": round(sum(vals) / len(vals)), "max": round(max(vals)), "days": len(vals),
+            "type": "休日" if typ == "holiday" and len(same) >= 3 else ("平日" if len(same) >= 3 else "すべての日"),
+            "hourly": sum(1 for _, h in use if h)}
+
+
+def hot_extra_for(d, part):
+    ex = [x for x in conf.get("hot_extra") or [] if x.get("date") == d.isoformat() and (x.get("part") or "evening") == part]
+    return sum(int(x.get("liters") or 0) for x in ex), "・".join(x.get("note") for x in ex if x.get("note"))
+
+
+def heat_rate():
+    """沸き上げの速さ（L/時）：設定、または残りのお湯の増え方の記録（中央値）から。分からなければ 80L/時"""
+    v = float(conf.get("heat_rate_lph") or 0)
+    if v > 0:
+        return v, "設定"
+    hist = energy.get("hot") or []
+    rates = []
+    for (t0, r0), (t1, r1) in zip(hist, hist[1:]):
+        dt = (t1 - t0) / 3600
+        if 0.05 <= dt <= 0.4 and r1 > r0:
+            rates.append((r1 - r0) / dt)
+    if len(rates) >= 4:
+        rates.sort()
+        return max(30.0, min(300.0, rates[len(rates) // 2])), "記録から"
+    return 80.0, "目安"
+
+
+def evening_need(d=None):
+    """d（今日）の夕方に用意しておくお湯：夜（prep_hour〜night_start_hour 時）の予想＋余裕＋多めの日の分"""
+    d = d or date.today()
+    h0, h1 = int(conf.get("prep_hour", 17)), max(int(conf.get("prep_hour", 17)) + 1, min(24, int(conf.get("night_start_hour", 23))))
+    p = predict_hot(d, h0, h1)
+    extra, note = hot_extra_for(d, "evening")
+    margin = int(conf.get("hot_margin_l") or 0)
+    if p is None:
+        return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note,
+                "need": (margin + extra) or None, "how": "記録がまだありません"}
+    return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
+            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均"}
+
+
+def night_need(d):
+    """夜止めの夜に沸かす量：d（翌日）の朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕＋多めの日の分"""
+    h1 = max(1, min(24, int(conf.get("start_hour", 9))))
+    p = predict_hot(d, 0, h1)
+    extra, note = hot_extra_for(d, "morning")
+    margin = int(conf.get("hot_margin_l") or 0)
+    if p is None:
+        return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note, "need": None,
+                "how": "記録がまだありません"}
+    return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
+            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均"}
+
+
+def night_target_pct(d=None):
+    """夜止めで夜に沸かす量（%）。自動なら、翌朝の予想＋余裕から（20〜100%）。記録が無ければ設定の値"""
+    base = int(conf.get("night_heat_pct", 50))
+    tank = (state.get("eco") or {}).get("tank")
+    if not conf.get("hot_auto") or not tank:
+        return base
+    if d is None:
+        now = datetime.now()
+        d = now.date() if now.hour < 12 else now.date() + timedelta(days=1)
+    n = night_need(d)
+    if not n.get("need"):
+        return base
+    return max(20, min(100, -(-int(n["need"]) * 100 // tank)))
+
+
+def hot_plan_public():
+    now = datetime.now()
+    nd = now.date() if now.hour < 12 else now.date() + timedelta(days=1)
+    rate, how = heat_rate()
+    ev = evening_need(now.date() if now.hour < int(conf.get("night_start_hour", 23)) else now.date() + timedelta(days=1))
+    ng = night_need(nd)
+    tank = (state.get("eco") or {}).get("tank")
+    if tank and ng.get("need"):
+        ng["pct"] = night_target_pct(nd)
+    return {"evening": ev, "night": ng, "rate_lph": round(rate), "rate_how": how, "prep": state.get("prep"),
+            "extra": [x for x in conf.get("hot_extra") or [] if x.get("date", "") >= date.today().isoformat()]}
+
+
+def prep_tick(eco, now):
+    """夕方の準備：prep_hour 時までに、夜に使う予想＋余裕のお湯があるようにする。足りなければ、間に合う時刻から沸かす"""
+    if not conf.get("hot_auto") or not eco or eco.get("remain") is None:
+        return
+    ph = int(conf.get("prep_hour", 17))
+    remain = eco["remain"]
+    st = state.get("prep") or {}
+    if st.get("date") != now.date().isoformat():
+        st = {"date": now.date().isoformat(), "heating": False}
+    need = evening_need(now.date())
+    st["need"] = need.get("need")
+    if not need.get("need"):
+        state["prep"] = st
+        return
+    tank = eco.get("tank") or need["need"]
+    target = min(int(need["need"]), int(tank * 0.98))
+    rate, _ = heat_rate()
+    short = target - remain
+    st["short"] = max(0, short)
+    if st.get("heating"):
+        # 沸かしている：目標まで沸いたら（または準備の時刻を1時間過ぎたら）やめる
+        if remain < target and now.hour < ph + 1 and not eco.get("heating") and time.time() - st.get("resent", 0) > 600:
+            # ほかの設定（夜止めを自動に戻すなど）で止まったときは、もう一度沸かす
+            st["resent"] = time.time()
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
+        if remain >= target or now.hour >= ph + 1:
+            st["heating"] = False
+            st["done"] = remain >= target
+            (eco_pause if state.get("night_stop") else eco_auto)(
+                f"夕方の準備：{remain}L になりました（目標 {target}L）" if remain >= target else "夕方の準備の時刻を過ぎたため")
+            state["ensure"] = False
+        state["prep"] = st
+        return
+    if now.hour >= ph or short <= 0 or st.get("done"):
+        state["prep"] = st
+        return
+    # 間に合うように始める時刻：足りない量 ÷ 沸かす速さ ＋ 15分の余裕
+    lead_h = short / rate + 0.25
+    start_at = datetime.combine(now.date(), datetime.min.time()) + timedelta(hours=ph - lead_h)
+    st["start_at"] = start_at.strftime("%H:%M")
+    if now >= start_at and not eco.get("heating") and eco.get("can_manual", True):
+        s_ = eco_caps["set"]
+        if s_ is None or 0xC0 in s_:
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xC0, b"\x41")
+        err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
+        if not err:
+            st["heating"] = True
+            with lock:
+                state["by_us"] = True
+                state["ensure"] = True
+            log(f"夕方の準備：夜に使う予想 {need['predicted'] or 0}L ＋ 余裕 {need['margin']}L" + (f" ＋ 多めの日 {need['extra']}L" if need["extra"] else "")
+                + f" に対して、いま {remain}L なので沸かし始めました（{ph}時までに {target}L）")
+        else:
+            log(f"夕方の準備：沸かし始められませんでした（{err}）")
+    state["prep"] = st
 
 
 def remain_pct(eco):
@@ -1684,7 +1883,7 @@ def stop_plan(sunny, name, eco, result):
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
             state["night_stop"] = False
         return result(True, f"{name}は晴れない予報：夜はいつもどおり沸かします（沸き上げ：自動）", False)
-    target_pct = int(conf.get("night_heat_pct", 50))
+    target_pct = night_target_pct(plan_target())
     tank = (eco or {}).get("tank")
     lit = lambda q: f"{q}%（約{tank * q // 100}L）" if tank else f"{q}%"
     if pct is not None and pct < target_pct:
@@ -1841,7 +2040,7 @@ def tick():
 
     # 夜止め：目標の量まで沸いたら止める
     pct0 = remain_pct(eco)
-    if state.get("night_pending") and not in_window and pct0 is not None and pct0 >= int(conf.get("night_heat_pct", 50)):
+    if state.get("night_pending") and not in_window and pct0 is not None and pct0 >= night_target_pct():
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43"):
             state["night_pending"] = False
             state["night_stop"] = True
@@ -1885,16 +2084,27 @@ def tick():
             state["by_us"] = False
             log("昼の時間帯が終わったので、沸き上げを自動に戻しました")
     # 夜止め：昼の時間帯の終わる2時間前に、まだお湯が少なければ、売電が無くても沸かす（お湯切れを防ぐ保険）
-    if state.get("night_stop") and in_window and now.hour >= conf["end_hour"] - 2 and not state["by_us"] \
+    if not conf.get("hot_auto") and state.get("night_stop") and in_window and now.hour >= conf["end_hour"] - 2 and not state["by_us"] \
             and pct is not None and pct < conf.get("ensure_pct", 60) and not (eco or {}).get("heating"):
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42"):
             state["by_us"] = True
             state["ensure"] = True
             log(f"残りのお湯が少ない（{pct}%）ため、売電が無くても沸き増しを始めました（お湯切れを防ぐため）")
 
+    # 夕方の準備（過去の使用量から）
+    try:
+        prep_tick(eco, now)
+    except Exception as e:
+        print("夕方の準備でエラー:", e, flush=True)
+    prep_on = bool((state.get("prep") or {}).get("heating"))
+
     # 2. 昼：売電をリアルタイムに見て沸き増し
     if not in_window:
         counters["over"] = counters["buy"] = 0
+        if prep_on:
+            p_ = state["prep"]
+            state["status"] = f"夕方の準備：{conf.get('prep_hour', 17)}時までに {p_.get('need')}L になるよう沸かしています"
+            return
         state["ensure"] = False
         if state["by_us"]:
             eco_auto("昼の時間帯が終わったため")
@@ -1995,6 +2205,13 @@ def run_group(g, action):
     return {"ok": not ng, "done": len(res) - len(ng), "failed": ng, "results": res}
 
 
+def hot_plan_safe():
+    try:
+        return hot_plan_public()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def live_state():
     """いまの発電・消費・売買電とエコキュートの様子（画面のリアルタイム表示用）。古ければ AiSEG2 から読み直す"""
     p = state.get("power") or {}
@@ -2024,6 +2241,7 @@ def public_state():
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
+                "hot_plan": hot_plan_safe(),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,
@@ -2149,6 +2367,13 @@ class Api(BaseHTTPRequestHandler):
                     if g is None:
                         return self._ok({"error": "まとめて操作の設定が正しくありません"}, 400)
                     b["groups"] = g
+                if "hot_extra" in b:
+                    ex = b["hot_extra"]
+                    if not isinstance(ex, list) or len(ex) > 60 or not all(isinstance(x, dict) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(x.get("date", ""))) for x in ex):
+                        return self._ok({"error": "多めの日の設定が正しくありません"}, 400)
+                    b["hot_extra"] = [{"date": x["date"], "liters": max(0, min(500, int(x.get("liters") or 0))),
+                                       "part": "morning" if x.get("part") == "morning" else "evening", "note": str(x.get("note") or "")[:30]}
+                                      for x in ex if x["date"] >= (date.today() - timedelta(days=1)).isoformat()]
                 if "demand_notify" in b:
                     if not isinstance(b["demand_notify"], list) or not all(re.fullmatch(r"notify\.[a-z0-9_]+", str(x)) for x in b["demand_notify"]):
                         return self._ok({"error": "通知先が正しくありません（notify.〇〇）"}, 400)
