@@ -75,7 +75,13 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
         return
     }
 
-    val nameOf = { id: String -> states[id]?.name ?: id }
+    val thermos by vm.thermos.collectAsState()
+    // 温度計は、アプリで付けた名前で「寝室の温度」のように出す
+    val nameOf = { id: String ->
+        thermos.firstOrNull { it.tempEntity == id }?.let { it.name + "の温度" }
+            ?: thermos.firstOrNull { it.humEntity == id }?.let { it.name + "の湿度" }
+            ?: states[id]?.name ?: id
+    }
     val list = autos.filter {
         val id = it.attributes.optString("id")
         if (tab == 0) isScheduleId(id) else !isScheduleId(id)
@@ -210,6 +216,12 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                 FilterChip(t is Trig.Distance, {
                     if (t !is Trig.Distance) rule = rule.copy(trigger = Trig.Distance(states.values.firstOrNull { it.domain == "person" }?.entityId ?: "", 1.0, true))
                 }, { Text("家からの距離") })
+                FilterChip(t is Trig.Numeric, {
+                    if (t !is Trig.Numeric) {
+                        val first = thermos.firstOrNull { it.tempEntity != null }
+                        rule = rule.copy(trigger = Trig.Numeric(first?.tempEntity ?: "", true, Math.round((first?.temperature ?: 27.0) + 1.0).toDouble()))
+                    }
+                }, { Text("温度計（温度・湿度）") })
             }
         }
         when (val t = rule.trigger) {
@@ -246,6 +258,43 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                     val lat = p.attributes.optDouble("latitude")
                     Text(if (lat.isNaN()) "※ ${p.name} の位置はまだ届いていません" else "${p.name} の位置は届いています", style = MaterialTheme.typography.bodySmall)
                 }
+            }
+            is Trig.Numeric -> {
+                val isHum = thermos.any { it.humEntity == t.entityId }
+                val step = if (isHum) 5.0 else 0.5
+                val unit = if (isHum) "%" else "℃"
+                Text("どの温度計で決めるか", style = MaterialTheme.typography.bodySmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    thermos.forEach { th ->
+                        th.tempEntity?.let { id ->
+                            FilterChip(t.entityId == id, {
+                                if (t.entityId != id) rule = rule.copy(trigger = t.copy(entityId = id, value = if (isHum) Math.round((th.temperature ?: 27.0) + 1.0).toDouble() else t.value))
+                            }, { Text("🌡 ${th.name}" + (th.temperature?.let { " ${fmt(Math.round(it * 10) / 10.0)}℃" } ?: "")) })
+                        }
+                        th.humEntity?.let { id ->
+                            FilterChip(t.entityId == id, {
+                                if (t.entityId != id) rule = rule.copy(trigger = t.copy(entityId = id, value = if (!isHum) ((Math.round((th.humidity ?: 60.0) / 5) * 5) + 5).toDouble() else t.value))
+                            }, { Text("💧 ${th.name}" + (th.humidity?.let { " ${Math.round(it)}%" } ?: "")) })
+                        }
+                    }
+                }
+                if (thermos.isEmpty()) Text("温度計が見つかりません（SwitchBot 温湿度計などを Home Assistant に取り込むと出てきます）。", color = MaterialTheme.colorScheme.error)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(t.above, { rule = rule.copy(trigger = t.copy(above = true)) }, { Text(if (isHum) "上回ったとき（じめじめ）" else "上回ったとき（暑い）") })
+                    FilterChip(!t.above, { rule = rule.copy(trigger = t.copy(above = false)) }, { Text(if (isHum) "下回ったとき（乾燥）" else "下回ったとき（寒い）") })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = { rule = rule.copy(trigger = t.copy(value = Math.round((t.value - step) * 10) / 10.0)) }) { Text("−") }
+                    Text(numText(t.value) + unit, fontSize = 22.sp, modifier = Modifier.widthIn(min = 90.dp))
+                    FilledTonalButton(onClick = { rule = rule.copy(trigger = t.copy(value = Math.round((t.value + step) * 10) / 10.0)) }) { Text("＋") }
+                }
+                Text("続いたら動かす（すぐ上下するときの、むだな動きを防ぐ）", style = MaterialTheme.typography.bodySmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0 to "すぐ", 5 to "5分", 10 to "10分", 30 to "30分").forEach { (m, l) ->
+                        FilterChip(t.forMin == m, { rule = rule.copy(trigger = t.copy(forMin = m)) }, { Text(l) })
+                    }
+                }
+                Text("※ 境目をまたいだときに1回動きます（${numText(t.value)}$unit より${if (t.above) "上" else "下"}のあいだ、くり返しは動きません）。", style = MaterialTheme.typography.labelSmall)
             }
             is Trig.Sun -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = { rule = rule.copy(trigger = t.copy(offsetMin = t.offsetMin - 10)) }) { Text("−10分") }
@@ -361,6 +410,7 @@ private fun validate(r: Rule): String? = when {
     r.actions.isEmpty() -> "「＋ 操作を追加」で、実行することを1つ以上選んでください"
     r.trigger is Trig.State && (r.trigger as Trig.State).entityId.isBlank() -> "きっかけにする機器を選んでください"
     r.trigger is Trig.Distance && (r.trigger as Trig.Distance).personId.isBlank() -> "だれの位置で決めるかを選んでください"
+    r.trigger is Trig.Numeric && (r.trigger as Trig.Numeric).entityId.isBlank() -> "きっかけにする温度計を選んでください"
     else -> null
 }
 

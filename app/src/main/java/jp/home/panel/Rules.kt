@@ -26,6 +26,11 @@ sealed interface Trig {
      * Home Assistant アプリで位置を送っている人が対象。
      */
     data class Distance(val personId: String, val km: Double, val approach: Boolean) : Trig
+    /**
+     * 温度計などの数値（温度・湿度）。above なら value を上回ったとき、そうでなければ下回ったとき。
+     * Home Assistant の numeric_state を使う（境目をまたいだときに1回動く）。forMin 分続いたら動かす（0 ならすぐ）
+     */
+    data class Numeric(val entityId: String, val above: Boolean, val value: Double, val forMin: Int = 0) : Trig
 }
 
 /** 実行すること。service は "light.turn_on" の形 */
@@ -95,6 +100,10 @@ fun Rule.toConfig(): JSONObject {
             "value_template",
             "{{ distance('${t.personId}') is number and distance('${t.personId}') ${if (t.approach) "<" else ">"} ${t.km} }}",
         )
+        is Trig.Numeric -> JSONObject().put("trigger", "numeric_state").put("entity_id", t.entityId)
+            .put(if (t.above) "above" else "below", t.value).also {
+                if (t.forMin > 0) it.put("for", String.format("%02d:%02d:00", t.forMin / 60, t.forMin % 60))
+            }
     }
     val conds = JSONArray()
     if (weekdays.isNotEmpty() || after != null || before != null) {
@@ -150,6 +159,13 @@ fun parseRule(id: String, j: JSONObject): Rule? {
         "time" -> Trig.Time(hhmm(singleString(t.opt("at")) ?: return null))
         "state" -> Trig.State(singleString(t.opt("entity_id")) ?: return null, t.opt("to")?.toString() ?: return null)
         "sun" -> Trig.Sun(t.optString("event", "sunset"), parseOffset(t.opt("offset")))
+        "numeric_state" -> {
+            val e = singleString(t.opt("entity_id")) ?: return null
+            val hasA = t.has("above"); val hasB = t.has("below")
+            if (hasA == hasB) return null // 両方ある（範囲）・どちらも無い形は扱わない
+            val v = (if (hasA) t.opt("above") else t.opt("below"))?.toString()?.toDoubleOrNull() ?: return null
+            Trig.Numeric(e, hasA, v, parseOffset(t.opt("for")).coerceAtLeast(0))
+        }
         "template" -> {
             val m = Regex("""distance\('([^']+)'\)\s*([<>])\s*([0-9.]+)""").find(t.optString("value_template")) ?: return null
             Trig.Distance(m.groupValues[1], m.groupValues[3].toDoubleOrNull() ?: return null, m.groupValues[2] == "<")
@@ -281,7 +297,14 @@ fun trigLabel(t: Trig, nameOf: (String) -> String): String = when (t) {
         else -> "に"
     }
     is Trig.Distance -> "${nameOf(t.personId)} が家から${kmText(t.km)}" + if (t.approach) "以内に近づいたとき" else "より遠くへ離れたとき"
+    is Trig.Numeric -> "${nameOf(t.entityId)} が${numText(t.value)}${numUnit(t.entityId, nameOf)}" +
+        (if (t.above) "を超えたとき" else "を下回ったとき") + (if (t.forMin > 0) "（${t.forMin}分続いたら）" else "")
 }
+
+fun numText(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
+
+/** 単位（温度なら ℃、湿度なら %）。名前から推し量る */
+private fun numUnit(id: String, nameOf: (String) -> String): String = if (nameOf(id).contains("湿度") || id.contains("humid")) "%" else "℃"
 
 fun kmText(km: Double): String = if (km < 1) "${(km * 1000).toInt()}m" else (if (km % 1.0 == 0.0) km.toInt().toString() else km.toString()) + "km"
 

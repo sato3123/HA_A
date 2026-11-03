@@ -1736,11 +1736,23 @@
     if (s.join() === "sat,sun") return "土日";
     return s.map((d) => WD[d]).join("・");
   }
+  // 温度計のきっかけ：アプリで付けた名前で「寝室の温度」と出す
+  const numIsHum = (id) => thermos().some((th) => th.hId === id) || /humid/.test(id);
+  function numName(id) {
+    const th = thermos().find((x) => x.tId === id || x.hId === id);
+    if (th) return th.name + (th.hId === id ? "の湿度" : "の温度");
+    const e = S.ha && S.ha.states[id];
+    return e ? nameOf(e) : id;
+  }
   function trigLabel(t) {
     if (t.kind === "time") return `${t.at.replace(/^0(\d)/, "$1")} に`;
     if (t.kind === "state") {
       const o = stateOptions(t.entity.split(".")[0]).find((x) => x[0] === t.to);
       return `${entName(t.entity)} が${o ? o[1] : `「${t.to}」になった`}とき`;
+    }
+    if (t.kind === "numeric") {
+      const u = numIsHum(t.entity) ? "%" : "℃";
+      return `${numName(t.entity)} が${t.value}${u}${t.above ? "を超えた" : "を下回った"}とき${t.forMin ? `（${t.forMin}分続いたら）` : ""}`;
     }
     const base = t.event === "sunrise" ? "日の出" : "日の入り";
     return base + (t.offset < 0 ? `の${-t.offset}分前に` : t.offset > 0 ? `の${t.offset}分後に` : "に");
@@ -1755,7 +1767,11 @@
     let trig;
     if (t.kind === "time") trig = { trigger: "time", at: hhmm(t.at) + ":00" };
     else if (t.kind === "state") trig = { trigger: "state", entity_id: t.entity, to: t.to };
-    else {
+    else if (t.kind === "numeric") {
+      trig = { trigger: "numeric_state", entity_id: t.entity };
+      trig[t.above ? "above" : "below"] = t.value;
+      if (t.forMin) trig.for = `${pad(Math.floor(t.forMin / 60))}:${pad(t.forMin % 60)}:00`;
+    } else {
       trig = { trigger: "sun", event: t.event };
       if (t.offset) trig.offset = (t.offset < 0 ? "-" : "") + `${pad(Math.floor(Math.abs(t.offset) / 60))}:${pad(Math.abs(t.offset) % 60)}:00`;
     }
@@ -1794,7 +1810,12 @@
     if (kind === "time") { const at = single(t.at); if (!at) return null; trigger = { kind: "time", at: hhmm(at) }; }
     else if (kind === "state") { const e = single(t.entity_id); if (!e || t.to === undefined) return null; trigger = { kind: "state", entity: e, to: String(t.to) }; }
     else if (kind === "sun") trigger = { kind: "sun", event: t.event || "sunset", offset: parseOffset(t.offset) };
-    else return null;
+    else if (kind === "numeric_state") {
+      const e = single(t.entity_id), hasA = t.above !== undefined, hasB = t.below !== undefined;
+      const v = Number(hasA ? t.above : t.below);
+      if (!e || hasA === hasB || isNaN(v)) return null;
+      trigger = { kind: "numeric", entity: e, above: hasA, value: v, forMin: Math.max(0, parseOffset(t.for)) };
+    } else return null;
     const conds = asList(j.conditions || j.condition) || [];
     if (conds.length > 1) return null;
     let weekdays = [], after = null, before = null;
@@ -1887,12 +1908,25 @@
     let trig = "";
     if (!r.schedule) {
       trig += `<div class="chips">${chip(t.kind === "time", "trigKind", "time", "時刻")}${chip(t.kind === "state", "trigKind", "state", "機器の状態")}
-        ${chip(t.kind === "sun" && t.event === "sunrise", "trigKind", "sunrise", "日の出")}${chip(t.kind === "sun" && t.event === "sunset", "trigKind", "sunset", "日の入り")}</div>`;
+        ${chip(t.kind === "sun" && t.event === "sunrise", "trigKind", "sunrise", "日の出")}${chip(t.kind === "sun" && t.event === "sunset", "trigKind", "sunset", "日の入り")}${chip(t.kind === "numeric", "trigKind", "numeric", "温度計（温度・湿度）")}</div>`;
     }
     if (t.kind === "time") trig += `<input type="time" data-set="trigAt" value="${esc(t.at)}">`;
     else if (t.kind === "state") {
       trig += `<select data-set="trigEntity"><option value="">機器を選ぶ…</option>${entityOptions(TRIGGER_DOMAINS, t.entity)}</select>`;
       if (t.entity) trig += `<div class="chips">${stateOptions(t.entity.split(".")[0]).map(([v, l]) => chip(t.to === v, "trigTo", v, l)).join("")}</div>`;
+    } else if (t.kind === "numeric") {
+      const hum = numIsHum(t.entity), u = hum ? "%" : "℃";
+      const ths = thermos();
+      trig += `<div class="note">どの温度計で決めるか</div><div class="chips">${ths.map((th) =>
+        (th.tId ? chip(t.entity === th.tId, "numEntity", th.tId, `🌡 ${th.name}${th.temp != null ? " " + (Math.round(th.temp * 10) / 10) + "℃" : ""}`) : "") +
+        (th.hId ? chip(t.entity === th.hId, "numEntity", th.hId, `💧 ${th.name}${th.hum != null ? " " + Math.round(th.hum) + "%" : ""}`) : "")).join("")}</div>
+        ${ths.length ? "" : `<div class="warn">温度計が見つかりません（SwitchBot 温湿度計などを Home Assistant に取り込むと出てきます）</div>`}
+        <div class="chips">${chip(t.above, "numAbove", "1", hum ? "上回ったとき（じめじめ）" : "上回ったとき（暑い）")}${chip(!t.above, "numAbove", "0", hum ? "下回ったとき（乾燥）" : "下回ったとき（寒い）")}</div>
+        <div class="brow" style="align-items:center"><button class="tb" data-set="numStep" data-id="-1">−</button>
+          <span style="font-size:22px;min-width:90px;text-align:center">${t.value}${u}</span><button class="tb" data-set="numStep" data-id="1">＋</button></div>
+        <div class="note">続いたら動かす（すぐ上下するときの、むだな動きを防ぐ）</div>
+        <div class="chips">${[[0, "すぐ"], [5, "5分"], [10, "10分"], [30, "30分"]].map(([m, l]) => chip((t.forMin || 0) === m, "numFor", String(m), l)).join("")}</div>
+        <div class="note">※ 境目をまたいだときに1回動きます（${t.value}${u} より${t.above ? "上" : "下"}のあいだ、くり返しは動きません）。</div>`;
     } else {
       trig += `<div class="brow" style="align-items:center"><button class="tb" data-set="sunOff" data-id="-10">−10分</button>
         <span style="font-size:20px;min-width:90px;text-align:center">${t.offset < 0 ? -t.offset + "分前" : t.offset > 0 ? t.offset + "分後" : "ちょうど"}</span>
@@ -1965,11 +1999,27 @@
       case "trigKind":
         if (id === "time") r.trigger = { kind: "time", at: "07:00" };
         else if (id === "state") { if (r.trigger.kind !== "state") r.trigger = { kind: "state", entity: "", to: "on" }; }
+        else if (id === "numeric") {
+          if (r.trigger.kind !== "numeric") {
+            const th = thermos().find((x) => x.tId);
+            r.trigger = { kind: "numeric", entity: th ? th.tId : "", above: true, value: Math.round((th && th.temp != null ? th.temp : 27) + 1), forMin: 0 };
+          }
+        }
         else r.trigger = { kind: "sun", event: id, offset: 0 };
         break;
       case "trigAt": r.trigger.at = el.value || "07:00"; break;
       case "trigEntity": r.trigger = { kind: "state", entity: el.value, to: el.value ? stateOptions(el.value.split(".")[0])[0][0] : "on" }; break;
       case "trigTo": r.trigger.to = id; break;
+      case "numEntity": {
+        const wasHum = numIsHum(r.trigger.entity), th = thermos().find((x) => x.tId === id || x.hId === id);
+        r.trigger.entity = id;
+        const nowHum = numIsHum(id);
+        if (th && wasHum !== nowHum) r.trigger.value = nowHum ? Math.round((th.hum != null ? th.hum : 60) / 5) * 5 + 5 : Math.round((th.temp != null ? th.temp : 27) + 1);
+        break;
+      }
+      case "numAbove": r.trigger.above = id === "1"; break;
+      case "numStep": r.trigger.value = Math.round((r.trigger.value + Number(id) * (numIsHum(r.trigger.entity) ? 5 : 0.5)) * 10) / 10; break;
+      case "numFor": r.trigger.forMin = Number(id); break;
       case "sunOff": r.trigger.offset += Number(id); break;
       case "wd": r.weekdays = r.weekdays.includes(id) ? r.weekdays.filter((d) => d !== id) : r.weekdays.concat([id]); break;
       case "wdPreset": r.weekdays = id === "weekday" ? ["mon", "tue", "wed", "thu", "fri"] : id === "weekend" ? ["sat", "sun"] : []; break;
@@ -1990,6 +2040,7 @@
       case "ruleSave": {
         if (!r.actions.length) { S.editError = "「＋ 操作を追加」で、実行することを1つ以上選んでください"; break; }
         if (r.trigger.kind === "state" && !r.trigger.entity) { S.editError = "きっかけにする機器を選んでください"; break; }
+        if (r.trigger.kind === "numeric" && !r.trigger.entity) { S.editError = "きっかけにする温度計を選んでください"; break; }
         S.saving = true; S.editError = null; renderAuto();
         try {
           if (!r.name.trim()) r.name = ruleSummary(r).slice(0, 40);
