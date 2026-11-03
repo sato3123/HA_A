@@ -7,6 +7,9 @@ on:
       - ".github/workflows/server-test.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -37,7 +40,10 @@ jobs:
           curl -fsS http://127.0.0.1:8123/manifest.json
 
       - name: Run setup.sh
-        run: sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 bash server/setup.sh
+        # リポジトリが非公開なので、Actions のトークンで読む（家のサーバーでは homepanel-github-token で登録したトークン）
+        env:
+          GH_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 GITHUB_TOKEN="$GH_READ_TOKEN" bash server/setup.sh
 
       - name: Check the server
         run: |
