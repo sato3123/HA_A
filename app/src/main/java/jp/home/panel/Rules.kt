@@ -147,8 +147,19 @@ fun Rule.toConfig(nameOf: ((String) -> String)? = null): JSONObject {
             )
             return@forEach
         }
+        // 風量は Home Assistant では別の操作（climate.set_fan_mode）なので、運転の操作のあとに続けて送る
+        val fan = if (a.service.startsWith("climate.") && a.service != "climate.set_fan_mode" && data.has("fan_mode")) data.remove("fan_mode") else null
+        fun fanAct() = fan?.let {
+            acts.put(JSONObject().put("action", "climate.set_fan_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", JSONObject().put("fan_mode", it)))
+        }
         if (a.service == "climate.set_temperature" && !data.has("temperature") && data.has("hvac_mode")) {
             acts.put(JSONObject().put("action", "climate.set_hvac_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
+            fanAct()
+            return@forEach
+        }
+        if (fan != null) {
+            acts.put(JSONObject().put("action", a.service).put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
+            fanAct()
             return@forEach
         }
         acts.put(
@@ -261,6 +272,12 @@ fun parseRule(id: String, j: JSONObject): Rule? {
             ?: singleString(a.opt("entity_id"))
             ?: return null
         val map = data.keys().asSequence().filter { it != "entity_id" }.associateWith { data.get(it) }
+        val last = acts.lastOrNull()
+        if (svc == "climate.set_fan_mode" && last != null && last.entityId == entity && last.service in setOf("climate.set_temperature", "climate.set_hvac_mode") &&
+            !last.data.containsKey("fan_mode") && map["fan_mode"] != null) {
+            acts[acts.size - 1] = last.copy(data = last.data + ("fan_mode" to map["fan_mode"]!!))
+            continue
+        }
         acts.add(Act(entity, svc, map))
     }
     return Rule(
@@ -278,7 +295,7 @@ fun parseRule(id: String, j: JSONObject): Rule? {
 
 // ---------- 操作の種類 ----------
 
-enum class Param { BRIGHTNESS, TEMPERATURE, HVAC_MODE, POSITION, MODE_TEMP }
+enum class Param { BRIGHTNESS, TEMPERATURE, HVAC_MODE, POSITION, MODE_TEMP, FAN }
 
 data class OpDef(val service: String, val label: String, val param: Param? = null)
 
@@ -287,7 +304,7 @@ fun opsFor(domain: String): List<OpDef> = when (domain) {
     "switch", "input_boolean", "fan" -> listOf(OpDef("turn_on", "オンにする"), OpDef("turn_off", "オフにする"), OpDef("toggle", "切り替える"))
     // 「運転する」は、モードと温度をいっしょに送る（climate.set_temperature は hvac_mode も受け付ける）
     "climate" -> listOf(OpDef("set_temperature", "運転する（モードと温度）", Param.MODE_TEMP), OpDef("set_hvac_mode", "運転モードだけ変える", Param.HVAC_MODE),
-        OpDef("set_temperature", "温度だけ変える", Param.TEMPERATURE), OpDef("turn_off", "停止する"))
+        OpDef("set_temperature", "温度だけ変える", Param.TEMPERATURE), OpDef("set_fan_mode", "風量だけ変える", Param.FAN), OpDef("turn_off", "停止する"))
     "cover" -> listOf(OpDef("open_cover", "開ける"), OpDef("close_cover", "閉める"), OpDef("set_cover_position", "開き具合を指定する", Param.POSITION))
     "scene", "script" -> listOf(OpDef("turn_on", "実行する"))
     else -> listOf(OpDef("turn_on", "オンにする"), OpDef("turn_off", "オフにする"))
@@ -300,6 +317,7 @@ val Param.key: String
         Param.HVAC_MODE -> "hvac_mode"
         Param.POSITION -> "position"
         Param.MODE_TEMP -> "hvac_mode"
+        Param.FAN -> "fan_mode"
     }
 
 fun Param.default(): Any = when (this) {
@@ -308,6 +326,7 @@ fun Param.default(): Any = when (this) {
     Param.HVAC_MODE -> "cool"
     Param.POSITION -> 50
     Param.MODE_TEMP -> "cool"
+    Param.FAN -> "auto"
 }
 
 /** 今の Act がどの操作か */
@@ -345,8 +364,10 @@ fun actLabel(a: Act, name: String): String {
     return when (op?.param) {
         Param.BRIGHTNESS -> "$name を明るさ ${a.data["brightness_pct"]}% でつける"
         Param.TEMPERATURE -> "$name を ${a.data["temperature"]}℃ に設定する"
-        Param.MODE_TEMP -> "$name を${hvacLabel(a.data["hvac_mode"].toString())}" + (a.data["temperature"]?.takeIf { a.data["hvac_mode"] !in setOf("fan_only", "dry") }?.let { " ${it}℃" } ?: "") + "で運転する"
-        Param.HVAC_MODE -> "$name を${hvacLabel(a.data["hvac_mode"].toString())}にする"
+        Param.MODE_TEMP -> "$name を${hvacLabel(a.data["hvac_mode"].toString())}" + (a.data["temperature"]?.takeIf { a.data["hvac_mode"] !in setOf("fan_only", "dry") }?.let { " ${it}℃" } ?: "") +
+            (a.data["fan_mode"]?.let { "・風量 ${fanModeLabel(it.toString())}" } ?: "") + "で運転する"
+        Param.FAN -> "$name の風量を${fanModeLabel(a.data["fan_mode"].toString())}にする"
+        Param.HVAC_MODE -> "$name を${hvacLabel(a.data["hvac_mode"].toString())}にする" + (a.data["fan_mode"]?.let { "（風量 ${fanModeLabel(it.toString())}）" } ?: "")
         Param.POSITION -> "$name を ${a.data["position"]}% 開ける"
         null -> "$name を${op?.label ?: a.service}"
     }

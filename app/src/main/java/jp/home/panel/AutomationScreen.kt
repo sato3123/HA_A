@@ -498,6 +498,7 @@ private fun ActionCard(act: Act, entity: Entity?, name: String, onChange: (Act) 
                     NumField(v, { onChange(act.copy(data = act.data + ("temperature" to it))) }, step = entity?.attributes?.num("target_temp_step") ?: 0.5,
                         min = entity?.attributes?.num("min_temp") ?: 16.0, max = entity?.attributes?.num("max_temp") ?: 32.0, big = true)
                 }
+                Param.FAN -> FanChoice(act, entity, allowKeep = false, onChange)
                 Param.HVAC_MODE, Param.MODE_TEMP -> {
                     val modes = entity?.attributes?.strings("hvac_modes")?.filter { it != "off" }?.ifEmpty { null }
                         ?: listOf("cool", "heat", "dry", "fan_only", "auto")
@@ -506,6 +507,7 @@ private fun ActionCard(act: Act, entity: Entity?, name: String, onChange: (Act) 
                             FilterChip(act.data["hvac_mode"] == m, { onChange(act.copy(data = act.data + ("hvac_mode" to m))) }, { Text(hvacLabel(m)) })
                         }
                     }
+                    FanChoice(act, entity, allowKeep = true, onChange)
                     if (current.param == Param.MODE_TEMP && act.data["hvac_mode"] !in setOf("fan_only", "dry")) {
                         val v = (act.data["temperature"] as? Number)?.toDouble() ?: 25.0
                         Text("設定温度", style = MaterialTheme.typography.labelLarge)
@@ -599,3 +601,19 @@ private fun CondCard(c: Cond, thermos: List<Thermo>, states: Map<String, Entity>
 
 /** 「寝室・エアコン」。名前にもう部屋の名前が入っていれば付けない */
 fun withRoom(room: String?, name: String): String = if (room.isNullOrBlank() || name.contains(room)) name else "$room・$name"
+
+
+/** エアコンの風量（自動・1〜8 など）。allowKeep なら「そのまま」（風量は変えない）も選べる */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FanChoice(act: Act, entity: Entity?, allowKeep: Boolean, onChange: (Act) -> Unit) {
+    val fans = entity?.attributes?.strings("fan_modes")?.ifEmpty { null } ?: listOf("auto", "low", "medium", "high")
+    val cur = act.data["fan_mode"]?.toString()
+    Text("風量", style = MaterialTheme.typography.labelLarge)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (allowKeep) FilterChip(cur == null, { onChange(act.copy(data = act.data - "fan_mode")) }, { Text("そのまま") })
+        fans.forEach { f ->
+            FilterChip(cur == f, { onChange(act.copy(data = act.data + ("fan_mode" to f))) }, { Text(fanModeLabel(f)) })
+        }
+    }
+}

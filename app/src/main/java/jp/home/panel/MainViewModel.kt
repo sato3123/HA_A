@@ -238,8 +238,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setForeground(v: Boolean) {
+        val wasBack = !foreground
         foreground = v
         refreshWakeLoop()
+        // 画面に戻ったときは、止まっている間に変わった状態をすぐ読み直す（接続が切れていれば再接続も早まる）
+        if (v && wasBack) viewModelScope.launch {
+            runCatching { client?.reloadStates() }
+            if (elEnabled.value) runCatching { echonet.refreshAll() }
+        }
     }
 
     // ================= 接続 =================
@@ -332,8 +338,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         tok
     }
 
+    private val elKick = HashMap<String, Long>()
+
     private fun onStates(c: HaClient, m: Map<String, Entity>) {
+        val prev = allStates.value
         allStates.value = m
+        // ECHONET Lite で状態を読んでいる機器は、Home Assistant 側で変わったら（リモコン・ほかの画面での操作）すぐ機器から読み直す
+        if (elEnabled.value && prev.isNotEmpty()) {
+            elLinks.value.forEach { (elId, haId) ->
+                val a = prev[haId]; val b = m[haId]
+                if (a != null && b != null && (a.state != b.state || a.lastUpdated != b.lastUpdated)) {
+                    val d = elEntity(elId) ?: return@forEach
+                    val now = System.currentTimeMillis()
+                    if (now - (elKick[d.key] ?: 0L) > 3_000) {
+                        elKick[d.key] = now
+                        viewModelScope.launch(Dispatchers.IO) { runCatching { echonet.refresh(d.key) } }
+                    }
+                }
+            }
+        }
         val cals = m.values.filter { it.domain == "calendar" }.sortedBy { it.name }
         if (cals.map { it.entityId } != calendarEntities.value.map { it.entityId }) {
             calendarEntities.value = cals
@@ -1157,6 +1180,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ================= 機器操作 =================
 
     fun call(e: Entity, service: String, data: JSONObject = JSONObject(), domain: String = e.domain) {
+        followUp(e)
         // 対応付けた機器は、家の中では ECHONET Lite で直接、外出先では Home Assistant 経由で操作する
         linkedEl(e.entityId)?.takeIf { useEchonet(it) }?.let { d ->
             // エアコンは、ECHONET Lite の返事を待たずに Home Assistant にも同じ操作を送る（どちらか早いほうで動く）。
@@ -1211,6 +1235,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 throw ex
             } catch (ex: Exception) {
                 message.value = "「${e.name}」を操作できませんでした: ${ex.message}"
+            }
+        }
+    }
+
+    /**
+     * 操作のあと、少し待って状態を読み直す（機器が実際に切り替わるまで数秒かかるものや、
+     * Home Assistant が状態を定期的にしか読まない機器でも、画面にすぐ反映するため）
+     */
+    private fun followUp(e: Entity) {
+        if (e.domain in setOf("scene", "script", "camera")) return
+        viewModelScope.launch {
+            for (wait in listOf(2_500L, 6_000L)) {
+                delay(wait)
+                (linkedEl(e.entityId) ?: elEntity(e.entityId))?.let { d -> runCatching { echonet.refresh(d.key) } }
+                if (!isEchonetEntity(e.entityId)) client?.let { c ->
+                    runCatching { c.callService("homeassistant", "update_entity", e.entityId, JSONObject()) }
+                }
             }
         }
     }
@@ -2039,11 +2080,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             solarStarted = true
             startSolarHeat()
         }
-        // 30秒ごとに状態を読み直す（機器からの通知があればすぐ反映）
+        // 15秒ごとに状態を読み直す（機器からの通知があればすぐ反映）
         viewModelScope.launch {
             while (isActive && elEnabled.value) {
                 if (foreground) echonet.refreshAll()
-                delay(30_000)
+                delay(15_000)
             }
         }
     }

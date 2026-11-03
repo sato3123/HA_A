@@ -246,6 +246,7 @@
               break;
             }
             case "event": { const h = this.handlers.get(m.id); if (h) h(m.event); break; }
+            case "pong": { const p = this.pending.get(m.id); if (p) { this.pending.delete(m.id); p.resolve(true); } break; }
           }
         };
         ws.onclose = () => {
@@ -319,7 +320,14 @@
         loadRegistries();
         loadUser().then(() => { if (S.page === "auto") loadRules(); });
         kickWake();
+        // 30秒ごとに Home Assistant に ping を送る。返事がなければ切れているとみなしてつなぎ直す
+        // （iPad がスリープから戻ったあと、つながっているように見えて状態が届かないのを防ぐ）
+        const hb = setInterval(() => {
+          if (ha.ws.readyState !== 1) return;
+          ha._send({ type: "ping" }, ha.nextId++, 10000).catch(() => { try { ha.ws.close(); } catch (e) { /* 閉じ済み */ } });
+        }, 30000);
         await ha.closed;
+        clearInterval(hb);
       } catch (e) {
         if (e instanceof RevokedError) { store.del("tokens"); showLogin(e.message); return; }
         if (e.authInvalid) {
@@ -360,6 +368,19 @@
       S.msg = `「${nameOf(e)}」を操作できませんでした: ${err.message}`;
       renderMsg();
     });
+    // 機器が切り替わるまで数秒かかるものや、Home Assistant が定期的にしか読まない機器でも、すぐ画面に反映されるよう読み直してもらう
+    if (!["scene", "script", "camera", "automation"].includes(dom(e))) {
+      [2500, 6000].forEach((ms) => setTimeout(() => { if (S.ha) S.ha.call("homeassistant", "update_entity", e.entity_id, {}).catch(() => {}); }, ms));
+    }
+  }
+  /** 画面に戻ったときなどに、状態をまとめて読み直す（表示は変わったところだけ） */
+  async function reloadStatesQuiet() {
+    if (!S.ha) return;
+    try {
+      const arr = await S.ha.send({ type: "get_states" });
+      arr.forEach((x) => { S.ha.states[x.entity_id] = x; });
+      renderEntities(); renderThermos();
+    } catch (e) { /* つながっていなければ接続のやり直しに任せる */ }
   }
 
   function primary(e) {
@@ -1696,13 +1717,13 @@
     switch (d) {
       case "light": return [["turn_on", "つける"], ["turn_on", "明るさを指定してつける", "brightness_pct"], ["turn_off", "消す"], ["toggle", "切り替える"]];
       case "switch": case "input_boolean": case "fan": return [["turn_on", "オンにする"], ["turn_off", "オフにする"], ["toggle", "切り替える"]];
-      case "climate": return [["set_temperature", "運転する（モードと温度）", "mode_temp"], ["set_hvac_mode", "運転モードだけ変える", "hvac_mode"], ["set_temperature", "温度だけ変える", "temperature"], ["turn_off", "停止する"]];
+      case "climate": return [["set_temperature", "運転する（モードと温度）", "mode_temp"], ["set_hvac_mode", "運転モードだけ変える", "hvac_mode"], ["set_temperature", "温度だけ変える", "temperature"], ["set_fan_mode", "風量だけ変える", "fan_mode"], ["turn_off", "停止する"]];
       case "cover": return [["open_cover", "開ける"], ["close_cover", "閉める"], ["set_cover_position", "開き具合を指定する", "position"]];
       case "scene": case "script": return [["turn_on", "実行する"]];
       default: return [["turn_on", "オンにする"], ["turn_off", "オフにする"]];
     }
   }
-  const PARAM_DEFAULT = { brightness_pct: 100, temperature: 25, hvac_mode: "cool", position: 50 };
+  const PARAM_DEFAULT = { brightness_pct: 100, temperature: 25, hvac_mode: "cool", position: 50, fan_mode: "auto" };
   function opIndex(a) {
     const d = a.entity.split(".")[0], svc = a.service.split(".")[1];
     const ops = opsFor(d);
@@ -1766,8 +1787,9 @@
     const n = entName(a.entity);
     if (op && op[2] === "brightness_pct") return `${n} を明るさ ${a.data.brightness_pct}% でつける`;
     if (op && op[2] === "temperature") return `${n} を ${a.data.temperature}℃ に設定する`;
-    if (op && op[2] === "hvac_mode") return `${n} を${hvacLabel(a.data.hvac_mode)}にする`;
-    if (op && op[2] === "mode_temp") return `${n} を${hvacLabel(a.data.hvac_mode)}${["fan_only", "dry"].includes(a.data.hvac_mode) ? "" : " " + a.data.temperature + "℃"}で運転する`;
+    if (op && op[2] === "hvac_mode") return `${n} を${hvacLabel(a.data.hvac_mode)}にする${a.data.fan_mode ? `（風量 ${fanLabel(a.data.fan_mode)}）` : ""}`;
+    if (op && op[2] === "mode_temp") return `${n} を${hvacLabel(a.data.hvac_mode)}${["fan_only", "dry"].includes(a.data.hvac_mode) ? "" : " " + a.data.temperature + "℃"}${a.data.fan_mode ? "・風量 " + fanLabel(a.data.fan_mode) : ""}で運転する`;
+    if (op && op[2] === "fan_mode") return `${n} の風量を${fanLabel(a.data.fan_mode)}にする`;
     if (op && op[2] === "position") return `${n} を ${a.data.position}% 開ける`;
     return `${n} を${op ? op[1] : a.service}`;
   }
@@ -1840,9 +1862,13 @@
           const ed = elDevs().find((x) => x.id === a.entity);
           return { event: "homepanel_el", event_data: { entity_id: a.entity, service: a.service.split(".")[1], data, name: ed ? withRoom(ed.room, ed.name) : a.entity } };
         }
-        if (a.service === "climate.set_temperature" && data.temperature === undefined && data.hvac_mode) return { action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data };
-        return { action: a.service, target: { entity_id: a.entity }, data };
-      }),
+        // 風量は Home Assistant では別の操作（climate.set_fan_mode）なので、続けて送る
+        let fan = null;
+        if (a.service.startsWith("climate.") && a.service !== "climate.set_fan_mode" && data.fan_mode !== undefined) { fan = data.fan_mode; delete data.fan_mode; }
+        const main = a.service === "climate.set_temperature" && data.temperature === undefined && data.hvac_mode
+          ? { action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data } : { action: a.service, target: { entity_id: a.entity }, data };
+        return fan === null ? main : [main, { action: "climate.set_fan_mode", target: { entity_id: a.entity }, data: { fan_mode: fan } }];
+      }).flat(),
     };
   }
 
@@ -1908,6 +1934,11 @@
       const entity = single(a.target && a.target.entity_id) || single(data.entity_id) || single(a.entity_id);
       if (!entity) return null;
       delete data.entity_id;
+      const last = actions[actions.length - 1];
+      if (svc === "climate.set_fan_mode" && last && last.entity === entity && ["climate.set_temperature", "climate.set_hvac_mode"].includes(last.service) && last.data.fan_mode === undefined && data.fan_mode !== undefined) {
+        last.data.fan_mode = data.fan_mode;
+        continue;
+      }
       actions.push({ entity, service: svc, data });
     }
     return { id, name: j.alias || "", schedule: isSched(id), trigger, weekdays, after, before, actions, conds: extra };
@@ -1981,6 +2012,12 @@
     return h;
   }
 
+  /** エアコンの風量。keep なら「そのまま」（変えない）も出す */
+  function fanChipsHTML(a, i, keep) {
+    const ent = S.ha && S.ha.states[a.entity];
+    const fans = (ent && ent.attributes.fan_modes) || (isElId(a.entity) ? ["auto", "1", "2", "3", "4", "5", "6", "7", "8"] : ["auto", "low", "medium", "high"]);
+    return `<div class="fl" style="margin-top:4px">風量</div><div class="chips">${keep ? `<button class="chip${a.data.fan_mode === undefined ? " sel" : ""}" data-set="actFan" data-id="${i}" data-v="">そのまま</button>` : ""}${fans.map((f) => `<button class="chip${a.data.fan_mode === f ? " sel" : ""}" data-set="actFan" data-id="${i}" data-v="${esc(f)}">${esc(fanLabel(f))}</button>`).join("")}</div>`;
+  }
   /** −／＋ のボタンと、数字の入力欄。set は data-set の名前、extra は data-* の追加 */
   function numInputHTML(set, value, unit, extra) {
     return `<span class="numin"><button class="tb" data-set="${set}" ${extra} data-d="-1">−</button><input type="number" inputmode="decimal" step="0.5" data-set="${set}" ${extra} data-d="in" value="${esc(String(value))}"><span class="u">${unit}</span><button class="tb" data-set="${set}" ${extra} data-d="1">＋</button></span>`;
@@ -2053,10 +2090,12 @@
       if (op && op[2] === "brightness_pct") param = `<div class="rng"><div class="rl">明るさ ${a.data.brightness_pct}%</div><input type="range" min="1" max="100" value="${a.data.brightness_pct}" data-set="actParam" data-id="${i}"></div>`;
       if (op && op[2] === "position") param = `<div class="rng"><div class="rl">開き具合 ${a.data.position}%</div><input type="range" min="0" max="100" value="${a.data.position}" data-set="actParam" data-id="${i}"></div>`;
       if (op && op[2] === "temperature") param = `<div class="brow" style="align-items:center"><span class="sl">温度</span>${numInputHTML("actTemp", a.data.temperature, "℃", `data-id="${i}"`)}</div>`;
+      if (op && op[2] === "fan_mode") param = fanChipsHTML(a, i, false);
       if (op && (op[2] === "hvac_mode" || op[2] === "mode_temp")) {
         const ent = S.ha && S.ha.states[a.entity];
         const modes = ((ent && ent.attributes.hvac_modes) || ["cool", "heat", "dry", "fan_only", "auto"]).filter((m) => m !== "off");
         param = `<div class="chips">${modes.map((m) => `<button class="chip${a.data.hvac_mode === m ? " sel" : ""}" data-set="actMode" data-id="${i}" data-v="${esc(m)}">${esc(hvacLabel(m))}</button>`).join("")}</div>`;
+        param += fanChipsHTML(a, i, true);
         if (op[2] === "mode_temp" && !["fan_only", "dry"].includes(a.data.hvac_mode)) param += `<div class="brow" style="align-items:center"><span class="sl">設定温度</span>${numInputHTML("actTemp", a.data.temperature ?? 25, "℃", `data-id="${i}"`)}</div>`;
       }
       return `<div class="act"><div class="head"><div class="ht"><div class="dom">${esc(DOMAIN_LABEL2[d] || d)}${isElId(a.entity) ? "・ECHONET Lite（サーバーが操作）" : ""}</div><div class="name">${esc(entName(a.entity))}</div></div>
@@ -2168,6 +2207,7 @@
         break;
       }
       case "actMode": r.actions[Number(id)].data.hvac_mode = el.dataset.v; break;
+      case "actFan": { const a = r.actions[Number(id)]; if (el.dataset.v) a.data.fan_mode = el.dataset.v; else delete a.data.fan_mode; break; }
       case "actParam": {
         const a = r.actions[Number(id)];
         const key = Object.keys(a.data)[0];
@@ -4094,7 +4134,7 @@
     try { if ("wakeLock" in navigator && document.visibilityState === "visible") wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { /* 非対応 */ }
   }
   document.addEventListener("visibilitychange", async () => {
-    if (document.visibilityState === "visible") { keepAwake(); kickWake(); }
+    if (document.visibilityState === "visible") { keepAwake(); kickWake(); reloadStatesQuiet(); }
     else { await abortWake(); if (!S.busy) mic.stop(); }
   });
 

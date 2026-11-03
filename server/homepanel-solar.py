@@ -1490,6 +1490,7 @@ def run_device_timer(t):
 # スケジュール・オートメーションは Home Assistant が動かすので、その操作は Home Assistant のイベント「homepanel_el」として送り、
 # このサーバーが受け取って ECHONET Lite で機器に送る。まとめて操作・機器のタイマーも同じ関数を使う。
 EL_MODE = {"auto": 0x41, "heat_cool": 0x41, "cool": 0x42, "heat": 0x43, "dry": 0x44, "fan_only": 0x45}
+EL_FAN = {"auto": 0x41, "1": 0x31, "2": 0x32, "3": 0x33, "4": 0x34, "5": 0x35, "6": 0x36, "7": 0x37, "8": 0x38, "low": 0x31, "medium": 0x34, "high": 0x38}
 EL_ID = re.compile(r"^(climate|light|switch|cover|fan)\.el_(\d{1,3})_(\d{1,3})_(\d{1,3})_(\d{1,3})_([0-9a-f]{6})$")
 
 
@@ -1536,6 +1537,13 @@ def el_call(eid, service, data=None):
                 props += [on, (0xB0, bytes([EL_MODE[mode]]))]
             if data.get("temperature") is not None and mode not in ("fan_only", "dry"):
                 props.append((0xB3, bytes([max(0, min(50, int(round(float(data["temperature"])))))])))
+            if data.get("fan_mode") is not None and str(data["fan_mode"]) in EL_FAN:
+                props.append((0xA0, bytes([EL_FAN[str(data["fan_mode"])]])))
+    elif domain == "climate" and service == "set_fan_mode":
+        f = str(data.get("fan_mode"))
+        if f not in EL_FAN:
+            raise ValueError(f"この風量（{f}）には対応していません")
+        props = [(0xA0, bytes([EL_FAN[f]]))]
     elif domain == "cover" and service in ("open_cover", "close_cover", "stop_cover"):
         props = [(0xE0, bytes([{"open_cover": 0x41, "close_cover": 0x42, "stop_cover": 0x43}[service]]))]
     elif domain == "cover" and service == "set_cover_position":
