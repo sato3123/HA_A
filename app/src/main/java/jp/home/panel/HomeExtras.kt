@@ -338,7 +338,7 @@ fun DemandView(vm: MainViewModel) {
     }
     err?.let { Text("読めませんでした：$it", style = MaterialTheme.typography.bodySmall) }
     val j = data ?: return
-    val target = j.optString("target", "use")
+    val target = j.optString("target", "buy")
     val limit = j.optDouble("limit_kw", Double.NaN)
     val margin = j.optDouble("margin_kw", 0.5)
     val warn = if (limit.isNaN()) Double.NaN else limit - margin
@@ -408,7 +408,7 @@ fun DemandView(vm: MainViewModel) {
 private fun DemandSettings(vm: MainViewModel) {
     val conf by vm.serverConf.collectAsState()
     val enabled = conf["demand_enabled"] == true
-    val target = conf["demand_target"] as? String ?: "use"
+    val target = conf["demand_target"] as? String ?: "buy"
     val margin = (conf["demand_margin_kw"] as? Number)?.toDouble() ?: 0.5
     val limit = (conf["demand_limit_kw"] as? Number)?.toDouble() ?: 0.0
     val notifyArr = conf["demand_notify"] as? org.json.JSONArray
@@ -428,8 +428,8 @@ private fun DemandSettings(vm: MainViewModel) {
             }
             Text("見張る電気", style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = target == "buy", onClick = { vm.setDemand(target = "buy") }, label = { Text("買った電気（発電の分を引く・おすすめ）") }, colors = chip)
                 FilterChip(selected = target == "use", onClick = { vm.setDemand(target = "use") }, label = { Text("使った電気（家全体）") }, colors = chip)
-                FilterChip(selected = target == "buy", onClick = { vm.setDemand(target = "buy") }, label = { Text("買った電気（発電の分を引く）") }, colors = chip)
             }
             Text("余裕（上限からどれだけ手前で知らせるか）", style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

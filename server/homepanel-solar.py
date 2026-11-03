@@ -83,7 +83,7 @@ DEFAULT_CONF = {
     # まとめて操作のボタン：[{id, name, icon, action: on/off, entities: [...]}]
     "groups": [],
     # 30分ごとの電力（デマンド）の見張り：対象（use＝使った電気 / buy＝買った電気）、上限（0 なら直近12か月の最大）、余裕（kW）、通知先（Home Assistant の notify）
-    "demand_target": "use", "demand_limit_kw": 0, "demand_margin_kw": 0.5, "demand_notify": [], "demand_enabled": False,
+    "demand_target": "buy", "demand_limit_kw": 0, "demand_margin_kw": 0.5, "demand_notify": [], "demand_enabled": False,
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -116,6 +116,11 @@ def save_json(path, data):
 
 
 conf = dict(DEFAULT_CONF, **load_json(CONF_PATH, {}))
+# 30分ごとの電力の見張りは「買った電気」が基本（前の版で「使った電気」のまま保存された設定を、1回だけ直す）
+if not conf.get("demand_target_v2"):
+    conf["demand_target"] = "buy"
+    conf["demand_target_v2"] = True
+    save_json(CONF_PATH, conf)
 state = dict({"plan": None, "log": [], "status": "準備中", "history": [], "eco": {}, "by_us": False}, **load_json(STATE_PATH, {}))
 state["history"] = []  # グラフは起動しなおすと空から
 
