@@ -173,7 +173,7 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
 
 // ================= 編集画面 =================
 
-private enum class PickFor { TRIGGER, ACTION }
+private enum class PickFor { TRIGGER, ACTION, CONDITION }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -343,6 +343,23 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
             }
         }
 
+        // ---- 条件（すべて満たすときだけ動かす） ----
+        Label("条件（選ばなければ、いつも動かす）")
+        Text("${if (rule.schedule) "その時刻" else "きっかけ"}の時点で、ここに並べた条件をすべて満たすときだけ実行します。例：6時の時点で寝室が20℃より低ければ暖房をつける。",
+            style = MaterialTheme.typography.bodySmall)
+        rule.conds.forEachIndexed { i, c ->
+            CondCard(c, thermos, states, nameOf,
+                onChange = { nc -> rule = rule.copy(conds = rule.conds.toMutableList().also { it[i] = nc }) },
+                onRemove = { rule = rule.copy(conds = rule.conds.toMutableList().also { it.removeAt(i) }) })
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                val th = thermos.firstOrNull { it.tempEntity != null }
+                rule = rule.copy(conds = rule.conds + Cond.Numeric(th?.tempEntity ?: "", false, Math.round(th?.temperature ?: 20.0).toDouble()))
+            }) { Text("＋ 温度計の条件") }
+            OutlinedButton(onClick = { pick = PickFor.CONDITION }) { Text("＋ 機器の状態の条件") }
+        }
+
         // ---- 実行すること ----
         Label("実行すること")
         rule.actions.forEachIndexed { i, a ->
@@ -381,13 +398,15 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     }
 
     pick?.let { p ->
-        val domains = if (p == PickFor.TRIGGER) TRIGGER_DOMAINS else SUPPORTED_DOMAINS - "camera"
+        val domains = if (p == PickFor.ACTION) SUPPORTED_DOMAINS - "camera" else TRIGGER_DOMAINS
         EntityPicker(
             entities = states.values.filter { it.domain in domains }.sortedWith(compareBy({ domains.indexOf(it.domain) }, { it.name })),
             onDismiss = { pick = null },
         ) { e ->
             if (p == PickFor.TRIGGER) {
                 rule = rule.copy(trigger = Trig.State(e.entityId, stateOptions(e.domain).first().first))
+            } else if (p == PickFor.CONDITION) {
+                rule = rule.copy(conds = rule.conds + Cond.State(e.entityId, condStateOptions(e.domain).first().first))
             } else {
                 rule = rule.copy(actions = rule.actions + opsFor(e.domain).first().toAct(e.entityId, e.domain))
             }
@@ -412,6 +431,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
 }
 
 private fun validate(r: Rule): String? = when {
+    r.conds.any { it is Cond.Numeric && it.entityId.isBlank() } -> "条件の温度計を選んでください"
     r.actions.isEmpty() -> "「＋ 操作を追加」で、実行することを1つ以上選んでください"
     r.trigger is Trig.State && (r.trigger as Trig.State).entityId.isBlank() -> "きっかけにする機器を選んでください"
     r.trigger is Trig.Distance && (r.trigger as Trig.Distance).personId.isBlank() -> "だれの位置で決めるかを選んでください"
@@ -511,4 +531,53 @@ private fun EntityPicker(entities: List<Entity>, onDismiss: () -> Unit, onPick: 
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } },
     )
+}
+
+
+/** 条件の1行（温度計の値／機器の状態）。右の ✕ で消す */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CondCard(c: Cond, thermos: List<Thermo>, states: Map<String, Entity>, nameOf: (String) -> String, onChange: (Cond) -> Unit, onRemove: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("もし " + condLabel(c, nameOf), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRemove) { Text("✕") }
+            }
+            when (c) {
+                is Cond.Numeric -> {
+                    val isHum = thermos.any { it.humEntity == c.entityId }
+                    val step = if (isHum) 5.0 else 0.5
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        thermos.forEach { th ->
+                            th.tempEntity?.let { id ->
+                                FilterChip(c.entityId == id, { onChange(c.copy(entityId = id, value = if (isHum) Math.round(th.temperature ?: 20.0).toDouble() else c.value)) },
+                                    { Text("🌡 ${th.name}" + (th.temperature?.let { " ${fmt(Math.round(it * 10) / 10.0)}℃" } ?: "")) })
+                            }
+                            th.humEntity?.let { id ->
+                                FilterChip(c.entityId == id, { onChange(c.copy(entityId = id, value = if (!isHum) (Math.round((th.humidity ?: 50.0) / 5) * 5).toDouble() else c.value)) },
+                                    { Text("💧 ${th.name}" + (th.humidity?.let { " ${Math.round(it)}%" } ?: "")) })
+                            }
+                        }
+                    }
+                    if (thermos.isEmpty()) Text("温度計が見つかりません", color = MaterialTheme.colorScheme.error)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(!c.above, { onChange(c.copy(above = false)) }, { Text("より低い") })
+                        FilterChip(c.above, { onChange(c.copy(above = true)) }, { Text("より高い") })
+                        FilledTonalButton(onClick = { onChange(c.copy(value = Math.round((c.value - step) * 10) / 10.0)) }) { Text("−") }
+                        Text(numText(c.value) + if (isHum) "%" else "℃", fontSize = 20.sp)
+                        FilledTonalButton(onClick = { onChange(c.copy(value = Math.round((c.value + step) * 10) / 10.0)) }) { Text("＋") }
+                    }
+                }
+                is Cond.State -> {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        condStateOptions(c.entityId.substringBefore('.')).forEach { (v, l) ->
+                            FilterChip(c.state == v, { onChange(c.copy(state = v)) }, { Text(l) })
+                        }
+                    }
+                    states[c.entityId]?.let { Text("いまの状態：${it.state}", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
+        }
+    }
 }

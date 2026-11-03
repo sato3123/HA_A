@@ -33,6 +33,14 @@ sealed interface Trig {
     data class Numeric(val entityId: String, val above: Boolean, val value: Double, val forMin: Int = 0) : Trig
 }
 
+/** 条件（きっかけの時点で、すべて満たすときだけ動かす） */
+sealed interface Cond {
+    /** 温度計などの数値が value を上回っている（above）／下回っている */
+    data class Numeric(val entityId: String, val above: Boolean, val value: Double) : Cond
+    /** 機器がその状態になっている（例：在宅・オフ） */
+    data class State(val entityId: String, val state: String) : Cond
+}
+
 /** 実行すること。service は "light.turn_on" の形 */
 data class Act(val entityId: String, val service: String, val data: Map<String, Any> = emptyMap())
 
@@ -45,6 +53,7 @@ data class Rule(
     val after: String?,
     val before: String?,
     val actions: List<Act>,
+    val conds: List<Cond> = emptyList(),
 )
 
 const val RULE_MARK = "ホームパネルで作成"
@@ -113,6 +122,12 @@ fun Rule.toConfig(): JSONObject {
         before?.let { c.put("before", hhmm(it) + ":00") }
         conds.put(c)
     }
+    this.conds.forEach { c ->
+        when (c) {
+            is Cond.Numeric -> conds.put(JSONObject().put("condition", "numeric_state").put("entity_id", c.entityId).put(if (c.above) "above" else "below", c.value))
+            is Cond.State -> conds.put(JSONObject().put("condition", "state").put("entity_id", c.entityId).put("state", c.state))
+        }
+    }
     val acts = JSONArray()
     actions.forEach { a ->
         val data = JSONObject()
@@ -177,17 +192,35 @@ fun parseRule(id: String, j: JSONObject): Rule? {
     var after: String? = null
     var before: String? = null
     val conds = j.listOf("conditions", "condition") ?: JSONArray()
-    if (conds.length() > 1) return null
-    if (conds.length() == 1) {
-        val c = conds.optJSONObject(0) ?: return null
-        if (c.optString("condition") != "time") return null
-        weekdays = when (val w = c.opt("weekday")) {
-            is String -> setOf(w)
-            is JSONArray -> (0 until w.length()).map { w.optString(it) }.toSet()
-            else -> emptySet()
+    val extra = mutableListOf<Cond>()
+    var timeSeen = false
+    for (i in 0 until conds.length()) {
+        val c = conds.optJSONObject(i) ?: return null
+        when (c.optString("condition")) {
+            "time" -> {
+                if (timeSeen) return null
+                timeSeen = true
+                weekdays = when (val w = c.opt("weekday")) {
+                    is String -> setOf(w)
+                    is JSONArray -> (0 until w.length()).map { w.optString(it) }.toSet()
+                    else -> emptySet()
+                }
+                after = c.optString("after").takeIf { it.isNotBlank() }?.let(::hhmm)
+                before = c.optString("before").takeIf { it.isNotBlank() }?.let(::hhmm)
+            }
+            "numeric_state" -> {
+                val e = singleString(c.opt("entity_id")) ?: return null
+                val hasA = c.has("above"); val hasB = c.has("below")
+                if (hasA == hasB) return null
+                val v = (if (hasA) c.opt("above") else c.opt("below"))?.toString()?.toDoubleOrNull() ?: return null
+                extra.add(Cond.Numeric(e, hasA, v))
+            }
+            "state" -> {
+                val e = singleString(c.opt("entity_id")) ?: return null
+                extra.add(Cond.State(e, singleString(c.opt("state")) ?: return null))
+            }
+            else -> return null
         }
-        after = c.optString("after").takeIf { it.isNotBlank() }?.let(::hhmm)
-        before = c.optString("before").takeIf { it.isNotBlank() }?.let(::hhmm)
     }
 
     val actsJ = j.listOf("actions", "action") ?: return null
@@ -213,6 +246,7 @@ fun parseRule(id: String, j: JSONObject): Rule? {
         after = after,
         before = before,
         actions = acts,
+        conds = extra,
     )
 }
 
@@ -301,6 +335,21 @@ fun trigLabel(t: Trig, nameOf: (String) -> String): String = when (t) {
         (if (t.above) "を超えたとき" else "を下回ったとき") + (if (t.forMin > 0) "（${t.forMin}分続いたら）" else "")
 }
 
+fun condLabel(c: Cond, nameOf: (String) -> String): String = when (c) {
+    is Cond.Numeric -> "${nameOf(c.entityId)} が${numText(c.value)}${numUnit(c.entityId, nameOf)}" + if (c.above) "より高い" else "より低い"
+    is Cond.State -> "${nameOf(c.entityId)} が" + (condStateOptions(c.entityId.substringBefore('.')).firstOrNull { it.first == c.state }?.second ?: "「${c.state}」")
+}
+
+/** 条件で選べる状態（「〜している」の形） */
+fun condStateOptions(domain: String): List<Pair<String, String>> = when (domain) {
+    "binary_sensor" -> listOf("on" to "反応している", "off" to "反応していない")
+    "person", "device_tracker" -> listOf("home" to "家にいる", "not_home" to "外出している")
+    "cover" -> listOf("open" to "開いている", "closed" to "閉まっている")
+    "lock" -> listOf("locked" to "施錠している", "unlocked" to "解錠している")
+    "climate" -> listOf("off" to "停止している", "cool" to "冷房している", "heat" to "暖房している", "dry" to "除湿している")
+    else -> listOf("on" to "オンになっている", "off" to "オフになっている")
+}
+
 fun numText(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
 
 /** 単位（温度なら ℃、湿度なら %）。名前から推し量る */
@@ -314,5 +363,6 @@ fun ruleSummary(r: Rule, nameOf: (String) -> String): String {
         if (r.after != null || r.before != null) "${r.after ?: "0:00"}〜${r.before ?: "24:00"} の間" else null,
     ).joinToString("・")
     val acts = r.actions.joinToString("、") { actLabel(it, nameOf(it.entityId)) }
-    return "$time ${trigLabel(r.trigger, nameOf)} → ${acts.ifBlank { "（操作なし）" }}"
+    val cond = if (r.conds.isEmpty()) "" else "（" + r.conds.joinToString("、かつ") { condLabel(it, nameOf) } + "なら）"
+    return "$time ${trigLabel(r.trigger, nameOf)}$cond → ${acts.ifBlank { "（操作なし）" }}"
 }

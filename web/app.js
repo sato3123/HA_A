@@ -1680,7 +1680,7 @@
   const hhmm = (s) => { const p = String(s).split(":"); return p.length >= 2 ? pad(+p[0] || 0) + ":" + pad(+p[1] || 0) : s; };
 
   function newRule(schedule) {
-    return { id: (schedule ? "hp_sched_" : "hp_auto_") + Date.now(), name: "", schedule, trigger: { kind: "time", at: "07:00" }, weekdays: [], after: null, before: null, actions: [], isNew: true };
+    return { id: (schedule ? "hp_sched_" : "hp_auto_") + Date.now(), name: "", schedule, trigger: { kind: "time", at: "07:00" }, weekdays: [], after: null, before: null, actions: [], conds: [], isNew: true };
   }
 
   function opsFor(d) {
@@ -1715,6 +1715,22 @@
       case "climate": return [["off", "停止した"], ["cool", "冷房になった"], ["heat", "暖房になった"], ["dry", "除湿になった"]];
       default: return [["on", "オンになった"], ["off", "オフになった"]];
     }
+  }
+  /** 条件で選べる状態（「〜している」の形） */
+  function condStateOptions(d) {
+    switch (d) {
+      case "binary_sensor": return [["on", "反応している"], ["off", "反応していない"]];
+      case "person": case "device_tracker": return [["home", "家にいる"], ["not_home", "外出している"]];
+      case "cover": return [["open", "開いている"], ["closed", "閉まっている"]];
+      case "lock": return [["locked", "施錠している"], ["unlocked", "解錠している"]];
+      case "climate": return [["off", "停止している"], ["cool", "冷房している"], ["heat", "暖房している"], ["dry", "除湿している"]];
+      default: return [["on", "オンになっている"], ["off", "オフになっている"]];
+    }
+  }
+  function ruleCondLabel(c) {
+    if (c.kind === "numeric") return `${numName(c.entity)} が${c.value}${numIsHum(c.entity) ? "%" : "℃"}${c.above ? "より高い" : "より低い"}`;
+    const o = condStateOptions(c.entity.split(".")[0]).find((x) => x[0] === c.state);
+    return `${entName(c.entity)} が${o ? o[1] : `「${c.state}」`}`;
   }
   const entName = (id) => (S.ha && S.ha.states[id] ? nameOf(S.ha.states[id]) : id);
   const DOMAIN_LABEL2 = Object.assign({}, DOMAIN_LABEL, { binary_sensor: "センサー", person: "人", device_tracker: "位置", lock: "鍵" });
@@ -1759,7 +1775,8 @@
   }
   function ruleSummary(r) {
     const time = [weekdayText(r.weekdays), r.after || r.before ? `${r.after || "0:00"}〜${r.before || "24:00"} の間` : null].filter(Boolean).join("・");
-    return `${time} ${trigLabel(r.trigger)} → ${r.actions.map(actLabel).join("、") || "（操作なし）"}`;
+    const cond = (r.conds || []).length ? "（" + r.conds.map(ruleCondLabel).join("、かつ") + "なら）" : "";
+    return `${time} ${trigLabel(r.trigger)}${cond} → ${r.actions.map(actLabel).join("、") || "（操作なし）"}`;
   }
 
   function toConfig(r) {
@@ -1783,6 +1800,10 @@
       if (r.before) c.before = hhmm(r.before) + ":00";
       conds.push(c);
     }
+    (r.conds || []).forEach((c) => {
+      if (c.kind === "numeric") { const o = { condition: "numeric_state", entity_id: c.entity }; o[c.above ? "above" : "below"] = c.value; conds.push(o); }
+      else conds.push({ condition: "state", entity_id: c.entity, state: c.state });
+    });
     return {
       id: r.id, alias: r.name, description: "ホームパネルで作成", mode: "single",
       triggers: [trig], conditions: conds,
@@ -1817,14 +1838,24 @@
       trigger = { kind: "numeric", entity: e, above: hasA, value: v, forMin: Math.max(0, parseOffset(t.for)) };
     } else return null;
     const conds = asList(j.conditions || j.condition) || [];
-    if (conds.length > 1) return null;
-    let weekdays = [], after = null, before = null;
-    if (conds.length === 1) {
-      const c = conds[0];
-      if (c.condition !== "time") return null;
-      weekdays = asList(c.weekday) || [];
-      after = c.after ? hhmm(c.after) : null;
-      before = c.before ? hhmm(c.before) : null;
+    let weekdays = [], after = null, before = null, timeSeen = false;
+    const extra = [];
+    for (const c of conds) {
+      if (c.condition === "time") {
+        if (timeSeen) return null;
+        timeSeen = true;
+        weekdays = asList(c.weekday) || [];
+        after = c.after ? hhmm(c.after) : null;
+        before = c.before ? hhmm(c.before) : null;
+      } else if (c.condition === "numeric_state") {
+        const e = single(c.entity_id), hasA = c.above !== undefined, hasB = c.below !== undefined, v = Number(hasA ? c.above : c.below);
+        if (!e || hasA === hasB || isNaN(v)) return null;
+        extra.push({ kind: "numeric", entity: e, above: hasA, value: v });
+      } else if (c.condition === "state") {
+        const e = single(c.entity_id), st = single(c.state);
+        if (!e || st === null) return null;
+        extra.push({ kind: "state", entity: e, state: String(st) });
+      } else return null;
     }
     const acts = asList(j.actions || j.action);
     if (!acts) return null;
@@ -1838,7 +1869,7 @@
       delete data.entity_id;
       actions.push({ entity, service: svc, data });
     }
-    return { id, name: j.alias || "", schedule: isSched(id), trigger, weekdays, after, before, actions };
+    return { id, name: j.alias || "", schedule: isSched(id), trigger, weekdays, after, before, actions, conds: extra };
   }
 
   function automations() {
@@ -1901,6 +1932,25 @@
       .map((e) => `<option value="${esc(e.entity_id)}" ${e.entity_id === selected ? "selected" : ""}>${esc(nameOf(e))}</option>`).join("")}</optgroup>`).join("");
   }
 
+  function condsHTML(r) {
+    const chip = (sel, set, id, label, i) => `<button class="chip${sel ? " sel" : ""}" data-set="${set}" data-id="${esc(id)}" data-i="${i}">${esc(label)}</button>`;
+    return (r.conds || []).map((c, i) => {
+      let body = "";
+      if (c.kind === "numeric") {
+        const hum = numIsHum(c.entity);
+        body = `<div class="chips">${thermos().map((th) =>
+          (th.tId ? chip(c.entity === th.tId, "condEntity", th.tId, `🌡 ${th.name}${th.temp != null ? " " + (Math.round(th.temp * 10) / 10) + "℃" : ""}`, i) : "") +
+          (th.hId ? chip(c.entity === th.hId, "condEntity", th.hId, `💧 ${th.name}${th.hum != null ? " " + Math.round(th.hum) + "%" : ""}`, i) : "")).join("")}</div>
+          <div class="brow" style="align-items:center">${chip(!c.above, "condAbove", "0", "より低い", i)}${chip(c.above, "condAbove", "1", "より高い", i)}
+          <button class="tb" data-set="condStep" data-id="-1" data-i="${i}">−</button><span style="font-size:20px;min-width:70px;text-align:center">${c.value}${hum ? "%" : "℃"}</span>
+          <button class="tb" data-set="condStep" data-id="1" data-i="${i}">＋</button></div>`;
+      } else {
+        body = `<div class="chips">${condStateOptions(c.entity.split(".")[0]).map(([v, l]) => chip(c.state === v, "condState", v, l, i)).join("")}</div>`;
+      }
+      return `<div class="act"><div class="brow" style="align-items:center"><b style="flex:1">もし ${esc(ruleCondLabel(c))}</b><button class="tbtn" data-set="condDel" data-i="${i}">✕</button></div>${body}</div>`;
+    }).join("");
+  }
+
   function editorHTML() {
     const r = S.edit;
     const t = r.trigger;
@@ -1959,6 +2009,11 @@
       <div class="field"><div class="fl">${r.schedule ? "時刻" : "きっかけ"}</div>${trig}</div>
       <div class="field"><div class="fl">曜日（選ばなければ毎日）</div>${days}</div>
       ${range}
+      <div class="field"><div class="fl">条件（選ばなければ、いつも動かす）</div>
+        <div class="note">${r.schedule ? "その時刻" : "きっかけ"}の時点で、ここに並べた条件をすべて満たすときだけ実行します。例：6時の時点で寝室が20℃より低ければ暖房をつける。</div>
+        ${condsHTML(r)}
+        <div class="brow"><button class="tbtn" data-set="condAddNum">＋ 温度計の条件</button>
+          <select data-set="condAddState"><option value="">＋ 機器の状態の条件…</option>${entityOptions(TRIGGER_DOMAINS, "")}</select></div></div>
       <div class="field"><div class="fl">実行すること</div>${acts}
         <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(ACTION_DOMAINS, "")}</select></div>
       <div class="summary" id="ruleSummary">内容：${esc(ruleSummary(r))}</div>
@@ -2010,6 +2065,24 @@
       case "trigAt": r.trigger.at = el.value || "07:00"; break;
       case "trigEntity": r.trigger = { kind: "state", entity: el.value, to: el.value ? stateOptions(el.value.split(".")[0])[0][0] : "on" }; break;
       case "trigTo": r.trigger.to = id; break;
+      case "condAddNum": {
+        const th = thermos().find((x) => x.tId);
+        r.conds = (r.conds || []).concat([{ kind: "numeric", entity: th ? th.tId : "", above: false, value: Math.round(th && th.temp != null ? th.temp : 20) }]);
+        break;
+      }
+      case "condAddState":
+        if (el.value) r.conds = (r.conds || []).concat([{ kind: "state", entity: el.value, state: condStateOptions(el.value.split(".")[0])[0][0] }]);
+        break;
+      case "condDel": r.conds.splice(Number(el.dataset.i), 1); break;
+      case "condEntity": {
+        const c = r.conds[Number(el.dataset.i)], wasHum = numIsHum(c.entity), th = thermos().find((x) => x.tId === id || x.hId === id);
+        c.entity = id;
+        if (th && wasHum !== numIsHum(id)) c.value = numIsHum(id) ? Math.round((th.hum != null ? th.hum : 50) / 5) * 5 : Math.round(th.temp != null ? th.temp : 20);
+        break;
+      }
+      case "condAbove": r.conds[Number(el.dataset.i)].above = id === "1"; break;
+      case "condStep": { const c = r.conds[Number(el.dataset.i)]; c.value = Math.round((c.value + Number(id) * (numIsHum(c.entity) ? 5 : 0.5)) * 10) / 10; break; }
+      case "condState": r.conds[Number(el.dataset.i)].state = id; break;
       case "numEntity": {
         const wasHum = numIsHum(r.trigger.entity), th = thermos().find((x) => x.tId === id || x.hId === id);
         r.trigger.entity = id;
@@ -2041,6 +2114,7 @@
         if (!r.actions.length) { S.editError = "「＋ 操作を追加」で、実行することを1つ以上選んでください"; break; }
         if (r.trigger.kind === "state" && !r.trigger.entity) { S.editError = "きっかけにする機器を選んでください"; break; }
         if (r.trigger.kind === "numeric" && !r.trigger.entity) { S.editError = "きっかけにする温度計を選んでください"; break; }
+        if ((r.conds || []).some((c) => c.kind === "numeric" && !c.entity)) { S.editError = "条件の温度計を選んでください"; break; }
         S.saving = true; S.editError = null; renderAuto();
         try {
           if (!r.name.trim()) r.name = ruleSummary(r).slice(0, 40);
