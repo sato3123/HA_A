@@ -56,6 +56,17 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -189,6 +200,52 @@ private val DIRECT_MODES = listOf(
 private enum class Play { WEBRTC, HLS, MJPEG, RTSP }
 
 /** カメラの動画（全画面）。画質を選べる。だめなら遅れの少ない順にほかの方式へ切り替える */
+/** 全画面のカメラの拡大（2本指で広げる・ダブルタップ）。scale 倍、offset だけずらす（中心が基準） */
+@Stable
+class CamZoom {
+    var scale by mutableFloatStateOf(1f)
+    var offset by mutableStateOf(Offset.Zero)
+    var size by mutableStateOf(IntSize.Zero)
+
+    fun reset() { scale = 1f; offset = Offset.Zero }
+
+    private fun clamp(o: Offset, s: Float): Offset {
+        val mx = (s - 1f) * size.width / 2f
+        val my = (s - 1f) * size.height / 2f
+        return Offset(o.x.coerceIn(-mx, mx), o.y.coerceIn(-my, my))
+    }
+
+    /** centroid（指の中心）を動かさずに zoom 倍し、pan だけずらす */
+    fun transform(centroid: Offset, pan: Offset, zoom: Float) {
+        val ns = (scale * zoom).coerceIn(1f, 6f)
+        val z = ns / scale
+        val c = Offset(size.width / 2f, size.height / 2f)
+        offset = clamp((centroid - c) * (1f - z) + offset * z + pan, ns)
+        scale = ns
+    }
+
+    fun doubleTap(at: Offset) {
+        if (scale > 1.05f) { reset(); return }
+        val c = Offset(size.width / 2f, size.height / 2f)
+        scale = 2.5f
+        offset = clamp((c - at) * 1.5f, 2.5f)
+    }
+}
+
+/** カメラの映像に拡大をかける（全画面のときだけ。タイルでは null） */
+val LocalCamZoom = compositionLocalOf<CamZoom?> { null }
+
+private fun android.view.View.applyZoom(z: CamZoom?) {
+    val s = z?.scale ?: 1f
+    scaleX = s; scaleY = s
+    translationX = z?.offset?.x ?: 0f
+    translationY = z?.offset?.y ?: 0f
+}
+
+private fun Modifier.camZoom(z: CamZoom?): Modifier = if (z == null) this else graphicsLayer {
+    scaleX = z.scale; scaleY = z.scale; translationX = z.offset.x; translationY = z.offset.y
+}
+
 @Composable
 fun CameraViewer(vm: MainViewModel) {
     val id by vm.cameraFor.collectAsState()
@@ -209,6 +266,7 @@ fun CameraViewer(vm: MainViewModel) {
     var retry by remember(entityId, mode) { mutableStateOf(0) }
 
     if (showMotion) MotionDialog(vm, entityId, name) { showMotion = false }
+    val zoom = remember(entityId) { CamZoom() }
 
     LaunchedEffect(entityId, mode, retry) {
         play = null
@@ -241,7 +299,8 @@ fun CameraViewer(vm: MainViewModel) {
     }
 
     Dialog(onDismissRequest = { vm.closeCamera() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { zoom.size = it }) {
+            CompositionLocalProvider(LocalCamZoom provides zoom) {
             when (val p = play) {
                 null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else -> when (p.first) {
@@ -253,6 +312,19 @@ fun CameraViewer(vm: MainViewModel) {
                     }
                     Play.MJPEG -> MjpegView(vm, entityId, name) { if (note == null) note = it }
                 }
+            }
+            }
+            // 拡大の操作：2本指で広げる・縮める、拡大中は1本指で動かす、ダブルタップで拡大／元に戻す
+            Box(
+                Modifier.fillMaxSize()
+                    .pointerInput(zoom) { detectTapGestures(onDoubleTap = { zoom.doubleTap(it) }) }
+                    .pointerInput(zoom) { detectTransformGestures { c, pan, z, _ -> zoom.transform(c, pan, z) } },
+            )
+            if (zoom.scale > 1.05f) {
+                TextButton(
+                    onClick = { zoom.reset() },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp).background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(16.dp)),
+                ) { Text("🔍 ${String.format("%.1f", zoom.scale)}倍　元に戻す", color = Color.White) }
             }
             Column(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -335,7 +407,9 @@ private fun WebRtcView(vm: MainViewModel, entityId: String, tile: Boolean = fals
     }
     if (!tile) KeepAwake(vm)
     Box(Modifier.fillMaxSize()) {
-        AndroidView(factory = { renderer }, modifier = Modifier.fillMaxSize())
+        val z = LocalCamZoom.current
+        // update の中で拡大の値を読むので、拡大が変わるたびに映像の表示に反映される
+        AndroidView(factory = { renderer }, modifier = Modifier.fillMaxSize(), update = { v -> v.applyZoom(z) })
         if (connecting && !tile) CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
 }
@@ -408,6 +482,7 @@ private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boole
         }
     }
     if (!tile) KeepAwake(vm)
+    val z = if (tile) null else LocalCamZoom.current
     Box(Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
@@ -419,6 +494,7 @@ private fun PlayerView(vm: MainViewModel, url: String, rtsp: Boolean, tcp: Boole
                 }
             },
             modifier = Modifier.fillMaxSize(),
+            update = { v -> (v.videoSurfaceView ?: v).applyZoom(z) },
         )
         if (buffering && !tile) CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
@@ -452,7 +528,30 @@ private fun MjpegView(vm: MainViewModel, entityId: String, name: String, tile: B
     }
     Box(Modifier.fillMaxSize()) {
         val f = frame
-        if (f != null) Image(f, contentDescription = name, contentScale = if (tile) ContentScale.Crop else ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        if (f != null) Image(f, contentDescription = name, contentScale = if (tile) ContentScale.Crop else ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().camZoom(if (tile) null else LocalCamZoom.current))
         else if (!tile) CircularProgressIndicator(Modifier.align(Alignment.Center))
+    }
+}
+
+
+/** 画像を全画面で拡大して見る（2本指で広げる・ダブルタップ・拡大中は1本指で動かす） */
+@Composable
+fun ZoomImageDialog(img: ImageBitmap, title: String, onDismiss: () -> Unit) {
+    val zoom = remember { CamZoom() }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { zoom.size = it }) {
+            Image(img, contentDescription = title, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().camZoom(zoom))
+            Box(
+                Modifier.fillMaxSize()
+                    .pointerInput(zoom) { detectTapGestures(onDoubleTap = { zoom.doubleTap(it) }) }
+                    .pointerInput(zoom) { detectTransformGestures { c, pan, z, _ -> zoom.transform(c, pan, z) } },
+            )
+            Row(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(title, color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (zoom.scale > 1.05f) TextButton(onClick = { zoom.reset() }) { Text("🔍 ${String.format("%.1f", zoom.scale)}倍　元に戻す", color = Color.White) }
+                TextButton(onClick = onDismiss) { Text("✕ 閉じる", color = Color.White) }
+            }
+        }
     }
 }

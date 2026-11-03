@@ -3424,7 +3424,7 @@
     const v = $("#camVideo");
     if (v) { v.pause(); v.removeAttribute("src"); v.srcObject = null; v.load(); }
   }
-  function closeCamera() { closeCameraStream(); S.cam = null; renderCameraBox(); syncLiveTiles(); }
+  function closeCamera() { closeCameraStream(); S.cam = null; camZoomReset(); renderCameraBox(); syncLiveTiles(); }
   async function webrtcSupported(id) {
     try {
       const r = await S.ha.send({ type: "camera/capabilities", entity_id: id });
@@ -3493,7 +3493,74 @@
       }
     }
   }
-  function openCamera(id) { S.cam = { id, failed: [], playing: null, status: null, note: null, menu: false }; syncLiveTiles(); renderCameraBox(); playCamera(); }
+  function openCamera(id) { S.cam = { id, failed: [], playing: null, status: null, note: null, menu: false }; camZoomReset(); syncLiveTiles(); renderCameraBox(); playCamera(); }
+
+  // ---- 全画面のカメラの拡大：2本指で広げる・縮める、拡大中は1本指で動かす、ダブルタップで拡大／元に戻す ----
+  const CZ = { s: 1, x: 0, y: 0 };
+  function camZoomApply() {
+    const box = $("#camBox");
+    if (!box) return;
+    const w = box.clientWidth, h = box.clientHeight;
+    const mx = (CZ.s - 1) * w / 2, my = (CZ.s - 1) * h / 2;
+    CZ.x = Math.max(-mx, Math.min(mx, CZ.x)); CZ.y = Math.max(-my, Math.min(my, CZ.y));
+    const t = CZ.s > 1.01 ? `translate(${CZ.x}px, ${CZ.y}px) scale(${CZ.s})` : "";
+    ["#camVideo", "#camImg"].forEach((q) => { const el = $(q); if (el) el.style.transform = t; });
+    const b = $("#camZoom");
+    if (b) { b.classList.toggle("hidden", CZ.s <= 1.01); b.textContent = `🔍 ${CZ.s.toFixed(1)}倍　元に戻す`; }
+  }
+  function camZoomReset() { CZ.s = 1; CZ.x = 0; CZ.y = 0; camZoomApply(); }
+  /** p（画面の点）を動かさずに、倍率を ns にする */
+  function camZoomAt(ns, px, py) {
+    const box = $("#camBox"), r = box.getBoundingClientRect();
+    ns = Math.max(1, Math.min(6, ns));
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2, z = ns / CZ.s;
+    CZ.x = (px - cx) * (1 - z) + CZ.x * z; CZ.y = (py - cy) * (1 - z) + CZ.y * z; CZ.s = ns;
+    camZoomApply();
+  }
+  function setupCamZoom() {
+    const box = $("#camBox");
+    if (!box) return;
+    let pinch = null, pan = null, lastTap = 0, touchAt = 0;
+    const onUi = (ev) => ev.target.closest(".cambar, .cammodes, .camzoom, .camnote");
+    const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    box.addEventListener("touchstart", (ev) => {
+      touchAt = Date.now();
+      if (onUi(ev)) return;
+      if (ev.touches.length === 2) {
+        const [a, b] = ev.touches;
+        pinch = { d: dist(a, b), s: CZ.s }; pan = null;
+      } else if (ev.touches.length === 1) {
+        const t = ev.touches[0], now = Date.now();
+        if (now - lastTap < 300) { // ダブルタップ
+          if (CZ.s > 1.05) camZoomReset(); else camZoomAt(2.5, t.clientX, t.clientY);
+          lastTap = 0; ev.preventDefault(); return;
+        }
+        lastTap = now;
+        pan = CZ.s > 1.01 ? { x: t.clientX, y: t.clientY } : null;
+      }
+    }, { passive: false });
+    box.addEventListener("touchmove", (ev) => {
+      if (onUi(ev)) return;
+      if (pinch && ev.touches.length === 2) {
+        const [a, b] = ev.touches;
+        camZoomAt(pinch.s * dist(a, b) / pinch.d, (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+        pinch.s = CZ.s; pinch.d = dist(a, b);
+        ev.preventDefault();
+      } else if (pan && ev.touches.length === 1) {
+        const t = ev.touches[0];
+        CZ.x += t.clientX - pan.x; CZ.y += t.clientY - pan.y; pan = { x: t.clientX, y: t.clientY };
+        camZoomApply(); ev.preventDefault();
+      }
+    }, { passive: false });
+    box.addEventListener("touchend", (ev) => { if (ev.touches.length < 2) pinch = null; if (!ev.touches.length) pan = null; });
+    // iOS の Safari が自分で拡大するのを止める（映像だけを拡大する）
+    box.addEventListener("gesturestart", (ev) => ev.preventDefault());
+    // マウス・トラックパッド：ダブルクリックとホイール
+    box.addEventListener("dblclick", (ev) => { if (onUi(ev) || Date.now() - touchAt < 800) return; if (CZ.s > 1.05) camZoomReset(); else camZoomAt(2.5, ev.clientX, ev.clientY); });
+    box.addEventListener("wheel", (ev) => { if (onUi(ev)) return; ev.preventDefault(); camZoomAt(CZ.s * (ev.deltaY < 0 ? 1.15 : 1 / 1.15), ev.clientX, ev.clientY); }, { passive: false });
+    $("#camZoom").onclick = camZoomReset;
+    window.addEventListener("resize", camZoomApply);
+  }
   function renderCameraBox() {
     const box = $("#camBox");
     if (!box) return;
@@ -3793,7 +3860,7 @@
     <div class="dlgwrap hidden" id="thermoDlg"></div>
     <div class="cambox hidden" id="camBox"><video id="camVideo" playsinline autoplay muted></video><img id="camImg" class="hidden" alt="">
       <div class="cambar"><span id="camName" style="flex:1"></span><button class="tbtn" id="camSound" data-set="camSound">🔇 音</button><button class="tbtn" id="camMode" data-set="camMenu"></button><button class="tbtn" data-set="camClose">✕ 閉じる</button></div>
-      <div class="chips cammodes hidden" id="camModes"></div><div class="camnote hidden" id="camNote"></div></div>
+      <div class="chips cammodes hidden" id="camModes"></div><div class="camnote hidden" id="camNote"></div><button class="camzoom hidden" id="camZoom">🔍 元に戻す</button></div>
     <div class="page hidden" id="page"></div>
     <div class="saver hidden" id="saver"><img class="ssimg" alt=""><img class="ssimg" alt="">
       <div class="ssinfo"><div id="ssTime" class="sst"></div><div id="ssDate"></div><div id="ssWeather"></div><div id="ssTimers"></div></div></div>
@@ -3801,6 +3868,7 @@
 
     bindControls($("#grid"));
     bindControls($("#sheetContent"));
+    setupCamZoom();
     const closeSheet = () => { S.detail = null; $("#sheetContent").dataset.html = ""; renderSheet(); };
     $("#sheetBg").onclick = closeSheet;
     $("#sheetClose").onclick = closeSheet;

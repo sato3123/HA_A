@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -243,7 +244,12 @@ fun MotionDialog(vm: MainViewModel, entity: String, name: String, onDismiss: () 
                     }
                     sel?.let { t ->
                         Text(Instant.ofEpochMilli(t).atZone(ZoneId.systemDefault()).format(tf) + " ごろの画像", style = MaterialTheme.typography.titleSmall)
-                        img?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) }
+                        var big by remember { mutableStateOf(false) }
+                        img?.let {
+                            Image(it, contentDescription = null, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clickable { big = true })
+                            Text("画像をタップすると、全画面で拡大できます", style = MaterialTheme.typography.labelSmall)
+                            if (big) ZoomImageDialog(it, Instant.ofEpochMilli(t).atZone(ZoneId.systemDefault()).format(tf) + " ごろ") { big = false }
+                        }
                         imgMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
