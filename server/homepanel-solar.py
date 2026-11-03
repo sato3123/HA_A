@@ -67,6 +67,8 @@ DEFAULT_CONF = {
     # 買電が多いときはお湯を沸かさない：買電が guard_kw 以上（0 なら「30分の電力」の注意の値、それも無ければ 3kW）か、
     # 30分の電力が注意の値を超えそうなときは、沸き上げを一時停止し、下がったら元に戻す
     "heat_guard": True, "heat_guard_kw": 0,
+    # ECHONET Lite の機器（Android 版が見つけたもの）：[{id: "climate.el_…", name, room}]。iPad 版の自動化の画面で選べるようにする
+    "el_devices": [],
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
     "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
     "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
@@ -1468,6 +1470,8 @@ def run_device_timer(t):
     domain = eid.split(".")[0]
     a = t.get("action")
     data = dict(t.get("data") or {})
+    if is_el_entity(eid):
+        return el_call(eid, a, data)
     if a == "set_hvac_mode":
         temp = data.pop("temperature", None)
         if data.get("hvac_mode") == "off":
@@ -1479,6 +1483,181 @@ def run_device_timer(t):
     else:
         svc_domain = "homeassistant" if domain in ("switch", "light", "fan", "input_boolean", "climate", "cover", "media_player") else domain
         ha_call(svc_domain, a, {"entity_id": eid})
+
+
+# ================= ECHONET Lite の機器を、このサーバーから操作する =================
+# アプリでは ECHONET Lite の機器を「climate.el_192_168_1_50_013001」のような ID で表示している（Home Assistant には無い機器）。
+# スケジュール・オートメーションは Home Assistant が動かすので、その操作は Home Assistant のイベント「homepanel_el」として送り、
+# このサーバーが受け取って ECHONET Lite で機器に送る。まとめて操作・機器のタイマーも同じ関数を使う。
+EL_MODE = {"auto": 0x41, "heat_cool": 0x41, "cool": 0x42, "heat": 0x43, "dry": 0x44, "fan_only": 0x45}
+EL_ID = re.compile(r"^(climate|light|switch|cover|fan)\.el_(\d{1,3})_(\d{1,3})_(\d{1,3})_(\d{1,3})_([0-9a-f]{6})$")
+
+
+def is_el_entity(eid):
+    """ECHONET Lite の機器の ID で、家の中のアドレスのもの"""
+    try:
+        el_target(eid)
+        return True
+    except ValueError:
+        return False
+
+
+def el_target(eid):
+    m = EL_ID.match(str(eid or ""))
+    if not m:
+        raise ValueError("ECHONET Lite の機器の ID ではありません")
+    ip = ".".join(m.group(i) for i in range(2, 6))
+    if not (ip.startswith("192.168.") or ip.startswith("10.") or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", ip)):
+        raise ValueError("家の中の機器だけ操作できます")
+    return m.group(1), ip, m.group(6).upper()
+
+
+def el_call(eid, service, data=None):
+    """ECHONET Lite の機器を操作する（アプリの操作と同じ対応）。失敗したら例外"""
+    data = data or {}
+    domain, ip, eoj = el_target(eid)
+    on, off = (0x80, b"\x30"), (0x80, b"\x31")
+    props = []
+    if service in ("turn_on", "turn_off"):
+        props = [on if service == "turn_on" else off]
+        if domain == "light" and service == "turn_on" and data.get("brightness_pct") is not None:
+            props.append((0xB0, bytes([max(0, min(100, int(data["brightness_pct"])))])))
+    elif service == "toggle":
+        v = el.get(ip, eoj, [0x80], timeout=4) or {}
+        props = [off if v.get(0x80) == b"\x30" else on]
+    elif domain == "climate" and service in ("set_hvac_mode", "set_temperature"):
+        mode = data.get("hvac_mode")
+        if mode == "off":
+            props = [off]
+        else:
+            if mode:
+                if mode not in EL_MODE:
+                    raise ValueError(f"この運転モード（{mode}）には対応していません")
+                props += [on, (0xB0, bytes([EL_MODE[mode]]))]
+            if data.get("temperature") is not None and mode not in ("fan_only", "dry"):
+                props.append((0xB3, bytes([max(0, min(50, int(round(float(data["temperature"])))))])))
+    elif domain == "cover" and service in ("open_cover", "close_cover", "stop_cover"):
+        props = [(0xE0, bytes([{"open_cover": 0x41, "close_cover": 0x42, "stop_cover": 0x43}[service]]))]
+    elif domain == "cover" and service == "set_cover_position":
+        props = [(0xE1, bytes([max(0, min(100, int(data.get("position") or 0)))]))]
+    if not props:
+        raise ValueError(f"この操作（{service}）には対応していません")
+    for epc, edt in props:
+        err = el.setc(ip, eoj, epc, edt)
+        if err:
+            raise RuntimeError(err)
+
+
+def ha_ws_loop():
+    """Home Assistant の WebSocket につなぎ、イベント homepanel_el（スケジュール・オートメーションからの ECHONET Lite の操作）を受け取る"""
+    import base64
+    import socket
+    import struct
+    import urllib.parse as up
+
+    def send(sock, obj):
+        data = json.dumps(obj).encode()
+        hdr = bytearray([0x81])
+        n = len(data)
+        if n < 126:
+            hdr.append(0x80 | n)
+        elif n < 65536:
+            hdr.append(0x80 | 126); hdr += struct.pack(">H", n)
+        else:
+            hdr.append(0x80 | 127); hdr += struct.pack(">Q", n)
+        mask = os.urandom(4)
+        hdr += mask
+        sock.sendall(bytes(hdr) + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def recv_exact(sock, n):
+        b = b""
+        while len(b) < n:
+            c = sock.recv(n - len(b))
+            if not c:
+                raise ConnectionError("切れました")
+            b += c
+        return b
+
+    def recv(sock):
+        buf = b""
+        while True:
+            h = recv_exact(sock, 2)
+            fin, op, n = h[0] & 0x80, h[0] & 0x0F, h[1] & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", recv_exact(sock, 2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", recv_exact(sock, 8))[0]
+            if h[1] & 0x80:
+                recv_exact(sock, 4)
+            payload = recv_exact(sock, n)
+            if op == 0x8:
+                raise ConnectionError("Home Assistant が接続を閉じました")
+            if op == 0x9:  # ping → pong
+                sock.sendall(bytes([0x8A, 0x80 | len(payload)]) + b"\0\0\0\0" + payload)
+                continue
+            if op in (0x1, 0x0, 0x2):
+                buf += payload
+                if fin:
+                    return json.loads(buf.decode("utf-8", "replace"))
+
+    while True:
+        base, tok = ha_base_url(), conf.get("ha_token") or ""
+        if not base or not tok:
+            time.sleep(60)
+            continue
+        try:
+            u = up.urlparse(base)
+            port = u.port or (443 if u.scheme == "https" else 80)
+            if u.scheme == "https":
+                time.sleep(300)  # 家の中の http だけ対応
+                continue
+            sock = socket.create_connection((u.hostname, port), timeout=30)
+            key = base64.b64encode(os.urandom(16)).decode()
+            sock.sendall((f"GET /api/websocket HTTP/1.1\r\nHost: {u.hostname}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                          f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            head = b""
+            while b"\r\n\r\n" not in head:
+                c = sock.recv(1024)
+                if not c:
+                    raise ConnectionError("返事がありません")
+                head += c
+            if b" 101 " not in head.split(b"\r\n")[0]:
+                raise ConnectionError(head.split(b"\r\n")[0].decode(errors="replace"))
+            sock.settimeout(None)
+            recv(sock)  # auth_required
+            send(sock, {"type": "auth", "access_token": tok})
+            r = recv(sock)
+            if r.get("type") != "auth_ok":
+                raise ConnectionError("Home Assistant の鍵が使えません")
+            send(sock, {"id": 1, "type": "subscribe_events", "event_type": "homepanel_el"})
+            state["ha_ws"] = "つながっています"
+            sock.settimeout(50)
+            last_ping = time.time()
+            while True:
+                try:
+                    m = recv(sock)
+                except socket.timeout:
+                    m = None
+                if time.time() - last_ping > 45:
+                    last_ping = time.time()
+                    send(sock, {"id": int(time.time()), "type": "ping"})
+                if not m or m.get("type") != "event":
+                    continue
+                d = (m.get("event") or {}).get("data") or {}
+                eid, svc = d.get("entity_id"), d.get("service")
+                name = d.get("name") or eid
+
+                def run(eid=eid, svc=svc, d=d, name=name):
+                    try:
+                        el_call(eid, svc, d.get("data") or {})
+                        log(f"自動化：{name} を操作しました（ECHONET Lite・{svc}）")
+                    except Exception as e:
+                        log(f"自動化：{name} を操作できませんでした（ECHONET Lite：{e}）")
+                threading.Thread(target=run, daemon=True).start()
+        except Exception as e:
+            state["ha_ws"] = f"つながっていません（{e}）"
+            print("Home Assistant の WebSocket:", e, flush=True)
+            time.sleep(30)
 
 
 def device_timer_loop():
@@ -2282,7 +2461,9 @@ def run_group(g, action):
     def one(eid):
         try:
             dom = eid.split(".")[0]
-            if dom == "cover":
+            if is_el_entity(eid):
+                el_call(eid, "close_cover" if dom == "cover" and action == "off" else "open_cover" if dom == "cover" else "turn_" + action)
+            elif dom == "cover":
                 ha_call("cover", "open_cover" if action == "on" else "close_cover", {"entity_id": eid})
             else:
                 ha_call("homeassistant", "turn_" + action, {"entity_id": eid})
@@ -2468,6 +2649,11 @@ class Api(BaseHTTPRequestHandler):
                     b["hot_extra"] = [{"date": x["date"], "liters": max(0, min(500, int(x.get("liters") or 0))),
                                        "part": "morning" if x.get("part") == "morning" else "evening", "note": str(x.get("note") or "")[:30]}
                                       for x in ex if x["date"] >= (date.today() - timedelta(days=1)).isoformat()]
+                if "el_devices" in b:
+                    ed = b["el_devices"]
+                    if not isinstance(ed, list) or len(ed) > 100 or not all(isinstance(x, dict) and is_el_entity(x.get("id")) for x in ed):
+                        return self._ok({"error": "ECHONET Lite の機器の一覧が正しくありません"}, 400)
+                    b["el_devices"] = [{"id": x["id"], "name": str(x.get("name") or "")[:40], "room": str(x.get("room") or "")[:20]} for x in ed]
                 if "demand_notify" in b:
                     if not isinstance(b["demand_notify"], list) or not all(re.fullmatch(r"notify\.[a-z0-9_]+", str(x)) for x in b["demand_notify"]):
                         return self._ok({"error": "通知先が正しくありません（notify.〇〇）"}, 400)
@@ -2590,6 +2776,7 @@ def main():
     threading.Thread(target=weather_loop, daemon=True).start()
     threading.Thread(target=climate_loop, daemon=True).start()
     threading.Thread(target=device_timer_loop, daemon=True).start()
+    threading.Thread(target=ha_ws_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

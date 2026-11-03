@@ -83,7 +83,8 @@ fun DeviceTimerSection(e: Entity, vm: MainViewModel) {
     else listOf("turn_off" to "切る", "turn_on" to "つける")
     val defaultAction = if (climate) (if (e.state == "off") modes.firstOrNull() ?: "off" else "off") else if (e.isOn) "turn_off" else "turn_on"
     var action by remember(e.entityId) { mutableStateOf(defaultAction) }
-    var temp by remember(e.entityId) { mutableStateOf(e.attributes.num("temperature")) }
+    // 設定温度は、初めは 25℃（モードを指定してつけるとき）
+    var temp by remember(e.entityId) { mutableStateOf<Double?>(25.0) }
     var picking by remember { mutableStateOf(false) }
     fun send(atMs: Long? = null, afterMin: Int? = null) {
         if (climate) {
@@ -107,9 +108,7 @@ fun DeviceTimerSection(e: Entity, vm: MainViewModel) {
             val step = e.attributes.num("target_temp_step") ?: 0.5
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("設定温度", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { temp = ((temp ?: 24.0) - step).coerceAtLeast(e.attributes.num("min_temp") ?: 16.0) }) { Text("−") }
-                Text(temp?.let { "${fmt(it)}℃" } ?: "そのまま", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = { temp = ((temp ?: 24.0) + step).coerceAtMost(e.attributes.num("max_temp") ?: 31.0) }) { Text("＋") }
+                NumField(temp ?: 25.0, { temp = it }, step = step, min = e.attributes.num("min_temp") ?: 16.0, max = e.attributes.num("max_temp") ?: 32.0)
             }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

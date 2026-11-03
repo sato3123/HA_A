@@ -1009,7 +1009,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ruleSummary(rule) { id -> allStates.value[id]?.name ?: id }.take(40)
                 }
                 val r = rule.copy(name = name)
-                rest("POST", "/api/config/automation/config/${r.id}", r.toConfig())
+                rest("POST", "/api/config/automation/config/${r.id}", r.toConfig { id -> allEntities.value.firstOrNull { it.entityId == id }?.name ?: id })
                 rules.value = rules.value + (r.id to r)
                 ruleMessage.value = "「$name」を保存しました"
                 onDone(null)
@@ -1973,6 +1973,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cams = ipCameras.value.map { it.toEntity() }
         allEntities.value = (ha + el + cams)
             .sortedWith(compareBy({ SUPPORTED_DOMAINS.indexOf(it.domain) }, { it.name }))
+        pushElDevicesSoon(el)
+    }
+
+    // ECHONET Lite の機器の一覧をサーバーに送る（iPad 版の自動化でも選べるように。サーバーが操作する）
+    private var elPushed = ""
+    private var elPushJob: Job? = null
+    private fun pushElDevicesSoon(el: List<Entity>) {
+        if (shServer.value.isBlank()) return
+        val a = JSONArray()
+        el.filter { isEchonetEntity(it.entityId) && it.domain in setOf("climate", "light", "switch", "cover") }.sortedBy { it.entityId }.forEach {
+            a.put(JSONObject().put("id", it.entityId).put("name", it.name).put("room", roomNameOf(it.entityId) ?: ""))
+        }
+        val sig = a.toString()
+        if (sig == elPushed) return
+        elPushJob?.cancel()
+        elPushJob = viewModelScope.launch {
+            delay(5_000)
+            try {
+                serverCall("/config", JSONObject().put("el_devices", a))
+                elPushed = sig
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) { }
+        }
     }
 
     fun elEntity(entityId: String): ElDevice? = elDevices.value.firstOrNull { it.entityId == entityId }

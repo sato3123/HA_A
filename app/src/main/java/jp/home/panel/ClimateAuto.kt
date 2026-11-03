@@ -154,15 +154,11 @@ fun ClimateAutoSettings(vm: MainViewModel) {
                     // 範囲
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("下限", style = MaterialTheme.typography.bodySmall)
-                        FilledTonalButton(onClick = { save(r.copy(min = (r.min - 0.5).coerceAtLeast(10.0))) }) { Text("−") }
-                        Text("${fmt(r.min)}℃", style = MaterialTheme.typography.titleMedium)
-                        FilledTonalButton(onClick = { save(r.copy(min = (r.min + 0.5).coerceAtMost(r.max - 1))) }) { Text("＋") }
+                        NumField(r.min, { save(r.copy(min = it.coerceAtMost(r.max - 1))) }, min = 10.0, max = 31.0)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("上限", style = MaterialTheme.typography.bodySmall)
-                        FilledTonalButton(onClick = { save(r.copy(max = (r.max - 0.5).coerceAtLeast(r.min + 1))) }) { Text("−") }
-                        Text("${fmt(r.max)}℃", style = MaterialTheme.typography.titleMedium)
-                        FilledTonalButton(onClick = { save(r.copy(max = (r.max + 0.5).coerceAtMost(32.0))) }) { Text("＋") }
+                        NumField(r.max, { save(r.copy(max = it.coerceAtLeast(r.min + 1))) }, min = 11.0, max = 32.0)
                     }
                     // 温度のもと
                     Text("温度のもと", style = MaterialTheme.typography.labelMedium)

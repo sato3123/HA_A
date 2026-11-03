@@ -338,3 +338,8 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 /* まとめて操作・リアルタイム表示 */
 #groups .groups { margin: 4px 0 8px; flex-wrap: wrap; gap: 6px; align-items: center; }
 .estrip.live { margin-bottom: 8px; }
+
+/* 数字の入力（−／＋ と入力欄） */
+.numin { display: inline-flex; align-items: center; gap: 6px; }
+.numin input { width: 76px; font-size: 18px; text-align: right; padding: 6px 8px; }
+.numin .u { font-size: 16px; }

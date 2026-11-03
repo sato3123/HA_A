@@ -1687,7 +1687,7 @@
     switch (d) {
       case "light": return [["turn_on", "つける"], ["turn_on", "明るさを指定してつける", "brightness_pct"], ["turn_off", "消す"], ["toggle", "切り替える"]];
       case "switch": case "input_boolean": case "fan": return [["turn_on", "オンにする"], ["turn_off", "オフにする"], ["toggle", "切り替える"]];
-      case "climate": return [["set_hvac_mode", "運転モードを変える", "hvac_mode"], ["set_temperature", "温度を設定する", "temperature"], ["turn_off", "停止する"]];
+      case "climate": return [["set_temperature", "運転する（モードと温度）", "mode_temp"], ["set_hvac_mode", "運転モードだけ変える", "hvac_mode"], ["set_temperature", "温度だけ変える", "temperature"], ["turn_off", "停止する"]];
       case "cover": return [["open_cover", "開ける"], ["close_cover", "閉める"], ["set_cover_position", "開き具合を指定する", "position"]];
       case "scene": case "script": return [["turn_on", "実行する"]];
       default: return [["turn_on", "オンにする"], ["turn_off", "オフにする"]];
@@ -1697,6 +1697,7 @@
   function opIndex(a) {
     const d = a.entity.split(".")[0], svc = a.service.split(".")[1];
     const ops = opsFor(d);
+    if (d === "climate" && svc === "set_temperature") return ops.findIndex((o) => o[2] === (a.data.hvac_mode !== undefined ? "mode_temp" : "temperature"));
     let i = ops.findIndex((o) => o[0] === svc && o[2] && a.data[o[2]] !== undefined);
     if (i < 0) i = ops.findIndex((o) => o[0] === svc && !o[2]);
     if (i < 0) i = ops.findIndex((o) => o[0] === svc);
@@ -1704,6 +1705,7 @@
   }
   function makeAct(entity, op) {
     const d = entity.split(".")[0];
+    if (op[2] === "mode_temp") return { entity, service: d + "." + op[0], data: { hvac_mode: "cool", temperature: 25 } }; // 初めは冷房 25℃
     return { entity, service: d + "." + op[0], data: op[2] ? { [op[2]]: PARAM_DEFAULT[op[2]] } : {} };
   }
   function stateOptions(d) {
@@ -1732,7 +1734,21 @@
     const o = condStateOptions(c.entity.split(".")[0]).find((x) => x[0] === c.state);
     return `${entName(c.entity)} が${o ? o[1] : `「${c.state}」`}`;
   }
-  const entName = (id) => (S.ha && S.ha.states[id] ? nameOf(S.ha.states[id]) : id);
+  /** サーバーに送られた ECHONET Lite の機器（Android 版が見つけたもの。Home Assistant には無い） */
+  const elDevs = () => ((S.solar && S.solar.config && S.solar.config.el_devices) || []);
+  const isElId = (id) => /\.el_\d+_\d+_\d+_\d+_[0-9a-f]{6}$/.test(id || "");
+  function withRoom(room, name) { return !room || name.includes(room) ? name : `${room}・${name}`; }
+  function entRoom(id) {
+    const ed = elDevs().find((x) => x.id === id);
+    if (ed) return ed.room || null;
+    const k = roomKey(id);
+    return k === NO_ROOM ? null : roomName(k);
+  }
+  const entName = (id) => {
+    const ed = elDevs().find((x) => x.id === id);
+    const n = S.ha && S.ha.states[id] ? nameOf(S.ha.states[id]) : ed ? ed.name : id;
+    return withRoom(entRoom(id), n);
+  };
   const DOMAIN_LABEL2 = Object.assign({}, DOMAIN_LABEL, { binary_sensor: "センサー", person: "人", device_tracker: "位置", lock: "鍵" });
 
   function actLabel(a) {
@@ -1742,6 +1758,7 @@
     if (op && op[2] === "brightness_pct") return `${n} を明るさ ${a.data.brightness_pct}% でつける`;
     if (op && op[2] === "temperature") return `${n} を ${a.data.temperature}℃ に設定する`;
     if (op && op[2] === "hvac_mode") return `${n} を${hvacLabel(a.data.hvac_mode)}にする`;
+    if (op && op[2] === "mode_temp") return `${n} を${hvacLabel(a.data.hvac_mode)}${["fan_only", "dry"].includes(a.data.hvac_mode) ? "" : " " + a.data.temperature + "℃"}で運転する`;
     if (op && op[2] === "position") return `${n} を ${a.data.position}% 開ける`;
     return `${n} を${op ? op[1] : a.service}`;
   }
@@ -1807,7 +1824,16 @@
     return {
       id: r.id, alias: r.name, description: "ホームパネルで作成", mode: "single",
       triggers: [trig], conditions: conds,
-      actions: r.actions.map((a) => ({ action: a.service, target: { entity_id: a.entity }, data: a.data })),
+      actions: r.actions.map((a) => {
+        const data = Object.assign({}, a.data);
+        if (a.service === "climate.set_temperature" && ["fan_only", "dry"].includes(data.hvac_mode)) delete data.temperature;
+        if (isElId(a.entity)) {
+          const ed = elDevs().find((x) => x.id === a.entity);
+          return { event: "homepanel_el", event_data: { entity_id: a.entity, service: a.service.split(".")[1], data, name: ed ? withRoom(ed.room, ed.name) : a.entity } };
+        }
+        if (a.service === "climate.set_temperature" && data.temperature === undefined && data.hvac_mode) return { action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data };
+        return { action: a.service, target: { entity_id: a.entity }, data };
+      }),
     };
   }
 
@@ -1861,6 +1887,12 @@
     if (!acts) return null;
     const actions = [];
     for (const a of acts) {
+      if (a.event === "homepanel_el") {
+        const ed = a.event_data || {};
+        if (!isElId(ed.entity_id)) return null;
+        actions.push({ entity: ed.entity_id, service: ed.entity_id.split(".")[0] + "." + ed.service, data: Object.assign({}, ed.data || {}) });
+        continue;
+      }
       const svc = a.action || a.service;
       if (!svc || !svc.includes(".")) return null;
       const data = Object.assign({}, a.data || a.service_data || {});
@@ -1923,13 +1955,31 @@
       }).join("")}</div>`;
   }
 
-  function entityOptions(domains, selected) {
+  function entityOptions(domains, selected, withEl) {
     if (!S.ha) return "";
     const groups = {};
     Object.values(S.ha.states).filter((e) => domains.includes(dom(e))).forEach((e) => { (groups[dom(e)] = groups[dom(e)] || []).push(e); });
-    return domains.filter((d) => groups[d]).map((d) => `<optgroup label="${esc(DOMAIN_LABEL2[d] || d)}">${groups[d]
-      .sort((a, b) => nameOf(a).localeCompare(nameOf(b), "ja"))
-      .map((e) => `<option value="${esc(e.entity_id)}" ${e.entity_id === selected ? "selected" : ""}>${esc(nameOf(e))}</option>`).join("")}</optgroup>`).join("");
+    // 部屋の名前も出す（「寝室・エアコン」）。部屋ごとに並べる
+    const label = (id) => entName(id);
+    let h = domains.filter((d) => groups[d]).map((d) => `<optgroup label="${esc(DOMAIN_LABEL2[d] || d)}">${groups[d]
+      .sort((a, b) => label(a.entity_id).localeCompare(label(b.entity_id), "ja"))
+      .map((e) => `<option value="${esc(e.entity_id)}" ${e.entity_id === selected ? "selected" : ""}>${esc(label(e.entity_id))}</option>`).join("")}</optgroup>`).join("");
+    const els = withEl ? elDevs().filter((x) => domains.includes(x.id.split(".")[0]) && !(S.ha.states[x.id])) : [];
+    if (els.length) h += `<optgroup label="ECHONET Lite（サーバーが直接操作）">${els.sort((a, b) => label(a.id).localeCompare(label(b.id), "ja"))
+      .map((x) => `<option value="${esc(x.id)}" ${x.id === selected ? "selected" : ""}>${esc(label(x.id))}</option>`).join("")}</optgroup>`;
+    return h;
+  }
+
+  /** −／＋ のボタンと、数字の入力欄。set は data-set の名前、extra は data-* の追加 */
+  function numInputHTML(set, value, unit, extra) {
+    return `<span class="numin"><button class="tb" data-set="${set}" ${extra} data-d="-1">−</button><input type="number" inputmode="decimal" step="0.5" data-set="${set}" ${extra} data-d="in" value="${esc(String(value))}"><span class="u">${unit}</span><button class="tb" data-set="${set}" ${extra} data-d="1">＋</button></span>`;
+  }
+  /** −／＋ なら step だけ足し、入力欄なら書かれた値にする（範囲に入れる） */
+  function numFrom(el, cur, step, min, max) {
+    let v = el.dataset.d === "in" ? Number(String(el.value).replace(",", ".")) : Number(cur) + Number(el.dataset.d) * step;
+    if (isNaN(v)) v = Number(cur);
+    if (el.dataset.d !== "in") v = Math.round(v / step) * step;
+    return Math.round(Math.max(min, Math.min(max, v)) * 10) / 10;
   }
 
   function condsHTML(r) {
@@ -1942,8 +1992,7 @@
           (th.tId ? chip(c.entity === th.tId, "condEntity", th.tId, `🌡 ${th.name}${th.temp != null ? " " + (Math.round(th.temp * 10) / 10) + "℃" : ""}`, i) : "") +
           (th.hId ? chip(c.entity === th.hId, "condEntity", th.hId, `💧 ${th.name}${th.hum != null ? " " + Math.round(th.hum) + "%" : ""}`, i) : "")).join("")}</div>
           <div class="brow" style="align-items:center">${chip(!c.above, "condAbove", "0", "より低い", i)}${chip(c.above, "condAbove", "1", "より高い", i)}
-          <button class="tb" data-set="condStep" data-id="-1" data-i="${i}">−</button><span style="font-size:20px;min-width:70px;text-align:center">${c.value}${hum ? "%" : "℃"}</span>
-          <button class="tb" data-set="condStep" data-id="1" data-i="${i}">＋</button></div>`;
+          ${numInputHTML("condStep", c.value, hum ? "%" : "℃", `data-i="${i}"`)}</div>`;
       } else {
         body = `<div class="chips">${condStateOptions(c.entity.split(".")[0]).map(([v, l]) => chip(c.state === v, "condState", v, l, i)).join("")}</div>`;
       }
@@ -1972,8 +2021,7 @@
         (th.hId ? chip(t.entity === th.hId, "numEntity", th.hId, `💧 ${th.name}${th.hum != null ? " " + Math.round(th.hum) + "%" : ""}`) : "")).join("")}</div>
         ${ths.length ? "" : `<div class="warn">温度計が見つかりません（SwitchBot 温湿度計などを Home Assistant に取り込むと出てきます）</div>`}
         <div class="chips">${chip(t.above, "numAbove", "1", hum ? "上回ったとき（じめじめ）" : "上回ったとき（暑い）")}${chip(!t.above, "numAbove", "0", hum ? "下回ったとき（乾燥）" : "下回ったとき（寒い）")}</div>
-        <div class="brow" style="align-items:center"><button class="tb" data-set="numStep" data-id="-1">−</button>
-          <span style="font-size:22px;min-width:90px;text-align:center">${t.value}${u}</span><button class="tb" data-set="numStep" data-id="1">＋</button></div>
+        <div class="brow" style="align-items:center">${numInputHTML("numStep", t.value, u, "")}</div>
         <div class="note">続いたら動かす（すぐ上下するときの、むだな動きを防ぐ）</div>
         <div class="chips">${[[0, "すぐ"], [5, "5分"], [10, "10分"], [30, "30分"]].map(([m, l]) => chip((t.forMin || 0) === m, "numFor", String(m), l)).join("")}</div>
         <div class="note">※ 境目をまたいだときに1回動きます（${t.value}${u} より${t.above ? "上" : "下"}のあいだ、くり返しは動きません）。</div>`;
@@ -1993,13 +2041,14 @@
       let param = "";
       if (op && op[2] === "brightness_pct") param = `<div class="rng"><div class="rl">明るさ ${a.data.brightness_pct}%</div><input type="range" min="1" max="100" value="${a.data.brightness_pct}" data-set="actParam" data-id="${i}"></div>`;
       if (op && op[2] === "position") param = `<div class="rng"><div class="rl">開き具合 ${a.data.position}%</div><input type="range" min="0" max="100" value="${a.data.position}" data-set="actParam" data-id="${i}"></div>`;
-      if (op && op[2] === "temperature") param = `<div class="stepper"><span class="sl">温度</span><button class="tb" data-set="actTemp" data-id="${i}" data-d="-0.5">−</button><span class="tv">${fmt(Number(a.data.temperature))}℃</span><button class="tb" data-set="actTemp" data-id="${i}" data-d="0.5">＋</button></div>`;
-      if (op && op[2] === "hvac_mode") {
+      if (op && op[2] === "temperature") param = `<div class="brow" style="align-items:center"><span class="sl">温度</span>${numInputHTML("actTemp", a.data.temperature, "℃", `data-id="${i}"`)}</div>`;
+      if (op && (op[2] === "hvac_mode" || op[2] === "mode_temp")) {
         const ent = S.ha && S.ha.states[a.entity];
         const modes = ((ent && ent.attributes.hvac_modes) || ["cool", "heat", "dry", "fan_only", "auto"]).filter((m) => m !== "off");
         param = `<div class="chips">${modes.map((m) => `<button class="chip${a.data.hvac_mode === m ? " sel" : ""}" data-set="actMode" data-id="${i}" data-v="${esc(m)}">${esc(hvacLabel(m))}</button>`).join("")}</div>`;
+        if (op[2] === "mode_temp" && !["fan_only", "dry"].includes(a.data.hvac_mode)) param += `<div class="brow" style="align-items:center"><span class="sl">設定温度</span>${numInputHTML("actTemp", a.data.temperature ?? 25, "℃", `data-id="${i}"`)}</div>`;
       }
-      return `<div class="act"><div class="head"><div class="ht"><div class="dom">${esc(DOMAIN_LABEL2[d] || d)}</div><div class="name">${esc(entName(a.entity))}</div></div>
+      return `<div class="act"><div class="head"><div class="ht"><div class="dom">${esc(DOMAIN_LABEL2[d] || d)}${isElId(a.entity) ? "・ECHONET Lite（サーバーが操作）" : ""}</div><div class="name">${esc(entName(a.entity))}</div></div>
         <button class="tbtn" data-set="actDel" data-id="${i}">削除</button></div>
         <div class="chips">${ops.map((o, j) => `<button class="chip${j === oi ? " sel" : ""}" data-set="actOp" data-id="${i}" data-j="${j}">${esc(o[1])}</button>`).join("")}</div>${param}</div>`;
     }).join("");
@@ -2015,7 +2064,7 @@
         <div class="brow"><button class="tbtn" data-set="condAddNum">＋ 温度計の条件</button>
           <select data-set="condAddState"><option value="">＋ 機器の状態の条件…</option>${entityOptions(TRIGGER_DOMAINS, "")}</select></div></div>
       <div class="field"><div class="fl">実行すること</div>${acts}
-        <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(ACTION_DOMAINS, "")}</select></div>
+        <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(ACTION_DOMAINS, "", true)}</select></div>
       <div class="summary" id="ruleSummary">内容：${esc(ruleSummary(r))}</div>
       ${S.editError ? `<div class="warn">${esc(S.editError)}</div>` : ""}
       <div class="brow" style="margin:12px 0 40px"><button class="btn" data-set="ruleSave" ${S.saving ? "disabled" : ""}>${S.saving ? "保存しています…" : "保存"}</button>
@@ -2081,7 +2130,7 @@
         break;
       }
       case "condAbove": r.conds[Number(el.dataset.i)].above = id === "1"; break;
-      case "condStep": { const c = r.conds[Number(el.dataset.i)]; c.value = Math.round((c.value + Number(id) * (numIsHum(c.entity) ? 5 : 0.5)) * 10) / 10; break; }
+      case "condStep": { const c = r.conds[Number(el.dataset.i)], hum = numIsHum(c.entity); c.value = numFrom(el, c.value, hum ? 5 : 0.5, hum ? 0 : -10, hum ? 100 : 50); break; }
       case "condState": r.conds[Number(el.dataset.i)].state = id; break;
       case "numEntity": {
         const wasHum = numIsHum(r.trigger.entity), th = thermos().find((x) => x.tId === id || x.hId === id);
@@ -2091,7 +2140,7 @@
         break;
       }
       case "numAbove": r.trigger.above = id === "1"; break;
-      case "numStep": r.trigger.value = Math.round((r.trigger.value + Number(id) * (numIsHum(r.trigger.entity) ? 5 : 0.5)) * 10) / 10; break;
+      case "numStep": { const hum = numIsHum(r.trigger.entity); r.trigger.value = numFrom(el, r.trigger.value, hum ? 5 : 0.5, hum ? 0 : -10, hum ? 100 : 50); break; }
       case "numFor": r.trigger.forMin = Number(id); break;
       case "sunOff": r.trigger.offset += Number(id); break;
       case "wd": r.weekdays = r.weekdays.includes(id) ? r.weekdays.filter((d) => d !== id) : r.weekdays.concat([id]); break;
@@ -2102,7 +2151,11 @@
       case "actAdd": if (el.value) r.actions.push(makeAct(el.value, opsFor(el.value.split(".")[0])[0])); break;
       case "actDel": r.actions.splice(Number(id), 1); break;
       case "actOp": { const a = r.actions[Number(id)]; r.actions[Number(id)] = makeAct(a.entity, opsFor(a.entity.split(".")[0])[Number(el.dataset.j)]); break; }
-      case "actTemp": { const a = r.actions[Number(id)]; a.data.temperature = Math.round((Number(a.data.temperature) + Number(el.dataset.d)) * 10) / 10; break; }
+      case "actTemp": {
+        const a = r.actions[Number(id)], ent = S.ha && S.ha.states[a.entity], at = (ent && ent.attributes) || {};
+        a.data.temperature = numFrom(el, a.data.temperature ?? 25, Number(at.target_temp_step) || (isElId(a.entity) ? 1 : 0.5), Number(at.min_temp) || 16, Number(at.max_temp) || 32);
+        break;
+      }
       case "actMode": r.actions[Number(id)].data.hvac_mode = el.dataset.v; break;
       case "actParam": {
         const a = r.actions[Number(id)];
@@ -3289,7 +3342,7 @@
       case "climDetail": S.climDetail = S.climDetail === id ? null : id; fillExtra(); return true;
       case "camTile": store.set("camTile", id); syncLiveTiles(); openPageKeep(); return true;
       case "dtAction": if (S.dt) { S.dt.action = id; renderSheet(); renderInfo(); } return true;
-      case "dtTemp": if (S.dt) { const e = S.ha.states[S.dt.id]; const step = num(e.attributes, "target_temp_step") || 0.5; S.dt.temp = Math.round(((S.dt.temp || 24) + Number(id) * step) * 10) / 10; renderSheet(); renderInfo(); } return true;
+      case "dtTemp": if (S.dt) { const e = S.ha.states[S.dt.id]; const step = num(e.attributes, "target_temp_step") || 0.5; S.dt.temp = numFrom(el, S.dt.temp ?? 25, step, num(e.attributes, "min_temp") || 16, num(e.attributes, "max_temp") || 32); renderSheet(); renderInfo(); } return true;
       case "dtAfter": addDevTimer({ after_min: Number(id) }); return true;
       case "dtAt": {
         const v = ($("#dtTime") || {}).value;
@@ -3400,13 +3453,13 @@
   }
   function devTimerSectionHTML(e) {
     if (!SERVER_MODE || !timerCapable(e)) return "";
-    const st = (S.dt && S.dt.id === e.entity_id) ? S.dt : (S.dt = { id: e.entity_id, action: dom(e) === "climate" ? (e.state === "off" ? ((e.attributes.hvac_modes || []).find((m) => m !== "off") || "off") : "off") : (isOn(e) ? "turn_off" : "turn_on"), temp: num(e.attributes, "temperature") });
+    const st = (S.dt && S.dt.id === e.entity_id) ? S.dt : (S.dt = { id: e.entity_id, action: dom(e) === "climate" ? (e.state === "off" ? ((e.attributes.hvac_modes || []).find((m) => m !== "off") || "off") : "off") : (isOn(e) ? "turn_off" : "turn_on"), temp: 25 });
     const acts = dom(e) === "climate" ? [["off", "停止"], ...(e.attributes.hvac_modes || []).filter((m) => m !== "off").map((m) => [m, hvacLabel(m)])] : [["turn_off", "切る"], ["turn_on", "つける"]];
     const mine = (S.devTimers || []).filter((x) => x.entity === e.entity_id).sort((a, b) => a.at - b.at);
     return `<div class="sec">⏲ タイマー</div>
       ${mine.map((t) => `<div class="kv"><span>${dtWhen(t.at)} に${esc(t.label)}（あと${dtRemain(t.at)}）</span><button class="tbtn" data-set="dtCancel" data-id="${esc(t.id)}">取り消す</button></div>`).join("")}
       <div class="chips">${acts.map(([k, l]) => `<button class="chip${st.action === k ? " sel" : ""}" data-set="dtAction" data-id="${esc(k)}">${esc(l)}</button>`).join("")}</div>
-      ${dom(e) === "climate" && st.action !== "off" ? `<div class="brow" style="align-items:center"><span class="note">設定温度</span><button class="tbtn" data-set="dtTemp" data-id="-1">−</button><b>${st.temp != null ? fmt(st.temp) + "℃" : "そのまま"}</b><button class="tbtn" data-set="dtTemp" data-id="1">＋</button></div>` : ""}
+      ${dom(e) === "climate" && st.action !== "off" ? `<div class="brow" style="align-items:center"><span class="note">設定温度</span>${numInputHTML("dtTemp", st.temp ?? 25, "℃", "")}</div>` : ""}
       <div class="brow">${[30, 60, 90, 120, 180, 240].map((m) => `<button class="tb" data-set="dtAfter" data-id="${m}">${m >= 60 ? (m / 60) + "時間後" : m + "分後"}</button>`).join("")}</div>
       <div class="brow" style="align-items:center"><input type="time" id="dtTime" class="search" style="max-width:150px;margin:0"><button class="tbtn" data-set="dtAt">この時刻に</button></div>
       ${S.dtMsg ? `<div class="warn">${esc(S.dtMsg)}</div>` : ""}

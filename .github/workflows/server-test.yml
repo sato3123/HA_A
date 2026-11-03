@@ -109,6 +109,8 @@ jobs:
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/demand | grep -q '"slots"' || fail "/solar-api/demand に届きません"
           curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"groups":[{"name":"t","entities":["light.a"],"action":"off"}]}' http://127.0.0.1/solar-api/config | grep -q '"light.a"' || fail "まとめて操作のボタンを保存できません"
           [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"groups":[{"name":"t","entities":["shell_command.x"]}]}' http://127.0.0.1/solar-api/config)" = "400" ] || fail "まとめて操作に危ない機器を入れられてしまいます"
+          curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"el_devices":[{"id":"climate.el_192_168_1_50_013001","name":"エアコン","room":"寝室"}]}' http://127.0.0.1/solar-api/config | grep -q 'el_192_168_1_50_013001' || fail "ECHONET Lite の機器の一覧を保存できません"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"el_devices":[{"id":"climate.el_8_8_8_8_013001"}]}' http://127.0.0.1/solar-api/config)" = "400" ] || fail "家の外の ECHONET Lite の機器を登録できてしまいます"
           # Android 版の配布（Home Assistant のトークンが無いと取れない）
           [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/android/latest.json)" = "401" ] || fail "トークンなしで Android 版を取れてしまいます"
           # TimeTree の予定の公開（.ics だけ・家の中だけ）

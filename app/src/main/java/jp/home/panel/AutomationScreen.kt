@@ -80,7 +80,7 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
     val nameOf = { id: String ->
         thermos.firstOrNull { it.tempEntity == id }?.let { it.name + "の温度" }
             ?: thermos.firstOrNull { it.humEntity == id }?.let { it.name + "の湿度" }
-            ?: states[id]?.name ?: id
+            ?: states[id]?.name?.let { withRoom(vm.roomNameOf(id), it) } ?: id
     }
     val list = autos.filter {
         val id = it.attributes.optString("id")
@@ -178,7 +178,10 @@ private enum class PickFor { TRIGGER, ACTION, CONDITION }
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone: () -> Unit) {
-    val states by vm.allStates.collectAsState()
+    val haStates by vm.allStates.collectAsState()
+    // ECHONET Lite で直接つなぐ機器（Home Assistant に無い機器）も操作に選べる
+    val merged by vm.allEntities.collectAsState()
+    val states = haStates + merged.filter { isEchonetEntity(it.entityId) }.associateBy { it.entityId }
     var rule by remember { mutableStateOf(initial) }
     var pick by remember { mutableStateOf<PickFor?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -188,7 +191,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     val nameOf = { id: String ->
         thermos.firstOrNull { it.tempEntity == id }?.let { it.name + "の温度" }
             ?: thermos.firstOrNull { it.humEntity == id }?.let { it.name + "の湿度" }
-            ?: states[id]?.name ?: id
+            ?: states[id]?.name?.let { withRoom(vm.roomNameOf(id), it) } ?: id
     }
 
     Column(
@@ -288,11 +291,8 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                     FilterChip(t.above, { rule = rule.copy(trigger = t.copy(above = true)) }, { Text(if (isHum) "上回ったとき（じめじめ）" else "上回ったとき（暑い）") })
                     FilterChip(!t.above, { rule = rule.copy(trigger = t.copy(above = false)) }, { Text(if (isHum) "下回ったとき（乾燥）" else "下回ったとき（寒い）") })
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = { rule = rule.copy(trigger = t.copy(value = Math.round((t.value - step) * 10) / 10.0)) }) { Text("−") }
-                    Text(numText(t.value) + unit, fontSize = 22.sp, modifier = Modifier.widthIn(min = 90.dp))
-                    FilledTonalButton(onClick = { rule = rule.copy(trigger = t.copy(value = Math.round((t.value + step) * 10) / 10.0)) }) { Text("＋") }
-                }
+                NumField(t.value, { rule = rule.copy(trigger = t.copy(value = it)) }, unit = unit, step = step,
+                    min = if (isHum) 0.0 else -10.0, max = if (isHum) 100.0 else 50.0, big = true)
                 Text("続いたら動かす（すぐ上下するときの、むだな動きを防ぐ）", style = MaterialTheme.typography.bodySmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(0 to "すぐ", 5 to "5分", 10 to "10分", 30 to "30分").forEach { (m, l) ->
@@ -400,7 +400,9 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     pick?.let { p ->
         val domains = if (p == PickFor.ACTION) SUPPORTED_DOMAINS - "camera" else TRIGGER_DOMAINS
         EntityPicker(
-            entities = states.values.filter { it.domain in domains }.sortedWith(compareBy({ domains.indexOf(it.domain) }, { it.name })),
+            entities = states.values.filter { it.domain in domains && (p == PickFor.ACTION || !isEchonetEntity(it.entityId)) }
+                .sortedWith(compareBy({ vm.roomNameOf(it.entityId) == null }, { vm.roomNameOf(it.entityId) ?: "" }, { domains.indexOf(it.domain) }, { it.name })),
+            roomOf = { vm.roomNameOf(it) },
             onDismiss = { pick = null },
         ) { e ->
             if (p == PickFor.TRIGGER) {
@@ -463,7 +465,7 @@ private fun ActionCard(act: Act, entity: Entity?, name: String, onChange: (Act) 
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(domainLabel(domain), style = MaterialTheme.typography.labelSmall)
+                    Text(domainLabel(domain) + if (isEchonetEntity(act.entityId)) "・ECHONET Lite（ホームパネルのサーバーが操作）" else "", style = MaterialTheme.typography.labelSmall)
                     Text(name, style = MaterialTheme.typography.titleMedium)
                 }
                 TextButton(onClick = onRemove) { Text("削除") }
@@ -486,19 +488,22 @@ private fun ActionCard(act: Act, entity: Entity?, name: String, onChange: (Act) 
                 }
                 Param.TEMPERATURE -> {
                     val v = (act.data["temperature"] as? Number)?.toDouble() ?: 25.0
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilledTonalButton(onClick = { onChange(act.copy(data = mapOf("temperature" to v - 0.5))) }) { Text("−") }
-                        Text("${fmt(v)}℃", fontSize = 26.sp)
-                        FilledTonalButton(onClick = { onChange(act.copy(data = mapOf("temperature" to v + 0.5))) }) { Text("＋") }
-                    }
+                    NumField(v, { onChange(act.copy(data = act.data + ("temperature" to it))) }, step = entity?.attributes?.num("target_temp_step") ?: 0.5,
+                        min = entity?.attributes?.num("min_temp") ?: 16.0, max = entity?.attributes?.num("max_temp") ?: 32.0, big = true)
                 }
-                Param.HVAC_MODE -> {
+                Param.HVAC_MODE, Param.MODE_TEMP -> {
                     val modes = entity?.attributes?.strings("hvac_modes")?.filter { it != "off" }?.ifEmpty { null }
                         ?: listOf("cool", "heat", "dry", "fan_only", "auto")
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         modes.forEach { m ->
-                            FilterChip(act.data["hvac_mode"] == m, { onChange(act.copy(data = mapOf("hvac_mode" to m))) }, { Text(hvacLabel(m)) })
+                            FilterChip(act.data["hvac_mode"] == m, { onChange(act.copy(data = act.data + ("hvac_mode" to m))) }, { Text(hvacLabel(m)) })
                         }
+                    }
+                    if (current.param == Param.MODE_TEMP && act.data["hvac_mode"] !in setOf("fan_only", "dry")) {
+                        val v = (act.data["temperature"] as? Number)?.toDouble() ?: 25.0
+                        Text("設定温度", style = MaterialTheme.typography.labelLarge)
+                        NumField(v, { onChange(act.copy(data = act.data + ("temperature" to it))) }, step = entity?.attributes?.num("target_temp_step") ?: 0.5,
+                            min = entity?.attributes?.num("min_temp") ?: 16.0, max = entity?.attributes?.num("max_temp") ?: 32.0, big = true)
                     }
                 }
                 null -> {}
@@ -508,22 +513,25 @@ private fun ActionCard(act: Act, entity: Entity?, name: String, onChange: (Act) 
 }
 
 @Composable
-private fun EntityPicker(entities: List<Entity>, onDismiss: () -> Unit, onPick: (Entity) -> Unit) {
+private fun EntityPicker(entities: List<Entity>, onDismiss: () -> Unit, roomOf: (String) -> String? = { null }, onPick: (Entity) -> Unit) {
     var q by remember { mutableStateOf("") }
-    val list = entities.filter { q.isBlank() || it.name.contains(q.trim(), ignoreCase = true) || it.entityId.contains(q.trim()) }
+    val list = entities.filter {
+        q.isBlank() || it.name.contains(q.trim(), ignoreCase = true) || it.entityId.contains(q.trim()) || roomOf(it.entityId)?.contains(q.trim()) == true
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("機器を選ぶ") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(q, { q = it }, singleLine = true, label = { Text("名前で絞り込み") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(q, { q = it }, singleLine = true, label = { Text("名前・部屋で絞り込み") }, modifier = Modifier.fillMaxWidth())
                 LazyColumn(Modifier.heightIn(max = 420.dp)) {
                     items(list, key = { it.entityId }) { e ->
                         Column(
                             Modifier.fillMaxWidth().clickable { onPick(e) }.padding(vertical = 10.dp, horizontal = 4.dp),
                         ) {
-                            Text(e.name, style = MaterialTheme.typography.bodyLarge)
-                            Text("${domainLabel(e.domain)}・${e.entityId}", style = MaterialTheme.typography.bodySmall)
+                            Text((roomOf(e.entityId)?.let { "$it・" } ?: "") + e.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(domainLabel(e.domain) + if (isEchonetEntity(e.entityId)) "・ECHONET Lite（サーバーから直接操作）" else "・${e.entityId}",
+                                style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -561,12 +569,11 @@ private fun CondCard(c: Cond, thermos: List<Thermo>, states: Map<String, Entity>
                         }
                     }
                     if (thermos.isEmpty()) Text("温度計が見つかりません", color = MaterialTheme.colorScheme.error)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(!c.above, { onChange(c.copy(above = false)) }, { Text("より低い") })
                         FilterChip(c.above, { onChange(c.copy(above = true)) }, { Text("より高い") })
-                        FilledTonalButton(onClick = { onChange(c.copy(value = Math.round((c.value - step) * 10) / 10.0)) }) { Text("−") }
-                        Text(numText(c.value) + if (isHum) "%" else "℃", fontSize = 20.sp)
-                        FilledTonalButton(onClick = { onChange(c.copy(value = Math.round((c.value + step) * 10) / 10.0)) }) { Text("＋") }
+                        NumField(c.value, { onChange(c.copy(value = it)) }, unit = if (isHum) "%" else "℃", step = step,
+                            min = if (isHum) 0.0 else -10.0, max = if (isHum) 100.0 else 50.0)
                     }
                 }
                 is Cond.State -> {
@@ -581,3 +588,7 @@ private fun CondCard(c: Cond, thermos: List<Thermo>, states: Map<String, Entity>
         }
     }
 }
+
+
+/** 「寝室・エアコン」。名前にもう部屋の名前が入っていれば付けない */
+fun withRoom(room: String?, name: String): String = if (room.isNullOrBlank() || name.contains(room)) name else "$room・$name"

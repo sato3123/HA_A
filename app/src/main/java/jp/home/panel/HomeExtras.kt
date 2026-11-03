@@ -267,8 +267,8 @@ private fun GroupEditor(vm: MainViewModel, g0: MainViewModel.DeviceGroup, onDism
     var q by remember { mutableStateOf("") }
     val chip = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary)
     val cands = all.filter { it.domain in GROUP_DOMAINS }
-        .filter { q.isBlank() || it.name.contains(q, true) || it.entityId.contains(q, true) || it.entityId in picked }
-        .sortedWith(compareBy({ it.entityId !in picked }, { it.domain }, { it.name }))
+        .filter { q.isBlank() || it.name.contains(q, true) || it.entityId.contains(q, true) || vm.roomNameOf(it.entityId)?.contains(q) == true || it.entityId in picked }
+        .sortedWith(compareBy({ it.entityId !in picked }, { vm.roomNameOf(it.entityId) ?: "￿" }, { it.domain }, { it.name }))
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (g0.name.isBlank()) "まとめて操作のボタンを作る" else "「${g0.name}」を編集") },
@@ -291,7 +291,8 @@ private fun GroupEditor(vm: MainViewModel, g0: MainViewModel.DeviceGroup, onDism
                     cands.forEach { e ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = e.entityId in picked, onCheckedChange = { c -> picked = if (c) picked + e.entityId else picked - e.entityId })
-                            Text(e.name + "（" + e.state + "）", style = MaterialTheme.typography.bodySmall)
+                            Text(withRoom(vm.roomNameOf(e.entityId), e.name) + "（" + e.state + "）" + if (isEchonetEntity(e.entityId)) "・ECHONET Lite" else "",
+                                style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }

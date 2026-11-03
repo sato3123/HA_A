@@ -454,13 +454,8 @@ private fun TempStepper(label: String, value: Double, min: Double, max: Double, 
     fun snap(v: Double) = (Math.round(v / step) * step).coerceIn(min, max)
     Text(label, style = MaterialTheme.typography.labelLarge)
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
-        FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min) {
-            Text("−", fontSize = 22.sp)
-        }
-        Text("${fmt(shown)}℃", fontSize = 30.sp, modifier = Modifier.padding(horizontal = 12.dp))
-        FilledTonalButton(onClick = { pending = snap(shown + step) }, enabled = shown < max) {
-            Text("＋", fontSize = 22.sp)
-        }
+        // −／＋ でも、数字の入力でも変えられる
+        NumField(shown, { pending = snap(it) }, step = step, min = min, max = max, big = true)
     }
 }
 
