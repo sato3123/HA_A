@@ -107,6 +107,13 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
             "設定は Home Assistant に保存されるので、このタブレットの電源が切れていても実行されます。",
             style = MaterialTheme.typography.bodySmall,
         )
+        // スケジュールの時刻は Home Assistant の時間帯で動くので、日本時間でなければ知らせる
+        val haTz by vm.haTimeZone.collectAsState()
+        LaunchedEffect(Unit) { vm.loadHaTimeZone() }
+        haTz?.takeIf { it != "Asia/Tokyo" }?.let { tz ->
+            Text("⚠ Home Assistant の時間帯が「$tz」になっています。スケジュールの時刻がずれるので、Home Assistant の「設定 → システム → 一般」で時間帯を「Asia/Tokyo」にしてください。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
         if (!canEdit) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Text(
@@ -159,7 +166,7 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
                                 overflow = TextOverflow.Ellipsis,
                             )
                             a.attributes.optString("last_triggered").takeIf { it.isNotBlank() && it != "null" }?.let {
-                                Text("最後に実行：" + it.take(16).replace("T", " "), style = MaterialTheme.typography.labelSmall)
+                                Text("最後に実行：" + agoText(it), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                         TextButton(onClick = { vm.runAutomation(a); notice = "「${a.name}」を実行しました" }) { Text("今すぐ実行") }

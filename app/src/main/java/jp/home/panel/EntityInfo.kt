@@ -64,6 +64,17 @@ private val HM = DateTimeFormatter.ofPattern("H:mm", Locale.JAPAN)
 private fun parseTime(s: String): LocalDateTime? =
     runCatching { OffsetDateTime.parse(s).atZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime() }.getOrNull()
 
+private val ISO_TIME = Regex("""^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?([+-]\d{2}:?\d{2}|Z)$""")
+
+/**
+ * Home Assistant が送ってくる時刻（UTC などの ISO 形式「2026-11-03T20:12:00+00:00」）を、日本時間の「11/4（水） 5:12」にする。
+ * 時刻でなければ null
+ */
+fun localTimeText(s: String): String? {
+    if (!ISO_TIME.matches(s.trim())) return null
+    return parseTime(s.trim().replace(' ', 'T').let { if (Regex("""[+-]\d{4}$""").containsMatchIn(it)) it.dropLast(2) + ":" + it.takeLast(2) else it })?.format(DT)
+}
+
 /** 「5分前（10/25（土） 0:35）」 */
 fun agoText(s: String): String {
     val t = parseTime(s) ?: return "不明"
@@ -92,6 +103,7 @@ private fun attrValue(key: String, v: Any): String = when {
     key == "preset_mode" -> presetLabel(v.toString())
     key == "oscillating" -> if (v == true) "オン" else "オフ"
     key == "last_triggered" -> agoText(v.toString())
+    v is String && localTimeText(v) != null -> localTimeText(v)!!
     v is JSONArray -> (0 until v.length()).joinToString("・") { v.opt(it).toString() }
     else -> v.toString()
 }

@@ -78,8 +78,17 @@
         const b = num(a, "brightness");
         return b === null ? "オン" : `オン ${Math.round((b / 255) * 100)}%`;
       }
-      default: return { on: "オン", off: "オフ" }[e.state] || e.state;
+      default: return { on: "オン", off: "オフ" }[e.state] || isoLocal(e.state) || e.state;
     }
+  }
+  /** Home Assistant の時刻（UTC などの ISO 形式）を、日本時間の「11/4（水） 5:12」にする。時刻でなければ null */
+  function isoLocal(v) {
+    if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?([+-]\d{2}:?\d{2}|Z)$/.test(v.trim())) return null;
+    const ms = Date.parse(v.trim().replace(" ", "T"));
+    if (isNaN(ms)) return null;
+    const p = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit", weekday: "short", hourCycle: "h23" })
+      .formatToParts(new Date(ms)).reduce((o, x) => ((o[x.type] = x.value), o), {});
+    return `${p.month}/${p.day}（${p.weekday}） ${p.hour}:${p.minute}`;
   }
 
   // ================= 状態 =================
@@ -1909,6 +1918,7 @@
   }
 
   async function loadRules() {
+    if (!S.haTz && S.ha && S.ha.send) S.ha.send({ type: "get_config" }).then((r) => { S.haTz = (r && (r.result || r).time_zone) || null; renderAuto(); }).catch(() => {});
     if (!canEditRules()) return;
     S.rulesLoading = true;
     renderAuto();
@@ -1940,6 +1950,7 @@
       <div class="note" style="font-size:15px;color:var(--on)">${tab === 0 ? "決まった時刻・曜日に機器を自動で操作します（例：平日の7時にエアコンをつける）。"
         : "「人感センサーが反応したら照明をつける」「日の入りにカーテンを閉める」のように、きっかけに合わせて自動で操作します。"}</div>
       <div class="note">設定は Home Assistant に保存されるので、この iPad を閉じていても実行されます。</div>
+      ${S.haTz && S.haTz !== "Asia/Tokyo" ? `<div class="warn">⚠ Home Assistant の時間帯が「${esc(S.haTz)}」になっています。スケジュールの時刻がずれるので、Home Assistant の「設定 → システム → 一般」で時間帯を「Asia/Tokyo」にしてください。</div>` : ""}
       ${can ? "" : `<div class="info-box">作成・編集には管理者の権限が必要です。⚙ 設定 → アカウント で「管理者ログインを追加」してください。オン/オフと今すぐ実行は、このままでも使えます。</div>`}
       ${S.autoMsg ? `<div class="info-box">${esc(S.autoMsg)}</div>` : ""}
       <div style="margin:12px 0"><button class="btn" data-set="newRule" ${can ? "" : "disabled"}>${tab === 0 ? "＋ 新しいスケジュール" : "＋ 新しいオートメーション"}</button></div>
@@ -1947,7 +1958,7 @@
       ${list.map((a) => {
         const id = a.attributes.id, rule = S.rules[id];
         const sum = rule ? ruleSummary(rule) : isAppRule(id) ? "（内容を読み込み中、または読み込めません）" : "Home Assistant で作成";
-        const last = a.attributes.last_triggered ? "最後に実行：" + String(a.attributes.last_triggered).slice(0, 16).replace("T", " ") : "";
+        const last = a.attributes.last_triggered ? "最後に実行：" + (isoLocal(String(a.attributes.last_triggered)) || String(a.attributes.last_triggered)) : "";
         return `<div class="auto" data-set="editRule" data-id="${esc(a.entity_id)}"><div class="at"><div class="an">${esc(nameOf(a))}</div>
           <div class="as">${esc(sum)}</div>${last ? `<div class="as">${esc(last)}</div>` : ""}</div>
           <button class="tbtn" data-set="runAuto" data-id="${esc(a.entity_id)}">今すぐ実行</button>
@@ -2612,7 +2623,7 @@
     const m = Math.floor((Date.now() - ms) / 60000);
     return m < 1 ? "たった今" : m < 60 ? m + "分前" : m < 1440 ? Math.floor(m / 60) + "時間前" : Math.floor(m / 1440) + "日前";
   };
-  const hm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${pad(d.getMinutes())}`; };
+  const hm = (ms) => jstTime(ms);
   async function showInfo(id) {
     const e = S.ha && S.ha.states[id];
     if (!e) return;
@@ -2634,7 +2645,7 @@
     if (!e) { box.innerHTML = ""; return; }
     const a = e.attributes || {};
     const attrs = Object.keys(a).filter((k) => !SKIP_ATTRS.includes(k)).slice(0, 30)
-      .map((k) => `<div class="kv"><span>${esc(k)}</span><span>${esc(typeof a[k] === "object" ? JSON.stringify(a[k]) : a[k])}</span></div>`).join("");
+      .map((k) => `<div class="kv"><span>${esc(k)}</span><span>${esc(typeof a[k] === "object" ? JSON.stringify(a[k]) : isoLocal(a[k]) || a[k])}</span></div>`).join("");
     box.innerHTML = `<div class="dlg-bg" data-set="infoClose"></div><div class="dlg"><div class="pagebar"><h3 style="flex:1;margin:0">${iconHTML(e)} ${esc(nameOf(e))}</h3><button class="tbtn" data-set="infoClose">閉じる</button></div>
       <div class="kv"><span>いまの状態</span><b>${esc(stateLabel(e))}</b></div>
       <div class="kv"><span>最後に変わった</span><span>${e.last_changed ? hm(Date.parse(e.last_changed)) + "（" + ago(Date.parse(e.last_changed)) + "）" : "－"}</span></div>
@@ -2937,7 +2948,7 @@
     if (!j || !j.config || !j.config.eco_ip) { box.innerHTML = ""; return; }
     const e = j.eco || {}, p = j.plan;
     const pct = e.remain && e.tank ? Math.min(100, Math.round(e.remain * 100 / e.tank)) : null;
-    const t = (sec) => { const d = new Date(sec * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${pad(d.getMinutes())}`; };
+    const t = (sec) => jstTime(sec * 1000);
     const w = j.surplus_w;
     box.innerHTML = `<div class="card solar"><div class="brow" style="align-items:center"><b style="flex:1">🛁 エコキュート（サーバーで管理）</b>
         <span class="${e.heating ? "fl" : "note"}">${!e.online ? "応答なし" : e.heating ? "♨ 沸き上げ中" : "沸き上げ停止中"}</span></div>

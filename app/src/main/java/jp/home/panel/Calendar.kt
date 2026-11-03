@@ -29,7 +29,11 @@ private fun parseWhen(j: JSONObject?): Pair<LocalDateTime, Boolean>? {
     if (dt.isNotBlank()) {
         return runCatching {
             OffsetDateTime.parse(dt).atZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime() to false
-        }.getOrElse { LocalDateTime.parse(dt.take(19)) to false }
+        }.getOrElse {
+            // 時差の書かれていない時刻は、そのまま日本時間として扱う（Z で終わるものは UTC）
+            runCatching { java.time.Instant.parse(dt).atZone(ZoneId.systemDefault()).toLocalDateTime() }.getOrNull()?.let { t -> t to false }
+                ?: (LocalDateTime.parse(dt.take(19)) to false)
+        }
     }
     j.optString("date").takeIf { it.isNotBlank() }?.let { return LocalDate.parse(it).atStartOfDay() to true }
     return null

@@ -586,7 +586,8 @@ fun stateLabel(e: Entity): String {
         else -> when (e.state) {
             "on" -> "オン"
             "off" -> "オフ"
-            else -> e.state
+            // 時刻のセンサー（次の日の出・最後に動いた時刻など）は日本時間で出す
+            else -> localTimeText(e.state) ?: e.state
         }
     }
 }

@@ -974,6 +974,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ================= オートメーション・スケジュール =================
 
     /** アプリで作った自動化の設定を読み込む */
+    /** Home Assistant の時間帯（スケジュールの時刻はこの時間帯で動く） */
+    val haTimeZone = MutableStateFlow<String?>(null)
+
+    fun loadHaTimeZone() = viewModelScope.launch {
+        val c = client ?: return@launch
+        runCatching { c.request(JSONObject().put("type", "get_config")).optJSONObject("result")?.optString("time_zone") }
+            .getOrNull()?.takeIf { it.isNotBlank() }?.let { haTimeZone.value = it }
+    }
+
     fun loadRules() {
         if (!canEditRules) return
         viewModelScope.launch {
