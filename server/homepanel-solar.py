@@ -1901,8 +1901,43 @@ def hot_used(rec, h0, h1):
     return tot * sum(HOT_PROFILE[h0:h1]) / sum(HOT_PROFILE), False
 
 
+def _quantile(vals, q):
+    v = sorted(vals)
+    if not v:
+        return None
+    k = (len(v) - 1) * q
+    i = int(k)
+    return v[i] + (v[min(i + 1, len(v) - 1)] - v[i]) * (k - i)
+
+
+def hot_clean(items):
+    """お湯の記録から、当てにならない日を除く。items：[(その時間帯の量, 1日の合計, 1時間ごとの記録か)]
+    ・1日の合計が 0L（10L 未満）の日：留守・記録の抜け
+    ・1日の合計が、ほかの日の中央値の 4割未満／2.5倍より多い日：極端に少ない・多い日
+    ・その時間帯の量が、四分位の範囲から大きく外れる日（1.5×四分位範囲の外）
+    戻り値：(残った items, 除いた日数)"""
+    ok = [x for x in items if (x[1] or 0) >= 10]
+    removed = len(items) - len(ok)
+    if len(ok) >= 4:
+        med = _quantile([x[1] for x in ok], 0.5) or 0
+        if med > 0:
+            keep = [x for x in ok if 0.4 * med <= x[1] <= 2.5 * med]
+            removed += len(ok) - len(keep)
+            ok = keep
+    if len(ok) >= 5:
+        q1, q3 = _quantile([x[0] for x in ok], 0.25), _quantile([x[0] for x in ok], 0.75)
+        iqr = q3 - q1
+        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        keep = [x for x in ok if lo <= x[0] <= hi]
+        if len(keep) >= 3:
+            removed += len(ok) - len(keep)
+            ok = keep
+    return ok, removed
+
+
 def predict_hot(d, h0, h1):
-    """d の日の h0〜h1 時に使うお湯の予想（L）：直近4週間の同じ種類の日（平日／休日）の平均。少なければ全部の日"""
+    """d の日の h0〜h1 時に使うお湯の予想（L）：直近4週間の同じ種類の日（平日／休日）の平均。少なければ全部の日。
+    0L の日や、極端に多い・少ない日は除いて計算する（hot_clean）"""
     days = energy.get("days") or {}
     typ = hot_day_type(d)
     same, other = [], []
@@ -1916,14 +1951,21 @@ def predict_hot(d, h0, h1):
         v, hourly = hot_used(rec, h0, h1)
         if v is None:
             continue
-        (same if hot_day_type(dd) == typ else other).append((v, hourly))
-    use = same if len(same) >= 3 else same + other
+        tot = rec.get("hot_use_l")
+        if tot is None and rec.get("hot_h"):
+            tot = sum(rec["hot_h"])
+        (same if hot_day_type(dd) == typ else other).append((v, float(tot or 0), hourly))
+    same_c, rem_s = hot_clean(same)
+    if len(same_c) >= 3:
+        use, removed, kind = same_c, rem_s, ("休日" if typ == "holiday" else "平日")
+    else:
+        use, removed = hot_clean(same + other)
+        kind = "すべての日"
     if not use:
         return None
-    vals = [v for v, _ in use]
-    return {"liters": round(sum(vals) / len(vals)), "max": round(max(vals)), "days": len(vals),
-            "type": "休日" if typ == "holiday" and len(same) >= 3 else ("平日" if len(same) >= 3 else "すべての日"),
-            "hourly": sum(1 for _, h in use if h)}
+    vals = [v for v, _, _ in use]
+    return {"liters": round(sum(vals) / len(vals)), "max": round(max(vals)), "days": len(vals), "removed": removed,
+            "type": kind, "hourly": sum(1 for _, _, h in use if h)}
 
 
 def hot_extra_for(d, part):
@@ -1959,7 +2001,7 @@ def evening_need(d=None):
         return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note,
                 "need": (margin + extra) or None, "how": "記録がまだありません"}
     return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
-            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均"}
+            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "")}
 
 
 def night_need(d):
@@ -1972,7 +2014,7 @@ def night_need(d):
         return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note, "need": None,
                 "how": "記録がまだありません"}
     return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
-            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均"}
+            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "")}
 
 
 def night_target_pct(d=None):
