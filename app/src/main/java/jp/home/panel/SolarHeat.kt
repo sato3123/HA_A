@@ -183,7 +183,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 FilterChip(selected = method == "auto", onClick = { vm.setServerConf("night_method", "auto") }, label = { Text("エコキュートの機能で減らす") }, colors = chipColors)
             }
             Text(
-                if (method == "stop") "翌日が晴れの予報のとき、サーバーが夜の沸き上げを止め（手動沸き上げ停止）、昼に余った電気で沸かします。昼の時間帯が終わると自動に戻します。" +
+                if (method == "stop") "翌日が晴れの予報のとき、サーバーが夜の沸き上げを止め（手動沸き上げ停止）、昼に余った電気で沸かします。夕方は自動に戻さず止めたままにし（夕方の高い電気で沸かさないため）、毎日の設定で「今夜は沸かす」と決めたら夜の沸き上げの時刻（23時など）に自動へ戻します。" +
                     "お湯切れを防ぐため、夜中に残りが減りすぎたら止めるのをやめ、昼の終わる2時間前にまだ少なければ売電が無くても沸かします。"
                 else "エネルギーシフト（夜の沸き上げを昼にずらす設定）を使います。使えない機種では、晴れの夜だけタンクの運転モードを「節約」にします。",
                 style = MaterialTheme.typography.bodySmall,

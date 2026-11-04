@@ -135,7 +135,7 @@ def log(msg):
     print(line, flush=True)
     with lock:
         state["log"] = ([line] + state["log"])[:80]
-        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending")})
+        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending", "night_resume")})
 
 
 # ================= ECHONET Lite =================
@@ -1796,7 +1796,7 @@ def run_plan(manual=False):
         res.update(set_each([pp for pp in props if pp[0] == 0xC7]))
         if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
             state["shift_unsupported"] = True
-            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending")})
+            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending", "night_resume")})
             log("エネルギーシフトを受け付けない機種のため、タンクの運転モードで夜の沸き上げを調整します（エコキュートの応答：" + res[0xC7] + "）")
             return tank_plan(sunny, name, eco, result)
     if res.get(0xC7):
@@ -2181,16 +2181,40 @@ def remain_pct(eco):
     return r * 100 // t if r is not None and t else None
 
 
+def night_start_h():
+    """夜の沸き上げ（安い夜の時間）の始まり。0 時は 24 として扱う"""
+    v = int(conf.get("night_start_hour", 23) or 23)
+    return 24 if v in (0, 24) else v
+
+
+def before_night(now=None):
+    """夕方〜夜の沸き上げの時刻の前か（昼の時間帯のあと〜night_start_hour の前）"""
+    now = now or datetime.now()
+    return conf["start_hour"] <= now.hour < night_start_h()
+
+
+def resume_at_night(eco_ok=True):
+    """止めている沸き上げを、すぐ自動に戻さず、夜の沸き上げの時刻に自動へ戻す（夕方に高い電気で沸かさないため）"""
+    with lock:
+        state["night_resume"] = True
+
+
 def stop_plan(sunny, name, eco, result):
     """このサーバーが夜の沸き上げを手動で止める（沸き上げ自動設定 B0=0x43「手動沸き上げ停止」）。
-    翌日が晴れで、残りのお湯が十分なときだけ止める。止めたら、昼に余った電気で沸かし、昼の時間帯の終わりに自動へ戻す。"""
+    翌日が晴れで、残りのお湯が十分なときだけ止める。止めたら、昼に余った電気で沸かす。夕方は自動に戻さず止めたままにし、
+    次の毎日の設定で「今夜は沸かす」と決めたら、夜の沸き上げの時刻（night_start_hour）に自動へ戻す。"""
     s = eco_caps["set"]
     if s is not None and 0xB0 not in s:
         return result(True, "⚠ このエコキュートは、沸き上げの自動・停止を外から変えられない機種です（夜の沸き上げを止められません）", sunny)
     pct = remain_pct(eco)
+    ns = night_start_h() % 24
     if not sunny:
         state["night_pending"] = False
         if state.get("night_stop"):
+            if before_night():
+                # 夕方はまだ止めたまま。夜の沸き上げの時刻に自動へ戻す
+                resume_at_night()
+                return result(True, f"{name}は晴れない予報：夜はいつもどおり沸かします（{ns}時に沸き上げを自動に戻します。それまでは止めたまま）", False)
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
             state["night_stop"] = False
         return result(True, f"{name}は晴れない予報：夜はいつもどおり沸かします（沸き上げ：自動）", False)
@@ -2198,14 +2222,20 @@ def stop_plan(sunny, name, eco, result):
     tank = (eco or {}).get("tank")
     lit = lambda q: f"{q}%（約{tank * q // 100}L）" if tank else f"{q}%"
     if pct is not None and pct < target_pct:
-        # まだ少ないので、夜は目標の量まで沸かしてから止める
-        el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
-        with lock:
-            state["night_pending"] = True
-            state["night_stop"] = False
-            state["plan_method"] = "stop"
-        return result(True, f"{name}は晴れの予報：夜は {lit(target_pct)} まで沸かしたら止めます（いま {lit(pct)}）。"
-                            f"昼の{conf['start_hour']}時から余った電気で沸かし、{conf['end_hour']}時に自動に戻します", True)
+        # まだ少ないので、夜は目標の量まで沸かしてから止める（夕方に止めていれば、夜の沸き上げの時刻まで止めたまま）
+        if state.get("night_stop") and before_night():
+            resume_at_night()
+            with lock:
+                state["night_pending"] = True
+                state["plan_method"] = "stop"
+        else:
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41")
+            with lock:
+                state["night_pending"] = True
+                state["night_stop"] = False
+                state["plan_method"] = "stop"
+        return result(True, f"{name}は晴れの予報：夜（{ns}時から）は {lit(target_pct)} まで沸かしたら止めます（いま {lit(pct)}）。"
+                            f"昼の{conf['start_hour']}時から余った電気で沸かします（夕方は自動に戻さず、止めたまま）", True)
     err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
     if err:
         return result(False, f"夜の沸き上げを止められませんでした（{EPC_NAME[0xB0]}：{err}）（10分後にもう一度試します）", True)
@@ -2213,7 +2243,7 @@ def stop_plan(sunny, name, eco, result):
         state["night_stop"] = True
         state["plan_method"] = "stop"
     return result(True, f"{name}は晴れの予報：夜の沸き上げを止めました（残り {pct if pct is not None else '?'}%）。"
-                        f"昼の{conf['start_hour']}時から余った電気で沸かし、{conf['end_hour']}時に自動に戻します"
+                        f"昼の{conf['start_hour']}時から余った電気で沸かします（夕方も自動に戻さず止めたまま。毎日の設定で次の夜を決めます）"
                         f"（夜中に残りが{conf.get('safety_pct', 30)}%より減ったら、止めるのをやめて沸かします）", True)
 
 
@@ -2395,12 +2425,19 @@ def tick():
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
             state["night_stop"] = False
             log(f"残りのお湯が少ない（{pct}%）ため、夜の沸き上げを止めるのをやめました（自動に戻しました）")
-    # 夜止め：昼の時間帯が終わったら自動に戻す
-    if state.get("night_stop") and not in_window and conf["end_hour"] <= now.hour < conf["plan_hour"]:
+    # 夜止め：昼の時間帯が終わっても自動には戻さない（夕方に高い電気で沸かさないため）。
+    # 毎日の設定で「今夜は沸かす」と決めたときや、毎日の設定ができていないときは、夜の沸き上げの時刻に自動へ戻す
+    at_night = now.hour >= night_start_h() or now.hour < conf["start_hour"]
+    tonight = (now.date() if now.hour < 12 else now.date() + timedelta(days=1)).isoformat()  # 今夜の毎日の設定の対象（翌日）
+    plan_ok = (state.get("plan") or {}).get("date") == tonight and (state.get("plan") or {}).get("ok")
+    if state.get("night_stop") and at_night and (state.get("night_resume") or not plan_ok):
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
             state["night_stop"] = False
+            state["night_resume"] = False
             state["by_us"] = False
-            log("昼の時間帯が終わったので、沸き上げを自動に戻しました")
+            log("夜の沸き上げの時刻になったので、沸き上げを自動に戻しました" + ("" if plan_ok else "（毎日の設定ができていないため）"))
+    elif state.get("night_resume") and not state.get("night_stop"):
+        state["night_resume"] = False
     # 夜止め：昼の時間帯の終わる2時間前に、まだお湯が少なければ、売電が無くても沸かす（お湯切れを防ぐ保険）
     if not conf.get("hot_auto") and state.get("night_stop") and in_window and now.hour >= conf["end_hour"] - 2 and not state["by_us"] \
             and pct is not None and pct < conf.get("ensure_pct", 60) and not (eco or {}).get("heating"):
