@@ -67,6 +67,12 @@ DEFAULT_CONF = {
     # 買電が多いときはお湯を沸かさない：買電が guard_kw 以上（0 なら「30分の電力」の注意の値、それも無ければ 3kW）か、
     # 30分の電力が注意の値を超えそうなときは、沸き上げを一時停止し、下がったら元に戻す
     "heat_guard": True, "heat_guard_kw": 0,
+    # 夜の沸き上げを、できるだけ遅く（朝に近く）する：沸かしたお湯は外気との温度差に比例して冷めるので、
+    # 冷める分と、その時刻の電気料金・外気温での効率（COP）から、いちばん安く済む開始時刻を選ぶ（夜止めの方式のとき）
+    "night_late": True, "night_end_hour": 7,
+    "tank_temp": 65,                        # 沸き上げの温度（℃）
+    "tank_loss_w_per_k": 1.0,               # タンクの冷めやすさ（外気との温度差1℃あたりの熱の逃げ方・W）
+    "night_late_tol_yen": 1.0,              # いちばん安い時刻との差がこの円以内なら、できるだけ遅い時刻を選ぶ
     # ECHONET Lite の機器（Android 版が見つけたもの）：[{id: "climate.el_…", name, room}]。iPad 版の自動化の画面で選べるようにする
     "el_devices": [],
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
@@ -135,7 +141,7 @@ def log(msg):
     print(line, flush=True)
     with lock:
         state["log"] = ([line] + state["log"])[:80]
-        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending", "night_resume")})
+        save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending", "night_resume", "night_heat")})
 
 
 # ================= ECHONET Lite =================
@@ -1796,7 +1802,7 @@ def run_plan(manual=False):
         res.update(set_each([pp for pp in props if pp[0] == 0xC7]))
         if res.get(0xC7) and "受け付けませんでした" in res[0xC7]:
             state["shift_unsupported"] = True
-            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending", "night_resume")})
+            save_json(STATE_PATH, {k: state.get(k) for k in ("plan", "log", "by_us", "shift_unsupported", "tank_by_us", "night_stop", "night_pending", "night_resume", "night_heat")})
             log("エネルギーシフトを受け付けない機種のため、タンクの運転モードで夜の沸き上げを調整します（エコキュートの応答：" + res[0xC7] + "）")
             return tank_plan(sunny, name, eco, result)
     if res.get(0xC7):
@@ -2032,6 +2038,215 @@ def night_target_pct(d=None):
     return max(20, min(100, -(-int(n["need"]) * 100 // tank)))
 
 
+# ================= 夜の沸き上げの時刻を決める（冷める量と料金から、いちばん安い開始時刻） =================
+_temps_cache = {"at": 0, "data": {}}
+# 水道水の温度の目安（月ごと・℃）。沸かすのに要る熱の計算に使う
+SUPPLY_TEMP = [7, 6, 8, 12, 16, 20, 23, 25, 24, 20, 15, 10]
+
+
+def outdoor_temps():
+    """外気温の予報（1時間ごと・℃）：{"YYYY-MM-DDTHH": 温度}。1時間ごとに読み直す"""
+    if time.time() - _temps_cache["at"] < 3600 and _temps_cache["data"]:
+        return _temps_cache["data"]
+    lat, lon = conf.get("lat"), conf.get("lon")
+    if lat is None or lon is None:
+        return {}
+    try:
+        q = {"latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "past_days": 0, "forecast_days": 3, "hourly": "temperature_2m"}
+        with urllib.request.urlopen("https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(q), timeout=20) as r:
+            h = json.load(r).get("hourly") or {}
+        data = {t[:13]: v for t, v in zip(h.get("time") or [], h.get("temperature_2m") or []) if v is not None}
+        _temps_cache.update(at=time.time(), data=data)
+    except Exception as e:
+        print("外気温の予報を読めませんでした:", e, flush=True)
+    return _temps_cache["data"]
+
+
+def temp_at(dt, temps):
+    v = temps.get(dt.strftime("%Y-%m-%dT%H"))
+    if v is not None:
+        return float(v)
+    return 8.0 if dt.month in (12, 1, 2, 3) else 15.0 if dt.month in (4, 5, 10, 11) else 22.0
+
+
+def cop_at(t_out):
+    """ヒートポンプの効率（COP）の目安：外気温が低いほど下がる（7℃で約3.2、-7℃で約2.4）"""
+    return max(1.5, min(5.0, 3.2 + 0.06 * (t_out - 7)))
+
+
+_rate_cache = {}
+
+
+def rate_at(dt):
+    """その時刻の電気の単価（円/kWh・賦課金など込み）。プランが無ければ None"""
+    k = (conf.get("tariff_plan"), dt.strftime("%Y-%m-%dT%H"))
+    if k in _rate_cache:
+        return _rate_cache[k]
+    try:
+        hh = [{"h": dt.strftime("%Y-%m-%dT%H"), "buy": 1000, "sell": 0}]
+        cost_hours(hh)
+        v = hh[0].get("rate")
+    except Exception:
+        v = None
+    if len(_rate_cache) > 500:
+        _rate_cache.clear()
+    _rate_cache[k] = v
+    return v
+
+
+def night_window(now):
+    """今夜の安い時間：(始まり, 終わり)。始まりは night_start_hour、終わりは night_end_hour（翌朝）"""
+    ns, ne = night_start_h(), int(conf.get("night_end_hour", 7))
+    base = now.date() if now.hour >= 12 else now.date() - timedelta(days=1)
+    start = datetime.combine(base, datetime.min.time()) + timedelta(hours=ns)
+    end = datetime.combine(base + timedelta(days=1), datetime.min.time()) + timedelta(hours=ne)
+    return start, end
+
+
+def plan_night_heat(liters, now=None):
+    """liters（L）を今夜沸かすときの、いちばん安い開始時刻を選ぶ。
+    費用 ＝ 沸かす電気（熱 ÷ その時刻の外気温での COP × 単価）＋ 沸かし終わりから朝までに冷める分を補う電気。
+    早く沸かすほど朝までに冷める分が増えるので、料金が同じなら遅いほうが安い。外気温が下がると COP も下がるので、それも比べる"""
+    now = now or datetime.now()
+    w0, w1 = night_window(now)
+    rate_lph, _ = heat_rate()
+    hours = max(0.0, liters) / max(30.0, rate_lph)
+    temps = outdoor_temps()
+    t_tank = float(conf.get("tank_temp") or 65)
+    t_in = SUPPLY_TEMP[(w1.month - 1) % 12]
+    q_total = max(0.0, liters) * 4.186 * max(10.0, t_tank - t_in) / 3600  # 沸かすのに要る熱（kWh）
+    k = float(conf.get("tank_loss_w_per_k") or 1.0) / 1000                 # kW/℃
+    earliest = max(w0, now.replace(second=0, microsecond=0))
+    latest = w1 - timedelta(hours=hours + 0.25)                             # 朝の15分前に沸き終わる
+    if latest <= earliest:
+        return {"start": earliest.timestamp(), "end": (earliest + timedelta(hours=hours)).timestamp(), "liters": round(liters),
+                "hours": round(hours, 2), "how": "時間が足りないので、すぐに沸かします", "compare": []}
+    step = timedelta(minutes=15)
+
+    def cost(st):
+        yen = kwh = 0.0
+        t = st
+        left = hours
+        while left > 1e-6:
+            dh = min(0.25, left)
+            t_out = temp_at(t, temps)
+            e = q_total * (dh / hours) / cop_at(t_out)
+            r = rate_at(t)
+            kwh += e
+            yen += e * (r if r is not None else 0)
+            t += timedelta(hours=dh)
+            left -= dh
+        fin = t
+        # 沸き終わりから朝（w1）までに冷める熱 → 次の夜に補うとして、その分の電気代
+        loss_th = 0.0
+        t = fin
+        while t < w1:
+            loss_th += k * max(0.0, t_tank - temp_at(t, temps)) * 0.25
+            t += timedelta(minutes=15)
+        r_n = rate_at(w0) or 0
+        loss_e = loss_th / cop_at(temp_at(w1, temps))
+        return yen + loss_e * r_n, kwh + loss_e, loss_th
+    rows, t = [], earliest
+    while t <= latest:
+        c, kw, loss = cost(t)
+        rows.append((t, c, kw, loss))
+        t += step
+    # いちばん安い時刻。ただし差が night_late_tol_yen 円以内なら、できるだけ遅い時刻にする
+    low = min(r[1] for r in rows)
+    tol = float(conf.get("night_late_tol_yen", 1.0) or 0)
+    best = [r for r in rows if r[1] <= low + tol][-1]
+    first = rows[0]
+    bt = best[0]
+    return {"start": bt.timestamp(), "end": (bt + timedelta(hours=hours)).timestamp(), "liters": round(liters), "hours": round(hours, 2),
+            "yen": round(best[1], 1), "kwh": round(best[2], 2), "loss_kwh": round(best[3], 2),
+            "early_yen": round(first[1], 1), "early_start": first[0].timestamp(), "saving_yen": round(first[1] - best[1], 1),
+            "rate_now": rate_at(bt), "t_out": round(temp_at(bt, temps), 1), "min_yen": round(low, 1),
+            "choices": [{"start": r[0].strftime("%H:%M"), "yen": round(r[1], 1)} for r in rows[::4]],
+            "how": f"{bt.strftime('%H:%M')} から約{hours:.1f}時間（{w1.strftime('%H:%M')} の15分前までに沸き終わる）"}
+
+
+def night_heat_target(sunny):
+    """今夜沸かす量（L）。晴れなら翌朝の分（夜止めの目標）、晴れなければ翌日1日分（予想＋余裕）。予想が無ければ満タン"""
+    tank = (state.get("eco") or {}).get("tank") or 0
+    d = plan_target()
+    if sunny:
+        return tank * night_target_pct(d) // 100 if tank else None
+    if conf.get("hot_auto"):
+        p = predict_hot(d, 0, 24)
+        if p:
+            ex = sum(hot_extra_for(d, part)[0] for part in ("morning", "evening"))
+            return min(int(tank * 0.98) if tank else 10 ** 6, p["liters"] + int(conf.get("hot_margin_l") or 0) + ex)
+    return int(tank * 0.98) if tank else None
+
+
+def night_heat_tick(eco, now):
+    """夜の沸き上げ（できるだけ遅く）：決めた時刻に手動で沸かし始め、目標の量になったら止める"""
+    nh = state.get("night_heat")
+    if not nh or not eco or eco.get("remain") is None:
+        return
+    remain = eco["remain"]
+    w0, w1 = night_window(now)
+    if now.timestamp() > nh.get("until", 0):
+        if nh.get("started") and eco.get("heating"):
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+        log("夜の沸き上げ：朝の時間を過ぎたので終わりにしました" + (f"（{remain}L）" if nh.get("started") else "（沸かしませんでした）"))
+        state["night_heat"] = None
+        return
+    target = int(nh["target"])
+    if not nh.get("started"):
+        # 残りのお湯に合わせて、15分ごとに開始時刻を見直す
+        if time.time() - nh.get("planned_at", 0) > 900:
+            pl = plan_night_heat(max(0, target - remain), now)
+            nh.update(plan=pl, start=pl["start"], planned_at=time.time())
+        if remain >= target:
+            nh["status"] = f"もう {remain}L あるので沸かしません（目標 {target}L）"
+            return
+        if now.timestamp() >= nh["start"]:
+            s_ = eco_caps["set"]
+            if s_ is None or 0xC0 in s_:
+                el.setc(conf["eco_ip"], conf["eco_eoj"], 0xC0, b"\x41")
+            err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
+            if not err:
+                nh.update(started=True, started_at=time.time(), resent=time.time())
+                pl = nh.get("plan") or {}
+                log(f"夜の沸き上げを始めました：{remain}L → {target}L（約{pl.get('hours', 0)}時間"
+                    + (f"・23時から沸かすより約{pl['saving_yen']}円安い見込み" if pl.get("saving_yen") else "") + "）")
+            else:
+                log(f"夜の沸き上げを始められませんでした（{err}）")
+        return
+    if remain >= target:
+        el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+        with lock:
+            state["night_stop"] = True
+            state["night_heat"] = None
+        log(f"夜の沸き上げを終えました（{remain}L・目標 {target}L）。止めたままにします")
+        return
+    if not eco.get("heating") and time.time() - nh.get("resent", 0) > 600 and not guard["active"]:
+        nh["resent"] = time.time()
+        el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
+
+
+def schedule_night_heat(sunny):
+    """毎日の設定のあと：今夜沸かすなら、量と開始時刻を決める（夜止めの方式・できるだけ遅く がオンのとき）"""
+    target = night_heat_target(sunny)
+    if target is None:
+        return None
+    eco = state.get("eco") or {}
+    now = datetime.now()
+    remain = eco.get("remain") or 0
+    # 夜までに使う分を引いておく（夕方〜夜のお風呂など）
+    w0, w1 = night_window(now)
+    if now < w0:
+        p = predict_hot(now.date(), now.hour, min(24, w0.hour if w0.date() == now.date() else 24))
+        if p:
+            remain = max(0, remain - p["liters"])
+    pl = plan_night_heat(max(0, target - remain), now)
+    with lock:
+        state["night_heat"] = {"target": int(target), "start": pl["start"], "plan": pl, "planned_at": time.time(),
+                               "until": (w1 + timedelta(hours=1)).timestamp(), "started": False, "sunny": bool(sunny)}
+    return pl
+
+
 def hot_plan_public():
     now = datetime.now()
     nd = now.date() if now.hour < 12 else now.date() + timedelta(days=1)
@@ -2041,7 +2256,7 @@ def hot_plan_public():
     tank = (state.get("eco") or {}).get("tank")
     if tank and ng.get("need"):
         ng["pct"] = night_target_pct(nd)
-    return {"evening": ev, "night": ng, "rate_lph": round(rate), "rate_how": how, "prep": state.get("prep"),
+    return {"evening": ev, "night": ng, "rate_lph": round(rate), "rate_how": how, "prep": state.get("prep"), "night_heat": state.get("night_heat"),
             "extra": [x for x in conf.get("hot_extra") or [] if x.get("date", "") >= date.today().isoformat()]}
 
 
@@ -2210,6 +2425,15 @@ def stop_plan(sunny, name, eco, result):
     ns = night_start_h() % 24
     if not sunny:
         state["night_pending"] = False
+        if conf.get("night_late") and (state.get("night_stop") or before_night()):
+            # 夜はできるだけ遅く：冷める量と料金から開始時刻を決め、それまで止めておく
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+            state["night_stop"] = True
+            state["night_resume"] = False
+            pl = schedule_night_heat(False)
+            if pl:
+                return result(True, f"{name}は晴れない予報：今夜は {datetime.fromtimestamp(pl['start']).strftime('%H:%M')} から約{pl['liters']}L 沸かします"
+                              + (f"（朝に近いほど冷める分が少なく、{ns}時から沸かすより約{pl['saving_yen']}円安い見込み）" if pl.get("saving_yen") else "（朝に近い時刻にして、冷める分を減らします）"), False)
         if state.get("night_stop"):
             if before_night():
                 # 夕方はまだ止めたまま。夜の沸き上げの時刻に自動へ戻す
@@ -2223,6 +2447,17 @@ def stop_plan(sunny, name, eco, result):
     lit = lambda q: f"{q}%（約{tank * q // 100}L）" if tank else f"{q}%"
     if pct is not None and pct < target_pct:
         # まだ少ないので、夜は目標の量まで沸かしてから止める（夕方に止めていれば、夜の沸き上げの時刻まで止めたまま）
+        if conf.get("night_late"):
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
+            with lock:
+                state["night_stop"] = True
+                state["night_resume"] = False
+                state["night_pending"] = False
+                state["plan_method"] = "stop"
+            pl = schedule_night_heat(True)
+            if pl:
+                return result(True, f"{name}は晴れの予報：今夜は {datetime.fromtimestamp(pl['start']).strftime('%H:%M')} から {lit(target_pct)} まで沸かし（いま {lit(pct)}）、"
+                                    f"昼の{conf['start_hour']}時から余った電気で沸かします" + (f"（{ns}時から沸かすより約{pl['saving_yen']}円安い見込み）" if pl.get("saving_yen") else ""), True)
         if state.get("night_stop") and before_night():
             resume_at_night()
             with lock:
@@ -2236,6 +2471,7 @@ def stop_plan(sunny, name, eco, result):
                 state["plan_method"] = "stop"
         return result(True, f"{name}は晴れの予報：夜（{ns}時から）は {lit(target_pct)} まで沸かしたら止めます（いま {lit(pct)}）。"
                             f"昼の{conf['start_hour']}時から余った電気で沸かします（夕方は自動に戻さず、止めたまま）", True)
+    state["night_heat"] = None
     err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
     if err:
         return result(False, f"夜の沸き上げを止められませんでした（{EPC_NAME[0xB0]}：{err}）（10分後にもう一度試します）", True)
@@ -2425,12 +2661,17 @@ def tick():
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
             state["night_stop"] = False
             log(f"残りのお湯が少ない（{pct}%）ため、夜の沸き上げを止めるのをやめました（自動に戻しました）")
+    # 夜の沸き上げ（できるだけ遅く）
+    try:
+        night_heat_tick(eco, now)
+    except Exception as e:
+        print("夜の沸き上げでエラー:", e, flush=True)
     # 夜止め：昼の時間帯が終わっても自動には戻さない（夕方に高い電気で沸かさないため）。
     # 毎日の設定で「今夜は沸かす」と決めたときや、毎日の設定ができていないときは、夜の沸き上げの時刻に自動へ戻す
     at_night = now.hour >= night_start_h() or now.hour < conf["start_hour"]
     tonight = (now.date() if now.hour < 12 else now.date() + timedelta(days=1)).isoformat()  # 今夜の毎日の設定の対象（翌日）
     plan_ok = (state.get("plan") or {}).get("date") == tonight and (state.get("plan") or {}).get("ok")
-    if state.get("night_stop") and at_night and (state.get("night_resume") or not plan_ok):
+    if state.get("night_stop") and at_night and not state.get("night_heat") and (state.get("night_resume") or not plan_ok):
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
             state["night_stop"] = False
             state["night_resume"] = False

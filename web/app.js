@@ -2996,6 +2996,7 @@
       <div class="note">☀ おひさま沸き上げ：${esc(j.config.enabled ? j.status : "オフ")}${w != null ? `（いま ${w >= 0 ? "売電" : "買電"} ${(Math.abs(w) / 1000).toFixed(1)}kW）` : ""}</div>
       ${p ? `<div class="${p.ok ? "note" : "warn"}">${p.message.startsWith("⚠") ? "" : p.ok ? "✓" : "✕"} 毎日の設定（${t(p.at)}）：${esc(p.message)}</div>` : ""}
       ${hotChartHTML(j.hot_history, e.tank, j.hot_hourly)}
+      ${nightHeatPlanHTML(j)}
       ${awayHTML(j)}
       ${nightHeatHTML(j)}
       ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
@@ -3158,11 +3159,23 @@
       n.extra ? `多めの日 ${n.extra}L${n.note ? `（${esc(n.note)}）` : ""}` : null].filter(Boolean);
     return parts.join(" ＋ ") + (n.need != null ? ` ＝ ${n.need}L` : "") + (n.predicted == null ? `（${esc(n.how || "")}）` : "");
   }
+  /** 今夜の沸き上げの予定（できるだけ朝に近い時刻） */
+  function nightHeatPlanHTML(j) {
+    const nh = j.hot_plan && j.hot_plan.night_heat;
+    if (!nh) return "";
+    const pl = nh.plan || {};
+    if (nh.started) return `<div class="fl">🌙 夜の沸き上げ中（${nh.target}L まで）</div>`;
+    const save = pl.saving_yen || 0;
+    return `<div class="fl">🌙 今夜は ${jstHM(nh.start * 1000)} から沸かします（約${pl.liters}L・約${pl.hours}時間・目標 ${nh.target}L）</div>
+      ${pl.yen != null ? `<div class="note">見込みの電気代 約${Math.round(pl.yen)}円${save >= 0.5 ? `（夜の始まりから沸かすより約${Math.round(save)}円安い）` : ""}・朝までに冷める熱 約${pl.loss_kwh}kWh・その時刻の外気温 ${pl.t_out}℃</div>` : ""}`;
+  }
   function hotPlanHTML(j) {
     const c = j.config || {}, p = j.hot_plan || {};
     const chip = (sel, set, id, label) => `<button class="chip${sel ? " sel" : ""}" data-set="${set}" data-id="${id}">${label}</button>`;
     const g = j.heat_guard || {};
-    let h = `<label class="row" style="margin-top:6px"><span class="rt">⏸ 買電が多いときはお湯を沸かさない<div class="sub">買電が目安（${g.level_kw != null ? g.level_kw + "kW・" + esc(g.level_how || "") : "自動"}）以上か、30分の電力が注意の値を超えそうなときは沸き上げを一時停止し、下がったら戻します（最長1時間・お湯が20%未満なら止めません）。目安は Android 版で変えられます。${g.active ? `<br><b>いま一時停止中（${esc(g.reason)}）</b>` : ""}</div></span>
+    const lateRow = c.night_method === "stop" ? `<label class="row" style="margin-top:6px"><span class="rt">🌙 夜の沸き上げは、できるだけ朝に近い時刻にする<div class="sub">沸かしたお湯が朝までに冷める分（外気との温度差に比例）と、その時刻の電気料金・外気温での効率から、いちばん安い開始時刻を選びます（差が1円以内なら遅いほう）。</div></span>
+      <input type="checkbox" data-set="nightLate" ${c.night_late !== false ? "checked" : ""}></label>` : "";
+    let h = lateRow + `<label class="row" style="margin-top:6px"><span class="rt">⏸ 買電が多いときはお湯を沸かさない<div class="sub">買電が目安（${g.level_kw != null ? g.level_kw + "kW・" + esc(g.level_how || "") : "自動"}）以上か、30分の電力が注意の値を超えそうなときは沸き上げを一時停止し、下がったら戻します（最長1時間・お湯が20%未満なら止めません）。目安は Android 版で変えられます。${g.active ? `<br><b>いま一時停止中（${esc(g.reason)}）</b>` : ""}</div></span>
       <input type="checkbox" data-set="heatGuard" ${c.heat_guard !== false ? "checked" : ""}></label>`;
     h += `<label class="row" style="margin-top:6px"><span class="rt">お湯の量を過去の使用量から自動で決める<div class="sub">直近4週間の同じ種類の日（平日／土日祝）から夜に使う量を予想し、夕方までに「予想＋余裕」を用意します。足りなければ間に合う時刻から沸かします。</div></span>
       <input type="checkbox" data-set="hotAuto" ${c.hot_auto ? "checked" : ""}></label>`;
@@ -3408,6 +3421,7 @@
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
       case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
       case "heatGuard": loadSolar("/config", { heat_guard: el.checked }); return true;
+      case "nightLate": loadSolar("/config", { night_late: el.checked }); return true;
       case "hotMargin": loadSolar("/config", { hot_margin_l: Number(id) }); return true;
       case "hotMarginIn": { const m = (S.solar && S.solar.config && S.solar.config.hot_margin_l) ?? 50; loadSolar("/config", { hot_margin_l: Math.round(numFrom(el, m, 10, 0, 500)) }); return true; }
       case "prepHour": loadSolar("/config", { prep_hour: Number(id) }); return true;

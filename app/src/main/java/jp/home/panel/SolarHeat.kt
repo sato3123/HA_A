@@ -104,6 +104,7 @@ fun EcoCuteCard(vm: MainViewModel) {
             if (s.shift == true) {
                 Text("今夜の沸き上げは昼にずらす設定です" + (s.shiftHour?.let { "（${it}時から）" } ?: ""), style = MaterialTheme.typography.bodySmall)
             }
+            if (s.server) NightHeatSummary(vm)
             if (s.server) HotPlanSummary(vm)
             if (s.server) AwayRow(vm)
             var analysis by remember { mutableStateOf(false) }
@@ -193,6 +194,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
             if (method == "stop") {
                 val tank = view?.tankL
                 val hotAuto = sc["hot_auto"] == true
+                NightLateSettings(vm)
                 fun lit(p: Int) = if (tank != null && tank > 0) "$p%（約${tank * p / 100}L）" else "$p%"
                 @Composable
                 fun pctRow(label: String, key: String, def: Int, options: List<Int>) {

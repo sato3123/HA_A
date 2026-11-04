@@ -50,6 +50,27 @@ private fun needText(n: JSONObject): String {
     return parts.joinToString(" ＋ ") + (need?.let { " ＝ ${it}L" } ?: "") + if (pred == null) "（${n.optString("how")}）" else ""
 }
 
+private fun hm(sec: Double) = java.time.Instant.ofEpochMilli((sec * 1000).toLong()).atZone(java.time.ZoneId.systemDefault())
+    .let { "${it.hour}:${String.format("%02d", it.minute)}" }
+
+/** エコキュートのカード：今夜の沸き上げの予定（できるだけ遅く） */
+@Composable
+fun NightHeatSummary(vm: MainViewModel) {
+    val hp by vm.hotPlan.collectAsState()
+    val nh = hp?.optJSONObject("night_heat") ?: return
+    val pl = nh.optJSONObject("plan") ?: JSONObject()
+    val text = if (nh.optBoolean("started")) "🌙 夜の沸き上げ中（${nh.optInt("target")}L まで）"
+    else "🌙 今夜は ${hm(nh.optDouble("start"))} から沸かします（約${pl.optInt("liters")}L・約${pl.optDouble("hours")}時間・目標 ${nh.optInt("target")}L）"
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+    if (!nh.optBoolean("started") && pl.has("yen")) {
+        val save = pl.optDouble("saving_yen")
+        Text("見込みの電気代 約${Math.round(pl.optDouble("yen"))}円" +
+            (if (save >= 0.5) "（夜の始まりから沸かすより約${String.format("%.0f", save)}円安い）" else if (save <= -0.5) "（できるだけ遅くするため、いちばん安い時刻より約${String.format("%.0f", pl.optDouble("yen") - pl.optDouble("min_yen"))}円高い）" else "") +
+            "・朝までに冷める熱 約${String.format("%.1f", pl.optDouble("loss_kwh"))}kWh・その時刻の外気温 ${pl.optDouble("t_out")}℃",
+            style = MaterialTheme.typography.labelSmall)
+    }
+}
+
 /** エコキュートのカード：今日の夕方の準備と、多めの日 */
 @Composable
 fun HotPlanSummary(vm: MainViewModel) {
@@ -80,6 +101,33 @@ fun HotPlanSummary(vm: MainViewModel) {
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
         )
         TextButton(onClick = { dlg = true }) { Text("＋ 多めの日") }
+    }
+}
+
+/** 設定：夜の沸き上げをできるだけ遅く（夜止めの方式のとき） */
+@Composable
+fun NightLateSettings(vm: MainViewModel) {
+    val conf by vm.serverConf.collectAsState()
+    val on = conf["night_late"] != false
+    val chip = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("🌙 夜の沸き上げは、できるだけ朝に近い時刻にする", style = MaterialTheme.typography.labelLarge)
+            Text("夜に沸かす日は、沸かしたお湯が朝までに冷める分（外気との温度差に比例）と、その時刻の電気料金・外気温でのヒートポンプの効率から、いちばん安く済む開始時刻を選びます。" +
+                "差が1円以内なら遅いほうにします。朝の安い時間の終わりの15分前に沸き終わるようにします。", style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = on, onCheckedChange = { vm.setServerConf("night_late", it) })
+    }
+    if (!on) return
+    val ne = (conf["night_end_hour"] as? Number)?.toInt() ?: 7
+    Text("夜の安い時間の終わり：${ne}時", style = MaterialTheme.typography.bodySmall)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf(5, 6, 7, 8).forEach { v -> FilterChip(ne == v, { vm.setServerConf("night_end_hour", v) }, { Text("${v}時") }, colors = chip) }
+    }
+    val tt = (conf["tank_temp"] as? Number)?.toInt() ?: 65
+    Text("沸き上げの温度（冷める量の計算に使う）：${tt}℃", style = MaterialTheme.typography.bodySmall)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf(60, 65, 70, 80, 90).forEach { v -> FilterChip(tt == v, { vm.setServerConf("tank_temp", v) }, { Text("${v}℃") }, colors = chip) }
     }
 }
 
