@@ -3169,7 +3169,6 @@ class Api(BaseHTTPRequestHandler):
                              "eco_ip": conf.get("eco_ip"), "eco_props": eco_props})
         if p == "/aiseg-probe":
             # 「回路ごとの使用電力量（日）」のページの読み方ごとに、読めた回路の名前を返す（200V の回路を探すため）
-            import re
             rx = re.compile(r'<div class="a_label">(.*?)</div>\s*<div class="a_value">([0-9.,０-９．]*)\s*kWh</div>', re.S)
             res = {}
             for name, make in aiseg_page_patterns(date.today()):

@@ -105,6 +105,7 @@ jobs:
           curl -fsS -H "Authorization: Bearer good" "http://127.0.0.1/solar-api/energy5?date=2026-01-01" | grep -q '"slots"' || fail "/solar-api/energy5 に届きません"
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/timers | grep -q '"timers"' || fail "/solar-api/timers に届きません"
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/live | grep -q '"away_until"' || fail "/solar-api/live に届きません"
+          curl -fsS -H 'Authorization: Bearer good' -X POST http://127.0.0.1/solar-api/aiseg-probe | grep -q '"patterns"' || fail "/solar-api/aiseg-probe が動きません"
           curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"hot_auto":true,"hot_extra":[{"date":"2099-01-01","liters":100,"part":"evening","note":"t"}]}' http://127.0.0.1/solar-api/config | grep -q '"hot_plan"' || fail "お湯の量の自動の設定ができません"
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/demand | grep -q '"slots"' || fail "/solar-api/demand に届きません"
           curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"groups":[{"name":"t","entities":["light.a"],"action":"off"}]}' http://127.0.0.1/solar-api/config | grep -q '"light.a"' || fail "まとめて操作のボタンを保存できません"
