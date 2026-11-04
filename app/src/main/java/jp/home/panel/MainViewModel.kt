@@ -764,6 +764,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ecoOnline: Boolean?, val heating: Boolean?, val remainL: Int?, val tankL: Int?, val ecoTodayKwh: Double?,
         val demand: JSONObject?, val demandAlert: JSONObject?,
         val guard: JSONObject? = null,
+        /** 回路ごとのいまの電力：(名前, W, 推定か)。200V の回路は1日の使用量の増え方からの推定 */
+        val circuits: List<Triple<String, Double, Boolean>> = emptyList(),
     )
 
     val live = MutableStateFlow<LiveView?>(null)
@@ -792,6 +794,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (e.isNull("online")) null else e.optBoolean("online"), if (e.isNull("heating")) null else e.optBoolean("heating"),
                 d(e, "remain")?.toInt(), d(e, "tank")?.toInt(), d(j, "eco_today_kwh"),
                 j.optJSONObject("demand"), j.optJSONObject("demand_alert"), j.optJSONObject("heat_guard"),
+                j.optJSONArray("circuits")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { Triple(it.optString("name"), it.optDouble("w"), it.optBoolean("est")) } } ?: emptyList(),
             )
             awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
             awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }

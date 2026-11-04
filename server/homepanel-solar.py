@@ -694,6 +694,7 @@ def energy_collect():
                 p = state.get("power") or {}
                 use, gen, src = p.get("consumption_w"), p.get("generation_w"), "AiSEG2"
             circuits = aiseg_circuits()
+            state["circuits_inst"] = dict(circuits)
         except Exception as e:
             state["aiseg_error"] = f"AiSEG2 の回路を読めませんでした：{e}"
     if use is None and conf.get("meter_ip"):
@@ -778,7 +779,7 @@ def energy_collect():
 
 
 # ---- AiSEG2 の「回路ごとの使用電力量（日）」と「湯」の画面（200V の回路も入っている） ----
-aiseg_daily = {"date": None, "last": {}, "ok": False, "at": 0, "pages": None}
+aiseg_daily = {"date": None, "last": {}, "ok": False, "at": 0, "pages": None, "hist": [], "patterns": []}
 
 
 def _graph_params(d):
@@ -802,24 +803,57 @@ def aiseg_daily_circuits(d=None):
             if n and n != "-" and v:
                 out[n] = out.get(n, 0.0) + float(v)
         return out
-    q = _graph_params(d)
-    full, prev_sig = {}, None
-    paths = [f"/page/graph/582?{q}"] + [f"/page/graph/583?id={i}&{q}" for i in range(2, 12)]
-    for path in paths:
-        try:
-            r = rows(aiseg_open(path))
-        except Exception:
-            break
-        sig = ",".join(r)
-        if not r or sig == prev_sig:
-            break
-        prev_sig = sig
-        full.update(r)
+    full = {}
+    used = []
+    pats = aiseg_page_patterns(d)
+    # 前に回路が見つかった読み方だけを使う（AiSEG2 に負担をかけないため）。1時間ごとに全部の読み方を試し直す
+    known = aiseg_daily.get("patterns") or []
+    if known and time.time() - aiseg_daily.get("probed", 0) < 3600:
+        pats = [x for x in pats if x[0] in known] or pats
+    else:
+        aiseg_daily["probed"] = time.time()
+    for name, make in pats:
+        got, prev_sig = 0, None
+        for i in range(1, 13):
+            path = make(i)
+            if path is None:
+                continue
+            try:
+                r = rows(aiseg_open(path))
+            except Exception:
+                break
+            sig = ",".join(r)
+            if not r or sig == prev_sig:
+                break
+            prev_sig = sig
+            new = {k: v for k, v in r.items() if k not in full}
+            full.update(r)
+            got += len(new)
+        if got:
+            used.append(name)
     if full:
+        aiseg_daily["patterns"] = used
         return full, "all"
-    r = rows(aiseg_open(f"/page/graph/581?{q}"))
+    r = rows(aiseg_open(f"/page/graph/581?{_graph_params(d)}"))
     r.pop("その他", None)
     return r, "top5"
+
+
+def aiseg_page_patterns(d):
+    """「回路ごとの使用電力量（日）」の、ページの読み方の候補（機種・版によって違うため、全部試して回路を集める）"""
+    import base64
+    q = _graph_params(d)
+
+    def b64(i):
+        j = {"day": [d.year, d.month, d.day], "term": f"{d.year}/{d.month}/{d.day}", "termStr": "day", "id": str(i)}
+        return urllib.parse.quote(base64.b64encode(json.dumps(j, separators=(",", ":")).encode()).decode())
+    return [
+        ("582+583?id", lambda i: f"/page/graph/582?{q}" if i == 1 else f"/page/graph/583?id={i}&{q}"),
+        ("582?id", lambda i: f"/page/graph/582?id={i}&{q}"),
+        ("582&page", lambda i: f"/page/graph/582?{q}&page={i}"),
+        ("582?data", lambda i: f"/page/graph/582?data={b64(i)}"),
+        ("583?data", lambda i: None if i == 1 else f"/page/graph/583?data={b64(i)}"),
+    ]
 
 
 def aiseg_hot_hourly():
@@ -831,6 +865,30 @@ def aiseg_hot_hourly():
         return None
     j = json.loads(m.group(1))
     return {"today": j.get("total1") or [], "yesterday": j.get("total2") or []}
+
+
+def circuits_now():
+    """回路ごとのいまの電力（W）：[{name, w, est}]。
+    100V の回路は AiSEG2 の「いまの電力」の値。200V の回路（いまの値が出ない）は、1日の使用量が直近5〜20分で増えた分から平均の電力を出す（est=True）"""
+    inst = state.get("circuits_inst") or {}
+    inst_names = set(energy.get("inst_names") or [])
+    out = [{"name": n, "w": round(w), "est": False} for n, w in inst.items() if n in inst_names or w > 0]
+    hist = aiseg_daily.get("hist") or []
+    if len(hist) >= 2:
+        t1, c1, _ = hist[-1]
+        # 5分以上前の記録のうち、いちばん新しいもの（使用量の値は細かく変わらないので、少し長めの間隔で割る）
+        old = [h for h in hist if t1 - h[0] >= 290]
+        if old:
+            t0, c0, _ = old[-1]
+            hours = (t1 - t0) / 3600
+            for n, kwh in c1.items():
+                if n in inst_names or n in inst:
+                    continue
+                if n in c0:
+                    w = max(0.0, (kwh - c0[n]) * 1000 / hours)
+                    out.append({"name": n, "w": round(w), "est": True, "minutes": round((t1 - t0) / 60)})
+    out.sort(key=lambda x: -x["w"])
+    return out
 
 
 def aiseg_daily_tick():
@@ -845,6 +903,13 @@ def aiseg_daily_tick():
         print("AiSEG2 の回路ごとの使用量を読めませんでした:", e, flush=True)
         return
     aiseg_daily.update(ok=bool(cur), at=time.time(), pages=kind)
+    # 直近20分の「1日の使用量」の記録（200V の回路のいまの電力を、増え方から出す）
+    hist = aiseg_daily.setdefault("hist", [])
+    if hist and hist[-1][2] != today.isoformat():
+        hist.clear()
+    hist.append((time.time(), dict(cur), today.isoformat()))
+    while hist and time.time() - hist[0][0] > 1200:
+        hist.pop(0)
     with lock:
         day = energy.setdefault("days", {}).setdefault(today.isoformat(), {})
         day["circuits_kwh"] = {k: round(v, 3) for k, v in cur.items()}
@@ -1021,7 +1086,7 @@ def energy_loop():
             energy_collect()
         except Exception as e:
             print("電気の記録でエラー:", e, flush=True)
-        if time.time() - aiseg_daily["at"] > 290:
+        if time.time() - aiseg_daily["at"] > 55:
             try:
                 aiseg_daily_tick()
             except Exception as e:
@@ -2815,6 +2880,13 @@ def hot_plan_safe():
         return {"error": str(e)}
 
 
+def circuits_now_safe():
+    try:
+        return circuits_now()
+    except Exception:
+        return []
+
+
 def live_state():
     """いまの発電・消費・売買電とエコキュートの様子（画面のリアルタイム表示用）。古ければ AiSEG2 から読み直す"""
     p = state.get("power") or {}
@@ -2832,7 +2904,8 @@ def live_state():
             "eco": {k: eco.get(k) for k in ("online", "heating", "manual", "remain", "tank")},
             "eco_today_kwh": (today.get("circuits_kwh") or {}).get("エコキュート"),
             "away_until": conf.get("away_until") or 0, "away": state.get("away"),
-            "demand": demand_state.get("last"), "demand_alert": state.get("demand_alert"), "heat_guard": guard_public()}
+            "demand": demand_state.get("last"), "demand_alert": state.get("demand_alert"), "heat_guard": guard_public(),
+            "circuits": circuits_now_safe()}
 
 
 def public_state():
@@ -3094,6 +3167,26 @@ class Api(BaseHTTPRequestHandler):
                     pass
             return self._ok({"ok": True, "pages": pages, "eco_direct": eco_power_w() if conf.get("eco_ip") else None,
                              "eco_ip": conf.get("eco_ip"), "eco_props": eco_props})
+        if p == "/aiseg-probe":
+            # 「回路ごとの使用電力量（日）」のページの読み方ごとに、読めた回路の名前を返す（200V の回路を探すため）
+            import re
+            rx = re.compile(r'<div class="a_label">(.*?)</div>\s*<div class="a_value">([0-9.,０-９．]*)\s*kWh</div>', re.S)
+            res = {}
+            for name, make in aiseg_page_patterns(date.today()):
+                pages = []
+                for i in range(1, 6):
+                    path = make(i)
+                    if path is None:
+                        continue
+                    try:
+                        h = aiseg_open(path)
+                        pages.append({"page": i, "circuits": [re.sub(r"<[^>]+>", "", a).strip() for a, _ in rx.findall(h)], "size": len(h)})
+                    except Exception as e:
+                        pages.append({"page": i, "error": str(e)[:120]})
+                        break
+                res[name] = pages
+            return self._ok({"ok": True, "patterns": res, "inst": state.get("circuits_inst"), "now": circuits_now_safe(),
+                             "daily": (energy.get("days", {}).get(date.today().isoformat()) or {}).get("circuits_kwh")})
         if p == "/discover":
             return self._ok({"devices": el.discover()})
         self._ok({"error": "not found"}, 404)

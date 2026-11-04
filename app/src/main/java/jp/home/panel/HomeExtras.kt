@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -486,4 +487,36 @@ fun HeatGuardSettings(vm: MainViewModel) {
         }
     }
     if (g?.optBoolean("active") == true) Text("いま一時停止しています（${g.optString("reason")}）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+}
+
+
+/** 回路ごとのいまの電力（電気の分析の上）。200V の回路（エコキュート・エアコンなど）は、1日の使用量の増え方から出した5〜20分の平均 */
+@Composable
+fun CircuitsNow(vm: MainViewModel) {
+    DisposableEffect(Unit) {
+        vm.watchLive(true)
+        onDispose { vm.watchLive(false) }
+    }
+    val l by vm.live.collectAsState()
+    val list = l?.circuits?.filter { it.second >= 1 } ?: return
+    if (list.isEmpty()) return
+    val max = list.maxOf { it.second }.coerceAtLeast(100.0)
+    val bar = MaterialTheme.colorScheme.primary
+    val est = MaterialTheme.colorScheme.tertiary
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("いまの回路ごとの電力（10秒ごと）", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            list.take(12).forEach { (n, w, e) ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(n + if (e) "＊" else "", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(140.dp), maxLines = 1)
+                    Canvas(Modifier.weight(1f).height(12.dp)) {
+                        drawRect(if (e) est else bar, size = Size((size.width * (w / max)).toFloat().coerceAtLeast(2f), size.height))
+                    }
+                    Text(if (w >= 1000) String.format("%.2fkW", w / 1000) else "${Math.round(w)}W", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(64.dp))
+                }
+            }
+            if (list.any { it.third }) Text("＊ 200V の回路（エコキュート・エアコンなど）は、AiSEG2 にいまの電力が出ないため、1日の使用量の増え方から出した直近5〜20分の平均です。",
+                style = MaterialTheme.typography.labelSmall)
+        }
+    }
 }

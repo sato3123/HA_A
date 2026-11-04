@@ -104,6 +104,7 @@ fun EnergyAnalysisDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         FilterChip(selected = tab == k, onClick = { tab = k }, label = { Text(l) }, colors = chip)
                     }
                 }
+                CircuitsNow(vm)
                 status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 if (data != null && hours.isEmpty()) Text("この期間の記録はまだありません（記録は、サーバーが AiSEG2 から読み始めた時点からたまります）。", style = MaterialTheme.typography.bodyMedium)
 
