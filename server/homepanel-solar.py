@@ -2657,6 +2657,10 @@ class Api(BaseHTTPRequestHandler):
                     b["hot_extra"] = [{"date": x["date"], "liters": max(0, min(500, int(x.get("liters") or 0))),
                                        "part": "morning" if x.get("part") == "morning" else "evening", "note": str(x.get("note") or "")[:30]}
                                       for x in ex if x["date"] >= (date.today() - timedelta(days=1)).isoformat()]
+                if "hot_margin_l" in b:
+                    b["hot_margin_l"] = max(0, min(500, int(float(b["hot_margin_l"] or 0))))
+                if "start_hour" in b:
+                    b["start_hour"] = max(6, min(14, int(b["start_hour"])))
                 if "el_devices" in b:
                     ed = b["el_devices"]
                     if not isinstance(ed, list) or len(ed) > 100 or not all(isinstance(x, dict) and is_el_entity(x.get("id")) for x in ed):

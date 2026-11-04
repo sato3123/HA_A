@@ -337,7 +337,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("開始", modifier = Modifier.padding(end = 8.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(9, 10, 11, 12).forEach { h ->
+                listOf(8, 9, 10, 11, 12).forEach { h ->
                     FilterChip(selected = start == h, onClick = { vm.setSolarHeat(start = h) }, label = { Text("${h}時") }, colors = chipColors)
                 }
             }

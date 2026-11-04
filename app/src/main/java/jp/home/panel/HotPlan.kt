@@ -108,8 +108,10 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         val margin = (conf["hot_margin_l"] as? Number)?.toInt() ?: 50
         Text("余裕（予想に足す量）：${margin}L", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 30, 50, 80, 100, 150).forEach { v -> FilterChip(margin == v, { vm.setServerConf("hot_margin_l", v) }, { Text("${v}L") }, colors = chip) }
+            listOf(0, 50, 100, 150, 200, 250, 300, 400).forEach { v -> FilterChip(margin == v, { vm.setServerConf("hot_margin_l", v) }, { Text("${v}L") }, colors = chip) }
         }
+        // 一覧に無い量は数字で入れる（10L ずつ・最大 500L）
+        NumField(margin.toDouble(), { vm.setServerConf("hot_margin_l", it.toInt()) }, unit = "L", step = 10.0, min = 0.0, max = 500.0)
         val ph = (conf["prep_hour"] as? Number)?.toInt() ?: 17
         Text("何時までに用意するか（夕方・お風呂の前）：${ph}時", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

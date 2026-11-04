@@ -3168,7 +3168,8 @@
       <input type="checkbox" data-set="hotAuto" ${c.hot_auto ? "checked" : ""}></label>`;
     if (!c.hot_auto) return h;
     const m = c.hot_margin_l ?? 50, ph = c.prep_hour ?? 17;
-    h += `<div class="fl">余裕（予想に足す量）：${m}L</div><div class="chips">${[0, 30, 50, 80, 100, 150].map((v) => chip(v === m, "hotMargin", v, v + "L")).join("")}</div>
+    h += `<div class="fl">余裕（予想に足す量）：${m}L</div><div class="chips">${[0, 50, 100, 150, 200, 250, 300, 400].map((v) => chip(v === m, "hotMargin", v, v + "L")).join("")}</div>
+      <div class="brow" style="align-items:center">${numInputHTML("hotMarginIn", m, "L", "")}</div>
       <div class="fl">何時までに用意するか：${ph}時</div><div class="chips">${[15, 16, 17, 18, 19, 20].map((v) => chip(v === ph, "prepHour", v, v + "時")).join("")}</div>`;
     const e = p.evening, n = p.night, st = p.prep || {};
     if (e) h += `<div class="note" style="color:var(--primary)">🛁 ${hotDay(e.date)}の${e.from}時までに用意：${hotNeedText(e)}${e.max != null ? `（多い日は ${e.max}L・${esc(e.how)}）` : ""}</div>`;
@@ -3408,6 +3409,7 @@
       case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
       case "heatGuard": loadSolar("/config", { heat_guard: el.checked }); return true;
       case "hotMargin": loadSolar("/config", { hot_margin_l: Number(id) }); return true;
+      case "hotMarginIn": { const m = (S.solar && S.solar.config && S.solar.config.hot_margin_l) ?? 50; loadSolar("/config", { hot_margin_l: Math.round(numFrom(el, m, 10, 0, 500)) }); return true; }
       case "prepHour": loadSolar("/config", { prep_hour: Number(id) }); return true;
       case "hotExtraOpen": S.hotExtraOpen = true; renderSolar(); return true;
       case "hotExtraClose": S.hotExtraOpen = false; renderSolar(); return true;
