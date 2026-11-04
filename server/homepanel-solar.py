@@ -3186,6 +3186,51 @@ class Api(BaseHTTPRequestHandler):
                 res[name] = pages
             return self._ok({"ok": True, "patterns": res, "inst": state.get("circuits_inst"), "now": circuits_now_safe(),
                              "daily": (energy.get("days", {}).get(date.today().isoformat()) or {}).get("circuits_kwh")})
+        if p == "/aiseg-flow-probe":
+            # 「いまの電力」の画面（電気の流れ）が、200V の回路の値をどこから取っているかを調べる
+            out = {"pages": [], "scripts": {}, "endpoints": []}
+            seen_js = set()
+            for i in range(1, 6):
+                try:
+                    h = aiseg_open(f"/page/electricflow/1113?id={i}")
+                except Exception as e:
+                    out["pages"].append({"page": i, "error": str(e)[:120]})
+                    break
+                blocks = []
+                for m_ in re.finditer(r'<div class="c_value">(.*?)</div>\s*<div class="c_device">(.*?)</div>', h, re.S):
+                    a, b = m_.start(), m_.end()
+                    blocks.append({"value": re.sub(r"\s+", " ", m_.group(1))[:80], "device": re.sub(r"<[^>]+>|\s+", " ", m_.group(2)).strip()[:60],
+                                   "html": re.sub(r"\s+", " ", h[max(0, a - 300):b + 200])[:700]})
+                srcs = re.findall(r'<script[^>]+src="([^"]+)"', h)
+                inline = [re.sub(r"\s+", " ", x)[:1500] for x in re.findall(r"<script[^>]*>(.*?)</script>", h, re.S) if x.strip()]
+                out["pages"].append({"page": i, "size": len(h), "circuits": blocks, "script_src": srcs, "inline": inline[:4],
+                                     "ids": sorted(set(re.findall(r'id="([^"]*(?:value|watt|power|circuit|stage)[^"]*)"', h)))[:60]})
+                for src in srcs:
+                    if src in seen_js or len(seen_js) > 12:
+                        continue
+                    seen_js.add(src)
+                    try:
+                        js = aiseg_open(src if src.startswith("/") else "/" + src.lstrip("./"))
+                        urls = sorted(set(re.findall(r"""["'](/(?:data|page|action)/[^"'\s]+)["']""", js)))
+                        out["scripts"][src] = {"size": len(js), "urls": urls[:40],
+                                               "hints": [re.sub(r"\s+", " ", js[max(0, m_.start() - 150):m_.end() + 250])[:500]
+                                                         for m_ in re.finditer(r"electricflow|c_value|\.ajax|XMLHttpRequest|\$\.post|fetch\(", js)][:6]}
+                        out["endpoints"] += urls
+                    except Exception as e:
+                        out["scripts"][src] = {"error": str(e)[:120]}
+                if i > 1 and out["pages"][-1].get("circuits") == out["pages"][-2].get("circuits"):
+                    break
+            out["endpoints"] = sorted(set(out["endpoints"]))
+            return self._ok(out)
+        if p == "/aiseg-raw":
+            # AiSEG2 のページ・データを、そのまま返す（調べるため。AiSEG2 の /page/・/data/ だけ）
+            path = str(b.get("path") or "")
+            if not re.match(r"^/(page|data)/[A-Za-z0-9_/?=&.,%-]+$", path):
+                return self._ok({"error": "AiSEG2 の /page/ か /data/ のアドレスを指定してください"}, 400)
+            try:
+                return self._ok({"text": aiseg_open(path, post=bool(b.get("post")))[:200000]})
+            except Exception as e:
+                return self._ok({"error": str(e)})
         if p == "/discover":
             return self._ok({"devices": el.discover()})
         self._ok({"error": "not found"}, 404)
