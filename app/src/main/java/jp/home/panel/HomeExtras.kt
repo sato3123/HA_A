@@ -515,7 +515,7 @@ fun CircuitsNow(vm: MainViewModel) {
                     Text(if (w >= 1000) String.format("%.2fkW", w / 1000) else "${Math.round(w)}W", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(64.dp))
                 }
             }
-            if (list.any { it.third }) Text("＊ 200V の回路（エコキュート・エアコンなど）は、AiSEG2 にいまの電力が出ないため、1日の使用量の増え方から出した直近5〜20分の平均です。",
+            if (list.any { it.third }) Text("＊ は、AiSEG2 にいまの電力がまだ一度も出ていない回路です。1日の使用量の増え方から出した直近5〜20分の平均を出しています（いまの電力が出た回路は、その値を使います）。",
                 style = MaterialTheme.typography.labelSmall)
         }
     }
