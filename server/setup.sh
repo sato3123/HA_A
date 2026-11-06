@@ -70,9 +70,9 @@ trap 'rm -rf "$TMP"' EXIT
 # リポジトリのファイルを1つ取る（main ブランチ）
 ghfile() {
   if [ -n "$TOKEN" ]; then
-    curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
+    curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
   else
-    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
+    curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
   fi
 }
 # 最新リリースの添付ファイルを1つ取る（名前か、名前の末尾で）
@@ -80,14 +80,14 @@ ghasset() {
   local url
   if [ -n "$TOKEN" ]; then
     url=$(jq -r --arg n "$1" '[.assets[] | select(.name==$n or (.name|endswith($n)))][0].url // empty' "$TMP/release.json")
-    [ -n "$url" ] && curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" "$url" -o "$2"
+    [ -n "$url" ] && curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/octet-stream" "$url" -o "$2"
   else
     url=$(jq -r --arg n "$1" '[.assets[] | select(.name==$n or (.name|endswith($n)))][0].browser_download_url // empty' "$TMP/release.json")
-    [ -n "$url" ] && curl -fsSL "$url" -o "$2"
+    [ -n "$url" ] && curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "$url" -o "$2"
   fi
 }
 
-curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/release.json" \
+curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/release.json" \
   || { echo "最新リリースを読めません（リポジトリが非公開なら homepanel-github-token でトークンを登録してください）"; exit 1; }
 TAG=$(jq -r .tag_name "$TMP/release.json")
 
