@@ -104,10 +104,17 @@ else
 fi
 # Android 版：家の中だけで配る（http://このサーバー/android/。Home Assistant にログインしたアプリだけが取れる）
 if [ "$(jq -r .tag "$APK_DIR/latest.json" 2>/dev/null || true)" != "$TAG" ] && ghasset .apk "$TMP/app.apk"; then
-  install -m 644 "$TMP/app.apk" "$APK_DIR/HomePanel.apk"
-  jq '{tag: .tag_name, name: ([.assets[] | select(.name|endswith(".apk"))][0].name), notes: .body}' "$TMP/release.json" > "$TMP/latest.json"
-  install -m 644 "$TMP/latest.json" "$APK_DIR/latest.json"
-  echo "Android 版を用意しました: $TAG"
+  # GitHub が添付ファイルに付ける SHA-256（digest）と照らし合わせる。合わなければ配らない
+  SHA=$(sha256sum "$TMP/app.apk" | cut -d' ' -f1)
+  WANT=$(jq -r '[.assets[] | select(.name|endswith(".apk"))][0].digest // "" | sub("^sha256:"; "")' "$TMP/release.json")
+  if [ -n "$WANT" ] && [ "$WANT" != "$SHA" ]; then
+    echo "Android 版の APK の SHA-256 が GitHub の記録と合いません。配るのをやめました"
+  else
+    install -m 644 "$TMP/app.apk" "$APK_DIR/HomePanel.apk"
+    jq --arg sha "$SHA" '{tag: .tag_name, name: ([.assets[] | select(.name|endswith(".apk"))][0].name), notes: .body, sha256: $sha}' "$TMP/release.json" > "$TMP/latest.json"
+    install -m 644 "$TMP/latest.json" "$APK_DIR/latest.json"
+    echo "Android 版を用意しました: $TAG"
+  fi
 fi
 # 電気料金の単価表（電力会社・プラン）も新しくする
 mkdir -p /usr/local/share/homepanel
@@ -280,6 +287,30 @@ Environment=HOMEPANEL_HA_URL=http://$HA_IP:$HA_PORT
 WantedBy=multi-user.target
 UNITEOF
 
+# このサーバーの中から API を呼ぶとき（確認・調べ物）は、ローカルのトークンを付けて呼ぶ（API は全部、認証が必要）
+cat > /usr/local/bin/homepanel-api <<'APIEOF'
+#!/bin/bash
+# 使い方：homepanel-api solar|camera GET|POST パス [JSON]
+#   例）homepanel-api solar POST /aiseg-probe
+#       homepanel-api solar GET /status
+set -euo pipefail
+svc=${1:?solar か camera}; method=${2:?GET か POST}; path=${3:?パス（例：/status）}; body=${4:-}
+case "$svc" in
+  solar) port=8098; dir=/var/lib/homepanel-solar ;;
+  camera) port=8097; dir=/var/lib/homepanel-camera ;;
+  *) echo "solar か camera を指定してください" >&2; exit 2 ;;
+esac
+tok=$(cat "$dir/local_token" 2>/dev/null || cat "/var/lib/private/${dir##*/}/local_token")
+if [ "$method" = POST ]; then
+  [ -n "$body" ] || body='{}'
+  curl -sS -X POST -H "Authorization: Bearer $tok" -H "Content-Type: application/json" --data "$body" "http://127.0.0.1:$port$path"
+else
+  curl -sS -H "Authorization: Bearer $tok" "http://127.0.0.1:$port$path"
+fi
+echo
+APIEOF
+chmod 700 /usr/local/bin/homepanel-api
+
 echo "== カメラの記録（2日分）と動きの分析のサービスを用意しています"
 ghfile server/homepanel-camera.py /usr/local/bin/homepanel-camera
 chmod 755 /usr/local/bin/homepanel-camera
@@ -400,6 +431,10 @@ https://$SELF_IP {
 	handle_path /homepanel/* {
 		root * $WEB
 		header Cache-Control "no-cache"
+		# 画面に紛れ込んだスクリプトを動かさない（スクリプトはこのサーバーのファイルだけ）。ほかのサイトに URL を渡さない
+		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; media-src 'self' blob: http: https:; connect-src 'self' http: https: ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+		header Referrer-Policy "no-referrer"
+		header X-Content-Type-Options "nosniff"
 		file_server
 	}
 

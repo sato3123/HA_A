@@ -31,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # 時刻はすべて日本時間（1日の切り替わりも日本時間の 0:00）
 os.environ["TZ"] = "Asia/Tokyo"
 time.tzset()
+# 作るファイルは、このサービスだけが読めるようにする（設定に AiSEG2 のパスワードや鍵が入るため）
+os.umask(0o077)
 
 DIR = os.environ.get("SOLAR_DIR", "/var/lib/homepanel-solar")
 CONF_PATH = os.path.join(DIR, "config.json")
@@ -72,7 +74,9 @@ DEFAULT_CONF = {
     "night_late": True, "night_end_hour": 7,
     "tank_temp": 65,                        # 沸き上げの温度（℃）
     "tank_loss_w_per_k": 1.0,               # タンクの冷めやすさ（外気との温度差1℃あたりの熱の逃げ方・W）
-    "night_late_tol_yen": 1.0,              # いちばん安い時刻との差がこの円以内なら、できるだけ遅い時刻を選ぶ
+    "night_late_tol_yen": 1.0,
+    # 気温による、お湯の使い方・冷めて減る量を学び、翌日の気温の予報で沸かす量の予想を直す
+    "hot_temp_learn": True,              # いちばん安い時刻との差がこの円以内なら、できるだけ遅い時刻を選ぶ
     # ECHONET Lite の機器（Android 版が見つけたもの）：[{id: "climate.el_…", name, room}]。iPad 版の自動化の画面で選べるようにする
     "el_devices": [],
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
@@ -119,11 +123,21 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    os.makedirs(DIR, exist_ok=True)
+    """書きかけで電源が切れても壊れないよう、一時ファイルに書いて fsync してから置き換える。root とこのサービスだけが読める（0600）"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+    try:
+        d = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        os.fsync(d)
+        os.close(d)
+    except Exception:
+        pass
 
 
 conf = dict(DEFAULT_CONF, **load_json(CONF_PATH, {}))
@@ -1934,6 +1948,14 @@ def hot_water_track(eco):
         elif r > prev:
             day["hot_heat_l"] = day.get("hot_heat_l", 0) + (r - prev)
         day["hot_tank_l"] = (eco or {}).get("tank")
+        # 1時間ごとの残りのお湯（その時刻の最初の値）と、沸き上げをしたか（冷めて減る量を学ぶため）
+        hr = datetime.now().hour
+        rh = day.setdefault("remain_h", [None] * 24)
+        if rh[hr] is None:
+            rh[hr] = r
+        hh_ = day.setdefault("heat_h", [False] * 24)
+        if (eco or {}).get("heating") or r > prev:
+            hh_[hr] = True
         # 残りのお湯の変化（5分ごと・2日分）。エコキュートの画面のグラフ用
         hist = energy.setdefault("hot", [])
         now = time.time()
@@ -2035,8 +2057,112 @@ def predict_hot(d, h0, h1):
     if not use:
         return None
     vals = [v for v, _, _ in use]
-    return {"liters": round(sum(vals) / len(vals)), "max": round(max(vals)), "days": len(vals), "removed": removed,
+    base = sum(vals) / len(vals)
+    # 翌日などの予想気温が、ふだん（学んだ日々の平均）より寒ければ多め、暖かければ少なめにする
+    f, info = temp_factor(d) if d >= date.today() else (1.0, None)
+    return {"liters": round(base * f), "base": round(base), "factor": f, "temp": info, "max": round(max(vals)), "days": len(vals), "removed": removed,
             "type": kind, "hourly": sum(1 for _, _, h in use if h)}
+
+
+# ================= 気温による、お湯の使い方・冷めて減る量の学習 =================
+# 沸かしたお湯は、外気との温度差に比例して冷める（残りのお湯の量が減る）。寒い日はお湯を多く使う。
+# 記録（1時間ごとの残りのお湯・使った量・外気温）から、この2つを学び、翌日の気温の予報で予想を直す。
+LOSS_DEFAULT = 0.017  # 冷めて減る量の目安（L／時／℃）：460L のタンクで外気との差 55℃ のとき、1時間に約 1L
+
+
+def learn_loss():
+    """冷めて減る量（L／時／℃）を学ぶ：沸き上げもお湯の使用もほとんど無い1時間に、残りのお湯が減った量 ÷ (タンクの温度 − 外気温)。
+    直近30日の中央値。記録が少なければ目安の値"""
+    days = energy.get("days") or {}
+    t_tank = float(conf.get("tank_temp") or 65)
+    samples = []
+    for i in range(1, 31):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        rec = days.get(d) or {}
+        rh, hh, uh, th = rec.get("remain_h"), rec.get("heat_h"), rec.get("hot_h"), rec.get("t_h")
+        if not (rh and hh and uh and th):
+            continue
+        for h in range(23):
+            if rh[h] is None or rh[h + 1] is None or hh[h] or hh[h + 1] or (uh[h] or 0) > 2 or th[h] is None:
+                continue
+            dt = t_tank - th[h]
+            if dt < 10:
+                continue
+            samples.append(max(0.0, rh[h] - rh[h + 1]) / dt)
+    if len(samples) < 12:
+        return {"k": LOSS_DEFAULT, "n": len(samples), "how": "目安（記録がたまると、このお宅の値に変わります）"}
+    k = _quantile(samples, 0.5)
+    k = max(0.002, min(0.08, k))
+    return {"k": round(k, 4), "n": len(samples), "how": f"記録 {len(samples)} 時間分から"}
+
+
+def learn_usage_temp(typ):
+    """1日に使うお湯（L）と、その日の平均気温の関係を学ぶ（直近60日の同じ種類の日。最小二乗法）。
+    戻り値：{a, b, n, t_avg}（使う量 ≒ a + b × 平均気温）。日数が少ない・気温の幅が小さいときは None"""
+    days = energy.get("days") or {}
+    pts = []
+    for i in range(1, 61):
+        dd = date.today() - timedelta(days=i)
+        rec = days.get(dd.isoformat()) or {}
+        tot = rec.get("hot_use_l")
+        if tot is None and rec.get("hot_h"):
+            tot = sum(rec["hot_h"])
+        if rec.get("t_mean") is None or not tot:
+            continue
+        pts.append((float(tot), float(tot), rec["t_mean"], hot_day_type(dd) == typ))
+    # 同じ種類の日（平日／休日）が10日に足りなければ、全部の日で学ぶ（気温による増え方は、どちらもあまり変わらないため）
+    same = [x for x in pts if x[3]]
+    use = same if len(same) >= 10 else pts
+    # 0L の日や極端な日を除く（hot_clean は（その時間帯の量, 1日の合計, …）の形）
+    clean, _ = hot_clean([(a, b, t) for a, b, t, _ in use])
+    xs = [t for _, _, t in clean]
+    ys = [a for a, _, _ in clean]
+    if len(xs) < 10 or max(xs) - min(xs) < 4:
+        return None
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    b = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+    a = my - b * mx
+    return {"a": a, "b": b, "n": len(xs), "t_avg": mx}
+
+
+def forecast_mean(d):
+    """d の日の平均気温の予報（℃）。分からなければ None"""
+    temps = outdoor_temps()
+    vals = [temps.get(f"{d.isoformat()}T{h:02d}") for h in range(24)]
+    vals = [v for v in vals if v is not None]
+    return round(sum(vals) / len(vals), 1) if len(vals) >= 18 else None
+
+
+def temp_factor(d):
+    """d の日の予想気温で、お湯の使う量の予想を何倍にするか（0.7〜1.4）。学べていなければ 1"""
+    if not conf.get("hot_temp_learn", True):
+        return 1.0, None
+    lr = learn_usage_temp(hot_day_type(d))
+    tf = forecast_mean(d)
+    if not lr or tf is None:
+        return 1.0, {"t_forecast": tf, "learned": bool(lr)}
+    base = lr["a"] + lr["b"] * lr["t_avg"]
+    want = lr["a"] + lr["b"] * tf
+    if base <= 0:
+        return 1.0, None
+    f = max(0.7, min(1.4, want / base))
+    return round(f, 3), {"t_forecast": tf, "t_avg": round(lr["t_avg"], 1), "per_deg": round(-lr["b"], 1), "days": lr["n"], "factor": round(f, 3)}
+
+
+def loss_liters(start, end):
+    """start から end までに、冷めて減るお湯の量（L）の予想：k × Σ（タンクの温度 − 外気温の予報）"""
+    if end <= start:
+        return 0.0
+    k = learn_loss()["k"]
+    temps = outdoor_temps()
+    t_tank = float(conf.get("tank_temp") or 65)
+    tot, t = 0.0, start
+    while t < end:
+        dh = min(1.0, (end - t).total_seconds() / 3600)
+        tot += k * max(0.0, t_tank - temp_at(t, temps)) * dh
+        t += timedelta(hours=dh)
+    return tot
 
 
 def hot_extra_for(d, part):
@@ -2068,11 +2194,22 @@ def evening_need(d=None):
     p = predict_hot(d, h0, h1)
     extra, note = hot_extra_for(d, "evening")
     margin = int(conf.get("hot_margin_l") or 0)
+    # 用意する時刻から、使い終わる時刻までに冷めて減る分も足す
+    day0 = datetime.combine(d, datetime.min.time())
+    loss = round(loss_liters(day0 + timedelta(hours=h0), day0 + timedelta(hours=h1)) * 0.5) if conf.get("hot_temp_learn", True) else 0
     if p is None:
         return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note,
                 "need": (margin + extra) or None, "how": "記録がまだありません"}
     return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
-            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "")}
+            "need": p["liters"] + margin + extra + loss, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "") + temp_note(p),
+            "loss": loss, "temp": p.get("temp")}
+
+
+def temp_note(p):
+    t = p.get("temp") or {}
+    if not t or not t.get("factor") or abs(t["factor"] - 1) < 0.01:
+        return ""
+    return f"・明日の予想気温 {t['t_forecast']}℃（ふだん {t['t_avg']}℃）なので {round((t['factor'] - 1) * 100):+d}%"
 
 
 def night_need(d):
@@ -2081,11 +2218,16 @@ def night_need(d):
     p = predict_hot(d, 0, h1)
     extra, note = hot_extra_for(d, "morning")
     margin = int(conf.get("hot_margin_l") or 0)
+    # 夜に沸かし終わってから、朝に使い終わるまでに冷めて減る分（夜の安い時間の終わりごろに沸き終わるとして）
+    day0 = datetime.combine(d, datetime.min.time())
+    ne = int(conf.get("night_end_hour", 7))
+    loss = round(loss_liters(day0 + timedelta(hours=min(ne, h1) - 1), day0 + timedelta(hours=h1))) if conf.get("hot_temp_learn", True) else 0
     if p is None:
         return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note, "need": None,
                 "how": "記録がまだありません"}
     return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
-            "need": p["liters"] + margin + extra, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "")}
+            "need": p["liters"] + margin + extra + loss, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "") + temp_note(p),
+            "loss": loss, "temp": p.get("temp")}
 
 
 def night_target_pct(d=None):
@@ -2111,19 +2253,33 @@ SUPPLY_TEMP = [7, 6, 8, 12, 16, 20, 23, 25, 24, 20, 15, 10]
 
 def outdoor_temps():
     """外気温の予報（1時間ごと・℃）：{"YYYY-MM-DDTHH": 温度}。1時間ごとに読み直す"""
-    if time.time() - _temps_cache["at"] < 3600 and _temps_cache["data"]:
+    if time.time() - _temps_cache["at"] < 3600:
         return _temps_cache["data"]
     lat, lon = conf.get("lat"), conf.get("lon")
     if lat is None or lon is None:
         return {}
     try:
-        q = {"latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "past_days": 0, "forecast_days": 3, "hourly": "temperature_2m"}
+        q = {"latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "past_days": 31, "forecast_days": 3, "hourly": "temperature_2m"}
         with urllib.request.urlopen("https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(q), timeout=20) as r:
             h = json.load(r).get("hourly") or {}
         data = {t[:13]: v for t, v in zip(h.get("time") or [], h.get("temperature_2m") or []) if v is not None}
         _temps_cache.update(at=time.time(), data=data)
+        # 過去の日の外気温（日ごとの平均と1時間ごと）を記録に残す（気温とお湯の関係を学ぶため）
+        by_day = {}
+        for k_, v_ in data.items():
+            by_day.setdefault(k_[:10], [None] * 24)[int(k_[11:13])] = round(float(v_), 1)
+        today_s = date.today().isoformat()
+        with lock:
+            for d_, hrs in by_day.items():
+                if d_ >= today_s or None in hrs:
+                    continue
+                rec = energy.setdefault("days", {}).setdefault(d_, {})
+                rec["t_h"] = hrs
+                rec["t_mean"] = round(sum(hrs) / 24, 1)
     except Exception as e:
         print("外気温の予報を読めませんでした:", e, flush=True)
+        # 読めないときは10分後にやり直す（画面の表示が毎回待たされないように）
+        _temps_cache["at"] = time.time() - 3000
     return _temps_cache["data"]
 
 
@@ -2240,7 +2396,11 @@ def night_heat_target(sunny):
         p = predict_hot(d, 0, 24)
         if p:
             ex = sum(hot_extra_for(d, part)[0] for part in ("morning", "evening"))
-            return min(int(tank * 0.98) if tank else 10 ** 6, p["liters"] + int(conf.get("hot_margin_l") or 0) + ex)
+            # 沸き終わり（朝）から夜まで、使う量が減るにつれて冷める量も減るので半分を見込む
+            day0 = datetime.combine(d, datetime.min.time())
+            loss = loss_liters(day0 + timedelta(hours=int(conf.get("night_end_hour", 7))), day0 + timedelta(hours=night_start_h())) * 0.5 \
+                if conf.get("hot_temp_learn", True) else 0
+            return min(int(tank * 0.98) if tank else 10 ** 6, int(p["liters"] + int(conf.get("hot_margin_l") or 0) + ex + loss))
     return int(tank * 0.98) if tank else None
 
 
@@ -2321,7 +2481,15 @@ def hot_plan_public():
     tank = (state.get("eco") or {}).get("tank")
     if tank and ng.get("need"):
         ng["pct"] = night_target_pct(nd)
-    return {"evening": ev, "night": ng, "rate_lph": round(rate), "rate_how": how, "prep": state.get("prep"), "night_heat": state.get("night_heat"),
+    lo = learn_loss()
+    tomorrow = date.today() + timedelta(days=1)
+    lr = learn_usage_temp(hot_day_type(tomorrow))
+    f, tinfo = temp_factor(tomorrow)
+    learn = {"loss_k": lo["k"], "loss_n": lo["n"], "loss_how": lo["how"],
+             "loss_day_l": round(lo["k"] * max(0.0, float(conf.get("tank_temp") or 65) - (forecast_mean(tomorrow) or 10)) * 24),
+             "usage_per_deg": round(-lr["b"], 1) if lr else None, "usage_days": lr["n"] if lr else 0,
+             "tomorrow_t": forecast_mean(tomorrow), "tomorrow_factor": f, "enabled": bool(conf.get("hot_temp_learn", True))}
+    return {"evening": ev, "night": ng, "rate_lph": round(rate), "rate_how": how, "prep": state.get("prep"), "night_heat": state.get("night_heat"), "learn": learn,
             "extra": [x for x in conf.get("hot_extra") or [] if x.get("date", "") >= date.today().isoformat()]}
 
 
@@ -2936,37 +3104,122 @@ def ha_base_url():
     return HA_BASE_ENV or str(conf.get("ha_url") or "").rstrip("/")
 
 
-def check_ha_token(tok):
+# 認証の結果を覚えておく時間（秒）。一般の操作は2分、管理の操作は1分（Home Assistant でトークンを消したら、すぐ使えなくするため）
+AUTH_TTL_USER = 120
+AUTH_TTL_ADMIN = 60
+_admin_cache = {}
+
+
+def _ha_get_status(path, tok):
+    """Home Assistant に path を GET して、HTTP の状態コードを返す（読めなければ 0）。本文は読まない"""
+    try:
+        req = urllib.request.Request(ha_base_url() + path, headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def _cache_put(cache, k):
+    if len(cache) >= 100:
+        # 古いものから消す
+        for old in sorted(cache, key=cache.get)[:50]:
+            cache.pop(old, None)
+    cache[k] = time.time()
+
+
+def check_ha_token(tok, admin=False):
+    """Home Assistant のアクセストークンが使えるか（admin=True なら、Home Assistant の管理者のものか）を確かめる。
+    使えるかは /api/ が 200 を返すか、管理者かは管理者だけが読める /api/error_log が 200 を返すかで決める"""
     import hashlib
-    if not tok or len(tok) > 4096:
+    if not tok or len(tok) > 4096 or not ha_base_url():
         return False
     k = hashlib.sha256(tok.encode()).hexdigest()
     t = _auth_cache.get(k)
-    if t and time.time() - t < 600:
+    if not (t and time.time() - t < AUTH_TTL_USER):
+        if _ha_get_status("/api/", tok) != 200:
+            _auth_cache.pop(k, None)
+            _admin_cache.pop(k, None)
+            return False
+        _cache_put(_auth_cache, k)
+    if not admin:
         return True
+    t = _admin_cache.get(k)
+    if t and time.time() - t < AUTH_TTL_ADMIN:
+        return True
+    if _ha_get_status("/api/error_log", tok) == 200:
+        _cache_put(_admin_cache, k)
+        return True
+    return False
+
+
+# このサーバーの中での作業（コンソールでの確認など）用のトークン。root と このサービスだけが読める（0600）
+LOCAL_TOKEN_PATH = os.path.join(DIR, "local_token")
+
+
+def local_token():
     try:
-        req = urllib.request.Request(ha_base_url() + "/api/", headers={"Authorization": "Bearer " + tok})
-        with urllib.request.urlopen(req, timeout=6) as r:
-            ok = r.status == 200
+        with open(LOCAL_TOKEN_PATH, encoding="utf-8") as f:
+            v = f.read().strip()
+        if len(v) >= 32:
+            return v
     except Exception:
-        ok = False
-    if ok:
-        if len(_auth_cache) > 200:
-            _auth_cache.clear()
-        _auth_cache[k] = time.time()
-    return ok
+        pass
+    import secrets
+    v = secrets.token_urlsafe(32)
+    os.makedirs(DIR, exist_ok=True)
+    fd = os.open(LOCAL_TOKEN_PATH + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(v)
+    os.replace(LOCAL_TOKEN_PATH + ".tmp", LOCAL_TOKEN_PATH)
+    return v
 
 
-def request_authorized(handler):
-    # このコンテナの中から直接（Caddy を通さずに）呼ぶとき（コンソールでの確認など）は、そのまま通す
-    if not handler.headers.get("X-Forwarded-For"):
-        return True
+def bearer(handler):
+    """Authorization: Bearer のトークン。URL のクエリのトークンは受け付けない（履歴・記録に残るため）"""
     h = handler.headers.get("Authorization") or ""
-    tok = h[7:].strip() if h.lower().startswith("bearer ") else ""
+    return h[7:].strip() if h.lower().startswith("bearer ") else ""
+
+
+def request_authorized(handler, admin=False):
+    """全部の窓口で認証が要る（転送のヘッダーの有無では決めない）。
+    使えるのは、Home Assistant のアクセストークン（admin=True のときは管理者のもの）か、このサーバーの中だけで読めるローカルのトークン"""
+    import hmac
+    tok = bearer(handler)
     if not tok:
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
-        tok = (q.get("token") or [""])[0]
-    return check_ha_token(tok)
+        return False
+    if hmac.compare_digest(tok.encode(), local_token().encode()):
+        return True
+    return check_ha_token(tok, admin)
+
+
+class BodyError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+        self.msg = msg
+
+
+# 変えるのに Home Assistant の管理者の権限が要る設定（接続先・パスワード・鍵・操作する機器のアドレス）
+ADMIN_KEYS = {"eco_ip", "eco_eoj", "meter_ip", "meter_eoj", "aiseg_url", "aiseg_user", "aiseg_password", "ha_url", "ha_token", "power_devices"}
+# 管理者だけが使える窓口（AiSEG2・機器の調べ物）
+ADMIN_PATHS = {"/aiseg-test", "/aiseg-circuits", "/aiseg-probe", "/aiseg-flow-probe", "/aiseg-raw", "/discover", "/diagnose"}
+
+
+def needs_admin(p, b):
+    if p in ADMIN_PATHS:
+        return True
+    if p == "/config":
+        # 同じ値をそのまま送ってくる（アプリが設定をまとめて送る）だけなら、一般の人でもよい
+        for k in ADMIN_KEYS & set(b):
+            if k in ("aiseg_password", "ha_token"):
+                if b[k]:
+                    return True
+            elif b[k] != conf.get(k):
+                return True
+    return False
 
 
 class Api(BaseHTTPRequestHandler):
@@ -2981,9 +3234,30 @@ class Api(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # 1回のリクエストで受け付ける大きさ（設定の JSON は数十KB まで）と、読み取りの待ち時間
+    MAX_BODY = 256 * 1024
+    timeout = 20
+
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(n) or b"{}") if n else {}
+        """POST の本文（JSON のオブジェクト）。大きすぎる・形が違うときは BodyError"""
+        raw = self.headers.get("Content-Length")
+        try:
+            n = int(raw or 0)
+        except ValueError:
+            raise BodyError(400, "Content-Length が正しくありません")
+        if n < 0:
+            raise BodyError(400, "Content-Length が正しくありません")
+        if n > self.MAX_BODY:
+            raise BodyError(413, "送られてきたデータが大きすぎます")
+        if not n:
+            return {}
+        try:
+            b = json.loads(self.rfile.read(n))
+        except Exception:
+            raise BodyError(400, "JSON を読めません")
+        if not isinstance(b, dict):
+            raise BodyError(400, "JSON のオブジェクトを送ってください")
+        return b
 
     def _path(self):
         return urllib.parse.urlparse(self.path).path.replace("/solar-api", "", 1).rstrip("/") or "/"
@@ -3024,8 +3298,10 @@ class Api(BaseHTTPRequestHandler):
         p = self._path()
         try:
             b = self._body()
-        except Exception:
-            return self._ok({"error": "JSON を読めません"}, 400)
+        except BodyError as e:
+            return self._ok({"error": e.msg}, e.code)
+        if needs_admin(p, b) and not request_authorized(self, admin=True):
+            return self._ok({"error": "この設定・操作は Home Assistant の管理者だけができます"}, 403)
         if p == "/config":
             # Home Assistant のアドレスは画面からは変えない（変えられると、鍵（トークン）をほかの場所に送らされてしまうため）
             allowed = set(DEFAULT_CONF) - ({"ha_url"} if HA_BASE_ENV else set())
@@ -3239,6 +3515,7 @@ class Api(BaseHTTPRequestHandler):
 def main():
     global el
     os.makedirs(DIR, exist_ok=True)
+    local_token()  # このサーバーの中での作業用のトークンを、先に作っておく（homepanel-api が読む）
     el = Echonet()
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=energy_loop, daemon=True).start()

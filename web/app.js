@@ -3091,6 +3091,21 @@
   const dayLabel = (iso) => { const [y, m, d] = iso.split("-").map(Number); return `${m}/${d}（${"日月火水木金土"[new Date(y, m - 1, d).getDay()]}）`; };
 
   // ================= サーバーの機能（エアコンの自動温度調整・カメラの記録・操作の記録など） =================
+  /** 記録の画像を、Authorization ヘッダー付きで読んで Blob の URL にする（前の URL は捨てる） */
+  async function loadMotionFrame(mo) {
+    const t = mo.sel;
+    try {
+      const r = await fetch(`/camera-api/frame?cam=${encodeURIComponent(mo.cam)}&t=${t}`, { cache: "no-store", headers: { Authorization: "Bearer " + (await accessToken()) } });
+      if (!r.ok) throw new Error(r.status === 404 ? "この時刻の画像はありません" : "HTTP " + r.status);
+      const url = URL.createObjectURL(await r.blob());
+      if (S.motion !== mo || mo.sel !== t) { URL.revokeObjectURL(url); return; }
+      if (mo.img) URL.revokeObjectURL(mo.img.url);
+      mo.img = { t, url };
+    } catch (e) {
+      if (S.motion === mo && mo.sel === t) mo.img = { t, url: "", err: e.message };
+    }
+    if (S.motion === mo) fillExtra();
+  }
   async function camApi(path, body) {
     const auth = { Authorization: "Bearer " + (await accessToken()) };
     const r = await fetch("/camera-api" + path, body ? { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, auth), body: JSON.stringify(body) } : { cache: "no-store", headers: auth });
@@ -3156,7 +3171,7 @@
   }
   function hotNeedText(n) {
     const parts = [n.predicted != null ? `予想 ${n.predicted}L` : null, n.margin ? `余裕 ${n.margin}L` : null,
-      n.extra ? `多めの日 ${n.extra}L${n.note ? `（${esc(n.note)}）` : ""}` : null].filter(Boolean);
+      n.extra ? `多めの日 ${n.extra}L${n.note ? `（${esc(n.note)}）` : ""}` : null, n.loss ? `冷めて減る分 ${n.loss}L` : null].filter(Boolean);
     return parts.join(" ＋ ") + (n.need != null ? ` ＝ ${n.need}L` : "") + (n.predicted == null ? `（${esc(n.how || "")}）` : "");
   }
   /** 今夜の沸き上げの予定（できるだけ朝に近い時刻） */
@@ -3189,6 +3204,12 @@
     if (st.heating) h += `<div class="fl">♨ 夕方の準備のために沸かしています</div>`;
     else if (st.short > 0 && st.start_at && !st.done) h += `<div class="note">今のままだと ${st.short}L 足りないので、${st.start_at} ごろから沸かします（昼に余った電気で沸けば不要）</div>`;
     if (n) h += `<div class="note">${hotDay(n.date)}の朝（0時〜${n.to}時）：${hotNeedText(n)}${n.pct != null ? ` → 夜止めの日は ${n.pct}% まで沸かします` : ""}</div>`;
+    const l = p.learn;
+    if (l) {
+      h += `<label class="row" style="margin-top:6px"><span class="rt">🌡 気温を見込んで沸かす量を決める<div class="sub">寒い日にお湯を多く使う度合いと、外気との温度差で冷めて減る量を記録から学び、翌日の気温の予報で予想を直します。</div></span>
+        <input type="checkbox" data-set="hotTempLearn" ${l.enabled ? "checked" : ""}></label>`;
+      if (l.enabled) h += `<div class="note">${l.usage_per_deg != null ? `平均気温が1℃下がると、1日に約${Math.round(l.usage_per_deg)}L 多く使う（${l.usage_days}日分から）` : "お湯の使い方は学習中です"}・冷めて減る量 約${l.loss_k}L/時/℃（${esc(l.loss_how)}）${l.tomorrow_t != null ? `・明日の予想 ${l.tomorrow_t}℃ → 使う量の予想 ${l.tomorrow_factor >= 1 ? "+" : ""}${Math.round((l.tomorrow_factor - 1) * 100)}%` : ""}</div>`;
+    }
     const ex = p.extra || [];
     h += `<div class="fl">多めにお湯を使う日</div>${ex.length ? ex.map((x, i) => `<div class="brow" style="align-items:center"><span style="flex:1">${hotDay(x.date)}${x.part === "morning" ? "の朝" : "の夕方〜夜"} +${x.liters}L${x.note ? `（${esc(x.note)}）` : ""}</span><button class="tbtn" data-set="hotExtraDel" data-id="${i}">取り消す</button></div>`).join("") : `<div class="note">ありません</div>`}`;
     if (S.hotExtraOpen) {
@@ -3229,7 +3250,7 @@
     fillExtra();
   }
   async function loadMotion(cam) {
-    S.motion = { cam, data: null, sel: null, tok: await accessToken() };
+    S.motion = { cam, data: null, sel: null };
     fillExtra();
     try { S.motion.data = await camApi(`/motion?cam=${encodeURIComponent(cam)}&hours=48`); } catch (e) { S.motion.err = e.message; }
     fillExtra();
@@ -3287,7 +3308,8 @@
         else {
           h += `<div class="fl">寝た・起きた時刻の目安</div>` + ((d.sleep || []).length ? d.sleep.map((n) => `<div style="font-size:17px">🌙 ${dayLabel(n.night)}の夜：寝た ${n.slept || "－"}　☀ 起きた ${n.woke || "－"}</div>`).join("") : `<div class="note">まだ分かりません（夜の記録がたまると表示します）</div>`);
           h += (d.motion || []).length ? motionSVG(d.motion, d.threshold || 2, mo.sel) + `<div class="note">濃い棒＝動きあり（${d.threshold}% 以上）、灰色の帯＝夜（19時〜7時）。棒をタップすると、その時刻の画像を出します。</div>` : `<div class="note">まだ記録がありません</div>`;
-          if (mo.sel) h += `<div class="fl">${jstTime(mo.sel * 1000)} ごろの画像</div><img class="motionimg" alt="" src="/camera-api/frame?cam=${encodeURIComponent(r.id)}&t=${mo.sel}&token=${encodeURIComponent(mo.tok || "")}">`;
+          // 画像は Authorization ヘッダー付きで読み、Blob の URL で表示する（URL にトークンを載せない）
+          if (mo.sel) h += `<div class="fl">${jstTime(mo.sel * 1000)} ごろの画像</div>${mo.img && mo.img.t === mo.sel ? (mo.img.err ? `<div class="warn">${esc(mo.img.err)}</div>` : `<img class="motionimg" alt="" src="${mo.img.url}">`) : `<div class="note">画像を読んでいます…</div>`}`;
         }
       }
       h += `</div>`;
@@ -3422,6 +3444,7 @@
       case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
       case "heatGuard": loadSolar("/config", { heat_guard: el.checked }); return true;
       case "nightLate": loadSolar("/config", { night_late: el.checked }); return true;
+      case "hotTempLearn": loadSolar("/config", { hot_temp_learn: el.checked }); return true;
       case "hotMargin": loadSolar("/config", { hot_margin_l: Number(id) }); return true;
       case "hotMarginIn": { const m = (S.solar && S.solar.config && S.solar.config.hot_margin_l) ?? 50; loadSolar("/config", { hot_margin_l: Math.round(numFrom(el, m, 10, 0, 500)) }); return true; }
       case "prepHour": loadSolar("/config", { prep_hour: Number(id) }); return true;
@@ -3463,7 +3486,7 @@
         fillExtra(); return true;
       }
       case "motionOpen": if (S.motion && S.motion.cam === id) { S.motion = null; fillExtra(); } else loadMotion(id); return true;
-      case "motionPick": if (S.motion) { S.motion.sel = Number(id); S.motion.tok = await accessToken(); fillExtra(); } return true;
+      case "motionPick": if (S.motion) { S.motion.sel = Number(id); fillExtra(); loadMotionFrame(S.motion); } return true;
       case "opHours": S.oplog = Object.assign(S.oplog || {}, { hours: Number(id) }); loadOpLog(); return true;
       case "opKind": S.oplog = Object.assign(S.oplog || {}, { kind: id }); fillExtra(); return true;
       case "helpGo": { const t = document.getElementById("help-" + id); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }

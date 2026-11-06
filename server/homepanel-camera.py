@@ -26,6 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.environ["TZ"] = "Asia/Tokyo"
 time.tzset()
+# 作るファイルは、このサービスだけが読めるようにする（設定に AiSEG2 のパスワードや鍵が入るため）
+os.umask(0o077)
 
 DIR = os.environ.get("CAMERA_DIR", "/var/lib/homepanel-camera")
 CONF_PATH = os.path.join(DIR, "config.json")
@@ -45,11 +47,21 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """書きかけで電源が切れても壊れないよう、一時ファイルに書いて fsync してから置き換える。root とこのサービスだけが読める（0600）"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+    try:
+        d = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        os.fsync(d)
+        os.close(d)
+    except Exception:
+        pass
 
 
 conf = dict({"ha_url": "http://192.168.1.45:8123", "ha_token": "", "cameras": [], "threshold": 2.0}, **load_json(CONF_PATH, {}))
@@ -232,37 +244,95 @@ def ha_base_url():
     return HA_BASE_ENV or str(conf.get("ha_url") or "").rstrip("/")
 
 
-def check_ha_token(tok):
+# 認証の結果を覚えておく時間（秒）。一般の操作は2分、管理の操作は1分（Home Assistant でトークンを消したら、すぐ使えなくするため）
+AUTH_TTL_USER = 120
+AUTH_TTL_ADMIN = 60
+_admin_cache = {}
+
+
+def _ha_get_status(path, tok):
+    """Home Assistant に path を GET して、HTTP の状態コードを返す（読めなければ 0）。本文は読まない"""
+    try:
+        req = urllib.request.Request(ha_base_url() + path, headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def _cache_put(cache, k):
+    if len(cache) >= 100:
+        # 古いものから消す
+        for old in sorted(cache, key=cache.get)[:50]:
+            cache.pop(old, None)
+    cache[k] = time.time()
+
+
+def check_ha_token(tok, admin=False):
+    """Home Assistant のアクセストークンが使えるか（admin=True なら、Home Assistant の管理者のものか）を確かめる。
+    使えるかは /api/ が 200 を返すか、管理者かは管理者だけが読める /api/error_log が 200 を返すかで決める"""
     import hashlib
-    if not tok or len(tok) > 4096:
+    if not tok or len(tok) > 4096 or not ha_base_url():
         return False
     k = hashlib.sha256(tok.encode()).hexdigest()
     t = _auth_cache.get(k)
-    if t and time.time() - t < 600:
+    if not (t and time.time() - t < AUTH_TTL_USER):
+        if _ha_get_status("/api/", tok) != 200:
+            _auth_cache.pop(k, None)
+            _admin_cache.pop(k, None)
+            return False
+        _cache_put(_auth_cache, k)
+    if not admin:
         return True
+    t = _admin_cache.get(k)
+    if t and time.time() - t < AUTH_TTL_ADMIN:
+        return True
+    if _ha_get_status("/api/error_log", tok) == 200:
+        _cache_put(_admin_cache, k)
+        return True
+    return False
+
+
+# このサーバーの中での作業（コンソールでの確認など）用のトークン。root と このサービスだけが読める（0600）
+LOCAL_TOKEN_PATH = os.path.join(DIR, "local_token")
+
+
+def local_token():
     try:
-        req = urllib.request.Request(ha_base_url() + "/api/", headers={"Authorization": "Bearer " + tok})
-        with urllib.request.urlopen(req, timeout=6) as r:
-            ok = r.status == 200
+        with open(LOCAL_TOKEN_PATH, encoding="utf-8") as f:
+            v = f.read().strip()
+        if len(v) >= 32:
+            return v
     except Exception:
-        ok = False
-    if ok:
-        if len(_auth_cache) > 200:
-            _auth_cache.clear()
-        _auth_cache[k] = time.time()
-    return ok
+        pass
+    import secrets
+    v = secrets.token_urlsafe(32)
+    os.makedirs(DIR, exist_ok=True)
+    fd = os.open(LOCAL_TOKEN_PATH + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(v)
+    os.replace(LOCAL_TOKEN_PATH + ".tmp", LOCAL_TOKEN_PATH)
+    return v
 
 
-def request_authorized(handler):
-    # このコンテナの中から直接（Caddy を通さずに）呼ぶとき（コンソールでの確認など）は、そのまま通す
-    if not handler.headers.get("X-Forwarded-For"):
-        return True
+def bearer(handler):
+    """Authorization: Bearer のトークン。URL のクエリのトークンは受け付けない（履歴・記録に残るため）"""
     h = handler.headers.get("Authorization") or ""
-    tok = h[7:].strip() if h.lower().startswith("bearer ") else ""
+    return h[7:].strip() if h.lower().startswith("bearer ") else ""
+
+
+def request_authorized(handler, admin=False):
+    """全部の窓口で認証が要る（転送のヘッダーの有無では決めない）。
+    使えるのは、Home Assistant のアクセストークン（admin=True のときは管理者のもの）か、このサーバーの中だけで読めるローカルのトークン"""
+    import hmac
+    tok = bearer(handler)
     if not tok:
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
-        tok = (q.get("token") or [""])[0]
-    return check_ha_token(tok)
+        return False
+    if hmac.compare_digest(tok.encode(), local_token().encode()):
+        return True
+    return check_ha_token(tok, admin)
 
 
 class Api(BaseHTTPRequestHandler):
@@ -289,14 +359,26 @@ class Api(BaseHTTPRequestHandler):
             cams = [{k: v for k, v in c.items() if k != "url"} | {"status": status.get(c["id"])} for c in conf["cameras"]]
             return self._send(200, {"cameras": cams, "ffmpeg": bool(ffmpeg()), "threshold": conf.get("threshold"),
                                     "ha_token_set": bool(conf.get("ha_token")), "keep_hours": KEEP_HOURS})
+        cid = q.get("cam", "")
+        if p in ("/motion", "/frame") and not any(c["id"] == cid for c in conf["cameras"]):
+            return self._send(404, {"error": "カメラが登録されていません"})
         if p == "/motion":
-            m = load_json(motion_path(q.get("cam", "")), [])
-            hours = int(q.get("hours", KEEP_HOURS))
+            m = load_json(motion_path(cid), [])
+            try:
+                hours = max(1, min(KEEP_HOURS, int(q.get("hours", KEEP_HOURS))))
+            except ValueError:
+                return self._send(400, {"error": "hours が正しくありません"})
             cut = time.time() - hours * 3600
             return self._send(200, {"motion": [x for x in m if x[0] >= cut], "threshold": conf.get("threshold"),
                                     "sleep": sleep_report(q.get("cam", ""))})
         if p == "/frame":
-            cid, t = q.get("cam", ""), int(q.get("t", time.time()))
+            try:
+                t = int(q.get("t", time.time()))
+            except ValueError:
+                return self._send(400, {"error": "t が正しくありません"})
+            # 記録が残っている範囲（保存の時間＋少し）だけ
+            if not (time.time() - (KEEP_HOURS + 1) * 3600 <= t <= time.time() + 120):
+                return self._send(404, {"error": "画像がありません"})
             # 指定の時刻にいちばん近い画像
             for back in range(0, 30):
                 dt = datetime.fromtimestamp(t - back * 60)
@@ -307,15 +389,30 @@ class Api(BaseHTTPRequestHandler):
             return self._send(404, {"error": "画像がありません"})
         self._send(404, {"error": "not found"})
 
+    MAX_BODY = 64 * 1024
+    timeout = 20
+
     def do_POST(self):
         if not request_authorized(self):
             return self._send(401, {"error": "Home Assistant にログインしているアプリ・画面からだけ使えます"})
         p, q = self._q()
-        n = int(self.headers.get("Content-Length") or 0)
         try:
-            b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send(400, {"error": "Content-Length が正しくありません"})
+        if n < 0:
+            return self._send(400, {"error": "Content-Length が正しくありません"})
+        if n > self.MAX_BODY:
+            return self._send(413, {"error": "送られてきたデータが大きすぎます"})
+        try:
+            b = json.loads(self.rfile.read(n)) if n else {}
         except Exception:
             return self._send(400, {"error": "JSON を読めません"})
+        if not isinstance(b, dict):
+            return self._send(400, {"error": "JSON のオブジェクトを送ってください"})
+        # カメラの登録・鍵の設定は Home Assistant の管理者だけ（カメラの URL にはパスワードが入っていることがあるため）
+        if p == "/config" and not request_authorized(self, admin=True):
+            return self._send(403, {"error": "カメラの設定は Home Assistant の管理者だけができます"})
         if p == "/config":
             with lock:
                 # Home Assistant のアドレスは画面からは変えない（鍵をほかの場所に送らされないように）
@@ -359,6 +456,7 @@ class Api(BaseHTTPRequestHandler):
 
 def main():
     os.makedirs(DIR, exist_ok=True)
+    local_token()  # このサーバーの中での作業用のトークンを、先に作っておく（homepanel-api が読む）
     ensure_workers()
 
     def janitor():

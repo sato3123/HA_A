@@ -45,6 +45,7 @@ private fun needText(n: JSONObject): String {
         pred?.let { "予想 ${it}L" },
         n.optInt("margin").takeIf { it > 0 }?.let { "余裕 ${it}L" },
         n.optInt("extra").takeIf { it > 0 }?.let { "多めの日 ${it}L" + (n.optString("note").takeIf { s -> s.isNotBlank() }?.let { s -> "（$s）" } ?: "") },
+        n.optInt("loss").takeIf { it > 0 }?.let { "冷めて減る分 ${it}L" },
     )
     val need = if (n.isNull("need")) null else n.optInt("need")
     return parts.joinToString(" ＋ ") + (need?.let { " ＝ ${it}L" } ?: "") + if (pred == null) "（${n.optString("how")}）" else ""
@@ -181,6 +182,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             Text("沸かす速さ：約${p.optInt("rate_lph")}L/時（${p.optString("rate_how")}）。足りない量から、沸かし始める時刻を決めます。", style = MaterialTheme.typography.labelSmall)
+            p.optJSONObject("learn")?.let { l -> TempLearnInfo(vm, l) }
         }
         OutlinedButton(onClick = { dlg = true }) { Text("🛁 多めにお湯を使う日を指定する") }
     }
@@ -240,5 +242,28 @@ fun HotExtraDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }) { Text("追加") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("閉じる") } },
+    )
+}
+
+
+/** 気温の学習：寒い日のお湯の使い方・冷めて減る量 と、明日の予報での見込み */
+@Composable
+private fun TempLearnInfo(vm: MainViewModel, l: JSONObject) {
+    val on = l.optBoolean("enabled", true)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("🌡 気温を見込んで沸かす量を決める", style = MaterialTheme.typography.labelLarge)
+            Text("寒い日にお湯を多く使う度合いと、外気との温度差で冷めて減る量を記録から学び、翌日の気温の予報で予想を直します。", style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = on, onCheckedChange = { vm.setServerConf("hot_temp_learn", it) })
+    }
+    if (!on) return
+    val perDeg = if (l.isNull("usage_per_deg")) null else l.optDouble("usage_per_deg")
+    Text(
+        (perDeg?.let { "・お湯の使い方：平均気温が1℃下がると、1日に約${String.format("%.0f", it)}L 多く使う（${l.optInt("usage_days")}日分から）" }
+            ?: "・お湯の使い方：まだ学習中です（同じ種類の日が10日以上、気温の差が4℃以上たまると使います）") + "\n" +
+            "・冷めて減る量：外気との差1℃あたり 1時間に約${String.format("%.3f", l.optDouble("loss_k"))}L（${l.optString("loss_how")}）。明日は1日で約${l.optInt("loss_day_l")}L" +
+            (if (!l.isNull("tomorrow_t")) "\n・明日の予想の平均気温 ${l.optDouble("tomorrow_t")}℃ → 使う量の予想を ${String.format("%+.0f", (l.optDouble("tomorrow_factor", 1.0) - 1) * 100)}%" else ""),
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
     )
 }

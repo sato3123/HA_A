@@ -16,6 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # サーバーの単体テスト（認証・認可・入力の検証・ECHONET Lite の操作・お湯の予想など。実機には何も送らない）
+      - name: Server unit tests
+        run: python3 -m unittest discover -s server/tests -v
+
       # Home Assistant の代わり：受け取ったヘッダーをそのまま返す
       - name: Start fake Home Assistant
         run: |
@@ -24,8 +28,12 @@ jobs:
           from http.server import BaseHTTPRequestHandler, HTTPServer
           class H(BaseHTTPRequestHandler):
               def do_GET(self):
-                  # /api/ はトークンの確認：「good」だけ正しいことにする
-                  if self.path == "/api/" and self.headers.get("Authorization") != "Bearer good":
+                  # /api/ はトークンの確認：「good」（管理者）と「user」（一般の人）だけ正しいことにする
+                  auth = self.headers.get("Authorization")
+                  if self.path == "/api/" and auth not in ("Bearer good", "Bearer user"):
+                      self.send_response(401); self.end_headers(); return
+                  # /api/error_log は管理者だけ（管理者かどうかの確認に使う）
+                  if self.path == "/api/error_log" and auth != "Bearer good":
                       self.send_response(401); self.end_headers(); return
                   body = json.dumps({"path": self.path, "headers": dict(self.headers)}).encode()
                   self.send_response(200)
@@ -112,6 +120,33 @@ jobs:
           [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"groups":[{"name":"t","entities":["shell_command.x"]}]}' http://127.0.0.1/solar-api/config)" = "400" ] || fail "まとめて操作に危ない機器を入れられてしまいます"
           curl -fsS -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"el_devices":[{"id":"climate.el_192_168_1_50_013001","name":"エアコン","room":"寝室"}]}' http://127.0.0.1/solar-api/config | grep -q 'el_192_168_1_50_013001' || fail "ECHONET Lite の機器の一覧を保存できません"
           [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -H 'Content-Type: application/json' -d '{"el_devices":[{"id":"climate.el_8_8_8_8_013001"}]}' http://127.0.0.1/solar-api/config)" = "400" ] || fail "家の外の ECHONET Lite の機器を登録できてしまいます"
+          # ---- 認証・認可（修正依頼書 P0） ----
+          # Caddy を通さず直接・転送のヘッダーなしでも、トークンが無ければ断る
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/status)" = "401" ] || fail "直接つなぐとトークンなしで入れてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8097/status)" = "401" ] || fail "カメラに直接つなぐとトークンなしで入れてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 127.0.0.1' http://127.0.0.1:8098/status)" = "401" ] || fail "転送のヘッダーを付けるとトークンなしで入れてしまいます"
+          # URL のクエリのトークンは受け付けない
+          [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1/solar-api/status?token=good')" = "401" ] || fail "URL のトークンで入れてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1/camera-api/status?token=good')" = "401" ] || fail "カメラに URL のトークンで入れてしまいます"
+          # このサーバーの中からは、ローカルのトークン（homepanel-api）で使える
+          sudo /usr/local/bin/homepanel-api solar GET /status | grep -q '"night_pending"' || fail "homepanel-api で使えません"
+          sudo /usr/local/bin/homepanel-api camera GET /status | grep -q '"cameras"' || fail "homepanel-api でカメラを使えません"
+          # 一般の人：読む・ふだんの設定はできるが、接続先・パスワード・調べ物は管理者だけ
+          curl -fsS -H 'Authorization: Bearer user' http://127.0.0.1/solar-api/status | grep -q '"night_pending"' || fail "一般の人が状態を読めません"
+          curl -fsS -H 'Authorization: Bearer user' -X POST -H 'Content-Type: application/json' -d '{"hot_margin_l":60}' http://127.0.0.1/solar-api/config | grep -q '"hot_margin_l": 60' || fail "一般の人がふだんの設定を変えられません"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer user' -X POST -d '{"aiseg_password":"x"}' http://127.0.0.1/solar-api/config)" = "403" ] || fail "一般の人が AiSEG2 のパスワードを変えられてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer user' -X POST -d '{"eco_ip":"192.168.1.99"}' http://127.0.0.1/solar-api/config)" = "403" ] || fail "一般の人が機器のアドレスを変えられてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer user' -X POST http://127.0.0.1/solar-api/aiseg-raw -d '{"path":"/page/x"}')" = "403" ] || fail "一般の人が AiSEG2 を調べられてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer user' -X POST -d '{"cameras":[]}' http://127.0.0.1/camera-api/config)" = "403" ] || fail "一般の人がカメラの設定を変えられてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -d '{"eco_ip":""}' http://127.0.0.1/solar-api/config)" = "200" ] || fail "管理者が設定を変えられません"
+          # 入力の検証：大きすぎる・形が違う
+          head -c 300000 /dev/zero | tr '\0' 'a' > big.txt
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST --data-binary @big.txt http://127.0.0.1/solar-api/config)" = "413" ] || fail "大きすぎるデータを受け付けてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' -X POST -d '[1,2]' http://127.0.0.1/solar-api/config)" = "400" ] || fail "JSON のオブジェクト以外を受け付けてしまいます"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer good' 'http://127.0.0.1/camera-api/frame?cam=../../etc&t=1')" = "404" ] || fail "登録していないカメラの画像を探してしまいます"
+          # iPad 版の画面の安全のための設定（CSP など）
+          curl -sk -D - -o /dev/null https://127.0.0.1/homepanel/ | grep -qi "content-security-policy: default-src 'self'" || fail "CSP がありません"
+          curl -fsSk https://127.0.0.1/homepanel/boot.js | grep -q 'version.json' || fail "boot.js が配信されていません"
           # Android 版の配布（Home Assistant のトークンが無いと取れない）
           [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/android/latest.json)" = "401" ] || fail "トークンなしで Android 版を取れてしまいます"
           # TimeTree の予定の公開（.ics だけ・家の中だけ）
