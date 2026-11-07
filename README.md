@@ -221,6 +221,7 @@ curl -fsSL https://raw.githubusercontent.com/sato3123/HA_A/main/server/setup.sh 
 ### 5-5. 更新
 - コンテナが5分おきに自動で更新します。画面上部に「更新する」が出たら押すと、入れ替わり次第、自動で読み込み直します。
 - すぐ更新したいとき：Proxmox のシェルで `pct enter 146` → `/usr/local/bin/homepanel-update` を実行します。
+- セットアップ（Caddy・サービス・コマンド）に新しい版があると、自動更新がそれを見つけて、サーバーが自分でセットアップを実行し直します（コマンドは要りません）。結果は Android 版の「⚙ 設定 → おひさま沸き上げ」のいちばん下と、コンテナの中の `/var/lib/homepanel-setup/last.log` で見られます。自動で実行し直してほしくないときは `touch /etc/homepanel/no-auto-setup`。
 
 ### 5-6. うまくいかないとき
 - **「この接続ではプライバシーが保護されません」**：5-2 の証明書が入っていないか、「証明書信頼設定」がオフです。

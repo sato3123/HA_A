@@ -267,3 +267,20 @@ private fun TempLearnInfo(vm: MainViewModel, l: JSONObject) {
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
     )
 }
+
+
+/** 設定の下：家のサーバーのセットアップ（自動で実行し直す）の様子 */
+@Composable
+fun ServerSetupInfo(vm: MainViewModel) {
+    val st by vm.serverSetup.collectAsState()
+    val j = st ?: return
+    val v = if (j.isNull("version")) null else j.optInt("version")
+    val at = j.optDouble("auto_at", Double.NaN)
+    Text(
+        "家のサーバーのセットアップ：" + (v?.let { "版 $it" } ?: "版の記録なし（次の自動更新のときに実行し直します）") +
+            (if (!at.isNaN()) "・最後に自動で実行：" + java.time.Instant.ofEpochMilli((at * 1000).toLong()).atZone(java.time.ZoneId.systemDefault())
+                .let { "${it.monthValue}/${it.dayOfMonth} ${it.hour}:${String.format("%02d", it.minute)}" } + if (j.optBoolean("auto_ok")) "（成功）" else "（${j.optString("auto_last")}）" else "") +
+            "。セットアップに新しい版があれば、サーバーが自分で実行し直すので、コマンドを入れる必要はありません。",
+        style = MaterialTheme.typography.labelSmall,
+    )
+}

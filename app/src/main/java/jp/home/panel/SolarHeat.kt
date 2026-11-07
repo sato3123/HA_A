@@ -190,6 +190,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             HotPlanSettings(vm, view?.tankL)
+            ServerSetupInfo(vm)
             HeatGuardSettings(vm)
             if (method == "stop") {
                 val tank = view?.tankL

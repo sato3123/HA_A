@@ -162,4 +162,16 @@ jobs:
           # 自動更新タイマー
           systemctl is-active homepanel-update.timer || fail "更新タイマーが動いていません"
           sudo /usr/local/bin/homepanel-update
+          # セットアップの新しい版を見つけたら、コマンドを入れなくても自分で実行し直す
+          [ "$(cat /etc/homepanel/setup_version)" -ge 2 ] || fail "セットアップの版が記録されていません"
+          grep -q '^HA_IP=127.0.0.1$' /etc/homepanel/setup.env || fail "セットアップで使った値が残っていません"
+          echo 1 | sudo tee /etc/homepanel/setup_version > /dev/null
+          sudo /usr/local/bin/homepanel-update | tee upd.log
+          grep -q "セットアップの新しい版" upd.log || fail "セットアップの新しい版を見つけていません"
+          for i in $(seq 1 90); do [ "$(cat /etc/homepanel/setup_version)" != 1 ] && break; sleep 5; done
+          sudo tail -20 /var/lib/homepanel-setup/last.log
+          [ "$(cat /etc/homepanel/setup_version)" -ge 2 ] || fail "セットアップを自分で実行し直せませんでした"
+          sudo tail -1 /var/lib/homepanel-setup/last.log | grep -q "終了コード 0" || fail "自動のセットアップが失敗しました"
+          curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/status | grep -q '"server_setup"' || fail "セットアップの様子を返していません"
+          systemctl is-active homepanel-solar homepanel-camera caddy || fail "自動のセットアップのあと、サービスが止まっています"
           echo "::notice::サーバーのセットアップは正常です"

@@ -3041,6 +3041,26 @@ def run_group(g, action):
     return {"ok": not ng, "done": len(res) - len(ng), "failed": ng, "results": res}
 
 
+def server_setup_info():
+    """サーバーのセットアップの版と、自動で実行し直した最後の結果（画面に出す）"""
+    out = {}
+    try:
+        with open("/etc/homepanel/setup_version", encoding="utf-8") as f:
+            out["version"] = int(f.read().strip() or 0)
+    except Exception:
+        out["version"] = None
+    try:
+        p_ = "/var/lib/homepanel-setup/last.log"
+        out["auto_at"] = os.path.getmtime(p_)
+        with open(p_, encoding="utf-8", errors="replace") as f:
+            tail = f.read()[-2000:].strip().splitlines()
+        out["auto_ok"] = bool(tail) and tail[-1].strip() == "終了コード 0"
+        out["auto_last"] = tail[-1][:200] if tail else ""
+    except Exception:
+        pass
+    return out
+
+
 def hot_plan_safe():
     try:
         return hot_plan_public()
@@ -3086,6 +3106,7 @@ def public_state():
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "hot_plan": hot_plan_safe(), "heat_guard": guard_public(),
+                "server_setup": server_setup_info(),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
                 "surplus_w": state.get("surplus_w") if state["history"] and time.time() - state["history"][-1][0] < 120 else None,

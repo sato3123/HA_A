@@ -12,6 +12,16 @@
 #   - GitHub の最新リリースを5分おきに確認して自動で更新する
 set -euo pipefail
 
+# セットアップの版。Caddy・サービス・コマンドなど、セットアップで入れるものを変えたら1つ上げる。
+# 自動更新（homepanel-update）が、新しい版の setup.sh を見つけると、自分でこのセットアップを実行し直す
+SETUP_VERSION=2
+
+# 前回のセットアップで使った値（Home Assistant の IP など）。環境変数で指定しなければ、これを使う
+if [ -f /etc/homepanel/setup.env ]; then
+  while IFS='=' read -r k v; do
+    case "$k" in HA_IP|HA_PORT|SELF_IP|REPO) [ -z "${!k:-}" ] && printf -v "$k" '%s' "$v" ;; esac
+  done < /etc/homepanel/setup.env
+fi
 HA_IP="${HA_IP:-192.168.1.45}"
 HA_PORT="${HA_PORT:-8123}"
 SELF_IP="${SELF_IP:-192.168.1.46}"
@@ -21,16 +31,22 @@ CA_DIR=/srv/homepanel-ca
 
 echo "== 必要なソフトを入れています"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 tzdata >/dev/null
+# もう全部入っていれば、入れ直さない（自動でセットアップし直すときに速く終わるように）
+if command -v caddy curl jq unzip rsync python3 ffmpeg flock >/dev/null 2>&1 && dpkg -s python3-venv tzdata ca-certificates >/dev/null 2>&1 \
+   && [ -x /opt/timetree/bin/timetree-exporter ]; then
+  echo "（必要なソフトはもう入っています）"
+else
+  apt-get update -qq
+  apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 tzdata util-linux >/dev/null
+  # カメラの記録・動きの分析に使う（入らなくても、ほかの機能は動く）
+  apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null || echo "注意：ffmpeg を入れられませんでした（カメラの記録は使えません）"
+  # TimeTree の予定を取り出す道具（非公式の timetree-exporter）
+  apt-get install -y -qq python3-venv >/dev/null
+  [ -x /opt/timetree/bin/python ] || python3 -m venv /opt/timetree
+  /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null || echo "注意：timetree-exporter を入れられませんでした（TimeTree の取り込みは使えません）"
+fi
 # 時刻は日本時間に
 ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime && echo "Asia/Tokyo" > /etc/timezone
-# カメラの記録・動きの分析に使う（入らなくても、ほかの機能は動く）
-apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null || echo "注意：ffmpeg を入れられませんでした（カメラの記録は使えません）"
-# TimeTree の予定を取り出す道具（非公式の timetree-exporter）
-apt-get install -y -qq python3-venv >/dev/null
-[ -x /opt/timetree/bin/python ] || python3 -m venv /opt/timetree
-/opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null || echo "注意：timetree-exporter を入れられませんでした（TimeTree の取り込みは使えません）"
 
 echo "== 更新用スクリプトを作っています"
 mkdir -p "$WEB" "$CA_DIR" /etc/homepanel /srv/homepanel-android
@@ -52,11 +68,14 @@ if curl -fsS -o /dev/null -H "Authorization: Bearer $T" "https://api.github.com/
 TOKEOF
 chmod 700 /usr/local/bin/homepanel-github-token
 
-cat > /usr/local/bin/homepanel-update <<'UPDEOF'
+cat > /usr/local/bin/homepanel-update.new <<'UPDEOF'
 #!/bin/bash
 # GitHub の最新リリースから iPad 版・Android 版・サーバーのプログラムを取ってきて、変わっていれば入れ替える
 # リポジトリが非公開のときは /etc/homepanel/github_token のトークンで読む
 set -euo pipefail
+# 同時に2つ動かないようにする（タイマーと手動、セットアップの中から呼ぶときなど）
+exec 9>/run/homepanel-update.lock
+flock -n 9 || { echo "ほかの更新が動いています"; exit 0; }
 REPO=$(cat /etc/homepanel/repo)
 WEB=/srv/homepanel
 APK_DIR=/srv/homepanel-android
@@ -152,8 +171,23 @@ if ghfile server/homepanel-solar.py "$TMP/solar.py" && python3 -m py_compile "$T
     echo "おひさま沸き上げのサービスを更新しました"
   fi
 fi
+# セットアップ（Caddy・サービス・コマンド）に新しい版があれば、コマンドを入れなくても自分で実行し直す。
+# 別のサービスとして動かすので、この更新用スクリプトが書きかえられても困らない。記録は journalctl -u homepanel-selfsetup で見られる
+if [ ! -e /etc/homepanel/no-auto-setup ] && ghfile server/setup.sh "$TMP/setup.sh" && bash -n "$TMP/setup.sh"; then
+  NEW=$(sed -n 's/^SETUP_VERSION=\([0-9]\+\).*/\1/p' "$TMP/setup.sh" | head -1)
+  CUR=$(cat /etc/homepanel/setup_version 2>/dev/null || echo 0)
+  if [ -n "$NEW" ] && [ "$NEW" -gt "$CUR" ] && ! systemctl is-active -q homepanel-selfsetup.service; then
+    mkdir -p /var/lib/homepanel-setup && chmod 755 /var/lib/homepanel-setup
+    install -m 700 "$TMP/setup.sh" /var/lib/homepanel-setup/setup.sh
+    systemctl reset-failed homepanel-selfsetup.service 2>/dev/null || true
+    systemd-run --unit=homepanel-selfsetup --no-block --collect -p TimeoutStartSec=30min \
+      /bin/bash -c 'umask 022; bash /var/lib/homepanel-setup/setup.sh > /var/lib/homepanel-setup/last.log 2>&1; echo "終了コード $?" >> /var/lib/homepanel-setup/last.log'
+    echo "セットアップの新しい版（$CUR → $NEW）を見つけたので、実行し直しています（記録：/var/lib/homepanel-setup/last.log）"
+  fi
+fi
 UPDEOF
-chmod +x /usr/local/bin/homepanel-update
+chmod 755 /usr/local/bin/homepanel-update.new
+mv -f /usr/local/bin/homepanel-update.new /usr/local/bin/homepanel-update
 
 cat > /etc/systemd/system/homepanel-update.service <<'EOF'
 [Unit]
@@ -519,6 +553,11 @@ else
   echo "注意：Home Assistant（$HA_IP:$HA_PORT）に届きません。IP とポートを確認してください。" >&2
 fi
 
+# 次に自動でセットアップし直すときのために、使った値と版を残す
+mkdir -p /etc/homepanel
+printf 'HA_IP=%s\nHA_PORT=%s\nSELF_IP=%s\nREPO=%s\n' "$HA_IP" "$HA_PORT" "$SELF_IP" "$REPO" > /etc/homepanel/setup.env
+echo "$SETUP_VERSION" > /etc/homepanel/setup_version
+
 cat <<EOF
 
 ========================================================
@@ -536,7 +575,7 @@ cat <<EOF
     Android 版の「⚙ 設定 → おひさま沸き上げ」で「サーバーで動かす」を選ぶと、
     エコキュート・スマートメーター・自宅の位置がサーバーに送られます。
 
- 更新は5分おきに自動で確認されます。
+ 更新は5分おきに自動で確認されます（セットアップに新しい版があれば、それも自動で実行し直します）。
  今すぐ更新するとき： homepanel-update
 ========================================================
 EOF
