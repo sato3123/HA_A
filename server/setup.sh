@@ -34,6 +34,8 @@ CA_DIR=/srv/homepanel-ca
 
 echo "== 必要なソフトを入れています"
 export DEBIAN_FRONTEND=noninteractive
+# ソフトを入れたあとに、ほかのサービスを勝手に再起動させない（needrestart は一覧だけにする）
+export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 # もう全部入っていれば、入れ直さない（自動でセットアップし直すときに速く終わるように）
 if command -v caddy curl jq unzip rsync python3 ffmpeg flock >/dev/null 2>&1 && dpkg -s python3-venv tzdata ca-certificates >/dev/null 2>&1 \
    && [ -x /opt/timetree/bin/timetree-exporter ]; then
