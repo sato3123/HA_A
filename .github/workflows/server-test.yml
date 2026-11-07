@@ -191,3 +191,5 @@ jobs:
           # テストが終わったら、入れたサービスとタイマーを止める（ランナーの後片付けとぶつからないように）
           sudo systemctl disable --now homepanel-update.timer > /dev/null 2>&1 || true
           sudo systemctl stop homepanel-update.service homepanel-selfsetup.service homepanel-solar homepanel-camera homepanel-photos caddy 2>/dev/null || true
+          # 時刻の設定（日本時間）も元に戻す（ランナーの後片付けのため）
+          sudo ln -sf /usr/share/zoneinfo/Etc/UTC /etc/localtime; echo Etc/UTC | sudo tee /etc/timezone > /dev/null
