@@ -308,6 +308,36 @@ class TestHourlyFill(SolarTestBase):
         self.assertAlmostEqual(added["エアコン200V"], 300.0)
 
 
+class TestHotTrack(SolarTestBase):
+    def test_jitter_not_counted_and_balance_cap(self):
+        m = self.m
+        m["energy"].setdefault("days", {}).pop("2026-11-05", None)
+        m["hot_last"].update(remain=None, ref=None)
+        m["state"]["hot_from_aiseg"] = False
+        t0 = datetime(2026, 11, 5, 1, 0)
+        seq = [200, 205, 200, 206, 199, 204, 200]  # 表示のゆれだけ
+        for i, r in enumerate(seq):
+            m["hot_water_track"]({"remain": r, "tank": 370}, t0 + timedelta(minutes=i))
+        day = m["energy"]["days"]["2026-11-05"]
+        self.assertEqual(day.get("hot_heat_l", 0), 0)
+        self.assertEqual(day.get("hot_use_l", 0), 0)
+        # 本当の沸き上げ：200 → 350
+        for i, r in enumerate(range(210, 351, 10)):
+            m["hot_water_track"]({"remain": r, "tank": 370}, t0 + timedelta(minutes=10 + i))
+        self.assertAlmostEqual(day["hot_heat_l"], 150, delta=10)
+        # AiSEG2 の使った量があるとき：ゆれで上がった分は収支の上限で切る
+        m["state"]["hot_from_aiseg"] = True
+        g = m["loss_liters"]
+        m["loss_liters"] = lambda a, b: 0.0
+        try:
+            for i, r in enumerate([340, 352, 341, 353, 340, 354] * 5):
+                m["hot_water_track"]({"remain": r, "tank": 370}, t0 + timedelta(minutes=40 + i))
+            self.assertLessEqual(day["hot_heat_l"], 200 + 20)
+        finally:
+            m["loss_liters"] = g
+            m["state"]["hot_from_aiseg"] = False
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -1945,26 +1945,55 @@ def tank_plan(sunny, name, eco, result):
 
 
 # ---- お湯の使用量（残りのお湯の減り方から、日ごとに積み上げる） ----
-hot_last = {"remain": None}
+hot_last = {"remain": None, "ref": None}
+HOT_DEADBAND_L = 10  # 残りのお湯の量の細かい上下（表示のゆれ）は数えない
 
 
-def hot_water_track(eco):
+def hot_water_track(eco, now=None):
     r = (eco or {}).get("remain")
     if r is None:
         return
+    now = now or datetime.now()
     prev = hot_last["remain"]
     hot_last["remain"] = r
     if prev is None:
+        hot_last["ref"] = r
         return
-    d = date.today().isoformat()
+    d = now.date().isoformat()
+    # 冷めて減る分の予想（外気温の予報を読むことがあるので、lock の外で）
+    r0h = (energy.get("days", {}).get(d) or {}).get("hot_r0_h")
+    loss = 0.0
+    if r0h is not None and state.get("hot_from_aiseg"):
+        try:
+            loss = loss_liters(datetime.combine(now.date(), datetime.min.time()) + timedelta(hours=r0h), now)
+        except Exception:
+            loss = 0.0
     with lock:
         day = energy.setdefault("days", {}).setdefault(d, {})
-        if r < prev and not state.get("hot_from_aiseg"):
-            day["hot_use_l"] = day.get("hot_use_l", 0) + (prev - r)
-            hh = day.setdefault("hot_h", [0.0] * 24)
-            hh[datetime.now().hour] = round(hh[datetime.now().hour] + (prev - r), 1)
-        elif r > prev:
-            day["hot_heat_l"] = day.get("hot_heat_l", 0) + (r - prev)
+        # 増えた・減ったは、前に数えたところ（ref）から10L以上動いたときだけ数える。
+        # 1分ごとの値は数Lずつ上下にゆれることがあり、そのまま足すと沸かした量・使った量が大きくなりすぎるため
+        ref = hot_last["ref"] if hot_last["ref"] is not None else prev
+        if r <= ref - HOT_DEADBAND_L:
+            if not state.get("hot_from_aiseg"):
+                day["hot_use_l"] = day.get("hot_use_l", 0) + (ref - r)
+                hh = day.setdefault("hot_h", [0.0] * 24)
+                hh[now.hour] = round(hh[now.hour] + (ref - r), 1)
+            hot_last["ref"] = r
+        elif r >= ref + HOT_DEADBAND_L:
+            day["hot_heat_ramp_l"] = round(day.get("hot_heat_ramp_l", 0) + (r - ref), 1)
+            hot_last["ref"] = r
+        # その日の最初の残りの量（起点）
+        if "hot_r0" not in day:
+            day.update(hot_r0=prev, hot_r0_h=now.hour + now.minute / 60, hot_heat_base=day.get("hot_heat_ramp_l", 0),
+                       hot_use_base=day.get("hot_use_l", 0))
+        ramp = day.get("hot_heat_ramp_l", 0)
+        if state.get("hot_from_aiseg"):
+            # 使った量が AiSEG2 から分かるときは、収支で上限をかける：
+            # 沸かした量 ≦ （いまの残り − 起点の残り）＋ 使った量 ＋ 冷めて減る分（＋ゆとり20L）
+            bal = max(0.0, r - day["hot_r0"] + day.get("hot_use_l", 0) - day.get("hot_use_base", 0) + loss)
+            day["hot_heat_l"] = round(min(ramp, day.get("hot_heat_base", 0) + bal + 20), 1)
+        else:
+            day["hot_heat_l"] = round(ramp, 1)
         day["hot_tank_l"] = (eco or {}).get("tank")
         # 1時間ごとの残りのお湯（その時刻の最初の値）と、沸き上げをしたか（冷めて減る量を学ぶため）
         hr = datetime.now().hour
@@ -1972,7 +2001,7 @@ def hot_water_track(eco):
         if rh[hr] is None:
             rh[hr] = r
         hh_ = day.setdefault("heat_h", [False] * 24)
-        if (eco or {}).get("heating") or r > prev:
+        if (eco or {}).get("heating") or r >= prev + HOT_DEADBAND_L:
             hh_[hr] = True
         # 残りのお湯の変化（5分ごと・2日分）。エコキュートの画面のグラフ用
         hist = energy.setdefault("hot", [])
