@@ -54,7 +54,17 @@ jobs:
           GH_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # 止まったときに記録が残るよう、時間を区切る（ふだんは1〜2分）
         timeout-minutes: 20
-        run: sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 GITHUB_TOKEN="$GH_READ_TOKEN" bash -x server/setup.sh 2>&1 | sed -e 's/github_pat_[A-Za-z0-9_]*/***/g' -e 's/ghs_[A-Za-z0-9]*/***/g'; test "${PIPESTATUS[0]}" = 0
+        run: |
+          sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 GITHUB_TOKEN="$GH_READ_TOKEN" timeout -k 10 480 bash -x server/setup.sh < /dev/null > setup.log 2>&1; rc=$?
+          sed -e 's/github_pat_[A-Za-z0-9_]*/***/g' -e 's/ghs_[A-Za-z0-9]*/***/g' setup.log | tail -150
+          echo "終了コード $rc"
+          test "$rc" = 0
+
+      - name: Diagnose
+        if: failure()
+        run: |
+          ps auxf | grep -v "\[" | tail -60
+          sudo journalctl --no-pager -n 80 -u homepanel-update -u homepanel-selfsetup -u caddy -u homepanel-solar || true
 
       - name: Check the server
         run: |
