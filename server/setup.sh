@@ -14,7 +14,10 @@ set -euo pipefail
 
 # セットアップの版。Caddy・サービス・コマンドなど、セットアップで入れるものを変えたら1つ上げる。
 # 自動更新（homepanel-update）が、新しい版の setup.sh を見つけると、自分でこのセットアップを実行し直す
-SETUP_VERSION=3
+SETUP_VERSION=4
+# セットアップが2つ同時に動かないようにする（自動の更新も、セットアップの最中はやり直しを始めない）
+exec 8>/run/homepanel-setup.lock
+flock -w 1800 8 || { echo "ほかのセットアップが終わりません"; exit 1; }
 
 # 前回のセットアップで使った値（Home Assistant の IP など）。環境変数で指定しなければ、これを使う
 if [ -f /etc/homepanel/setup.env ]; then
@@ -174,10 +177,11 @@ if ghfile server/homepanel-solar.py "$TMP/solar.py" && python3 -m py_compile "$T
 fi
 # セットアップ（Caddy・サービス・コマンド）に新しい版があれば、コマンドを入れなくても自分で実行し直す。
 # 別のサービスとして動かすので、この更新用スクリプトが書きかえられても困らない。記録は journalctl -u homepanel-selfsetup で見られる
-if [ ! -e /etc/homepanel/no-auto-setup ] && ghfile server/setup.sh "$TMP/setup.sh" && bash -n "$TMP/setup.sh"; then
+if [ -z "${HOMEPANEL_IN_SETUP:-}" ] && [ ! -e /etc/homepanel/no-auto-setup ] && ghfile server/setup.sh "$TMP/setup.sh" && bash -n "$TMP/setup.sh"; then
   NEW=$(sed -n 's/^SETUP_VERSION=\([0-9]\+\).*/\1/p' "$TMP/setup.sh" | head -1)
   CUR=$(cat /etc/homepanel/setup_version 2>/dev/null || echo 0)
-  if [ -n "$NEW" ] && [ "$NEW" -gt "$CUR" ] && ! systemctl is-active -q homepanel-selfsetup.service; then
+  if [ -n "$NEW" ] && [ "$NEW" -gt "$CUR" ] && ! systemctl is-active -q homepanel-selfsetup.service \
+     && flock -n /run/homepanel-setup.lock true; then
     mkdir -p /var/lib/homepanel-setup && chmod 755 /var/lib/homepanel-setup
     install -m 700 "$TMP/setup.sh" /var/lib/homepanel-setup/setup.sh
     systemctl reset-failed homepanel-selfsetup.service 2>/dev/null || true
@@ -406,7 +410,8 @@ WantedBy=timers.target
 UNITEOF
 
 echo "== iPad 版をダウンロードしています"
-/usr/local/bin/homepanel-update
+# セットアップの途中なので、更新用スクリプトにセットアップのやり直しはさせない
+HOMEPANEL_IN_SETUP=1 /usr/local/bin/homepanel-update
 
 echo "== Caddy（https と中継）を設定しています"
 cat > /etc/caddy/Caddyfile <<EOF
