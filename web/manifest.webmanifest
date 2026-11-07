@@ -3,7 +3,7 @@
   "short_name": "ホームパネル",
   "lang": "ja",
   "start_url": "./index.html",
-  "scope": "./",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#141218",
   "theme_color": "#141218",
@@ -27,7 +27,6 @@
       "purpose": "any"
     }
   ],
-  "id": "./",
   "description": "家の機器・太陽光・エコキュート・カメラをまとめて操作するホームパネル",
   "orientation": "any",
   "categories": [

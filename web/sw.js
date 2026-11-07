@@ -2,7 +2,7 @@
 // ・画面の部品（HTML・JS・CSS・アイコン）だけを保存して、起動を速くし、電波が切れても画面が開くようにする
 // ・Home Assistant やサーバーの API（/api/・/solar-api/・/camera-api/ など）は、このフォルダの外なので一切さわらない
 // ・家の情報（機器の状態・カメラの画像・カレンダーなど）は保存しない
-const CACHE = "homepanel-shell-v1";
+const CACHE = "homepanel-shell-v2";
 const SHELL = ["./", "./index.html", "./boot.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./version.json"];
 const OK_EXT = /\.(html|js|css|png|webmanifest|json)$/;
 
@@ -42,6 +42,13 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (!cacheable(url)) return;
+  // ログインから戻ってきたとき（?code=…）は、Service Worker を通さずにブラウザに任せる
+  if (url.searchParams.has("code") || url.searchParams.has("state")) return;
+  if (req.mode === "navigate") {
+    // 画面を開くときは、元のリクエストのままサーバーへ（作り直さない）。つながらないときだけ保存した画面
+    e.respondWith(fetch(req).catch(() => caches.match("./index.html")));
+    return;
+  }
   if (url.searchParams.has("v")) {
     // 版の付いたファイル（app.js?v=… / style.css?v=…）は中身が変わらないので、保存したものを先に使う
     e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => { e.waitUntil(put(req, res.clone())); return res; })));
