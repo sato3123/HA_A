@@ -168,8 +168,8 @@ jobs:
           # 5分おきの更新（タイマー）と重ならないように、いったん止める（自動のセットアップがまた動かす）
           sudo systemctl stop homepanel-update.timer homepanel-update.service
           echo 1 | sudo tee /etc/homepanel/setup_version > /dev/null
-          sudo /usr/local/bin/homepanel-update | tee upd.log
-          grep -q "セットアップの新しい版" upd.log || fail "セットアップの新しい版を見つけていません"
+          sudo bash -x /usr/local/bin/homepanel-update 2>&1 | sed -e 's/github_pat_[A-Za-z0-9_]*/***/g' -e 's/ghs_[A-Za-z0-9]*/***/g' > upd.log || true
+          grep -q "セットアップの新しい版" upd.log || { grep -v "^+* *curl\|Authorization" upd.log | tail -40; fail "セットアップの新しい版を見つけていません"; }
           for i in $(seq 1 90); do [ "$(cat /etc/homepanel/setup_version)" != 1 ] && break; sleep 5; done
           sudo tail -20 /var/lib/homepanel-setup/last.log
           [ "$(cat /etc/homepanel/setup_version)" -ge 2 ] || fail "セットアップを自分で実行し直せませんでした"
