@@ -905,6 +905,41 @@ def circuits_now():
     return out
 
 
+def hourly_fill_tick(today, cur, now=None):
+    """回路ごとの時間別の記録を、AiSEG2 の「1日の使用量」に合わせて足りない分を足す。
+    いまの電力（W）の積み上げで記録できている回路（100V など）は足さない。200V の機器のように、いまの電力が
+    出ない・ときどきしか出ない回路は、その日の記録の合計が1日の使用量より少ない分を、いまの時間（5分）に入れる。
+    起動したときに足りない分（止まっていた間の分）は、1つの時間にまとめて入れないように起点にする。lock の中で呼ぶ"""
+    now = now or datetime.now()
+    dk = today.isoformat()
+    rec = {}
+    for k, h in energy["hours"].items():
+        if k.startswith(dk):
+            for n, v in (h.get("circuits") or {}).items():
+                rec[n] = rec.get(n, 0.0) + v
+    first = aiseg_daily["date"] != dk
+    if first:
+        # 起動したとき：いまの不足分は数えない。日が変わったとき：0 から
+        off = {} if aiseg_daily["date"] else {n: max(0.0, kwh * 1000 - rec.get(n, 0.0)) for n, kwh in cur.items()}
+        aiseg_daily.update(date=dk, offset=off)
+    off = aiseg_daily.get("offset") or {}
+    hk = now.strftime("%Y-%m-%dT%H")
+    k5 = now.strftime("%Y-%m-%dT%H:") + f"{now.minute // 5 * 5:02d}"
+    added = {}
+    for n, kwh in cur.items():
+        extra = kwh * 1000 - off.get(n, 0.0) - rec.get(n, 0.0)
+        if extra > 0.5:
+            added[n] = extra
+    if added:
+        h = energy["hours"].setdefault(hk, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+        f = energy5.setdefault(k5, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+        for n, wh in added.items():
+            h["circuits"][n] = h["circuits"].get(n, 0.0) + wh
+            f["circuits"][n] = f["circuits"].get(n, 0.0) + wh
+    aiseg_daily["last"] = dict(cur)
+    return added
+
+
 def aiseg_daily_tick():
     """5分ごと：回路ごとの1日の使用量の増えた分を、いまの時間・5分の記録に入れる（いまの電力が出ない 200V の回路のため）"""
     if not conf.get("aiseg_url"):
@@ -927,24 +962,7 @@ def aiseg_daily_tick():
     with lock:
         day = energy.setdefault("days", {}).setdefault(today.isoformat(), {})
         day["circuits_kwh"] = {k: round(v, 3) for k, v in cur.items()}
-        if aiseg_daily["date"] != today.isoformat():
-            # 日が変わったとき・起動したときは、その時点を起点にする（それまでの分を1つの時間にまとめて入れない）
-            aiseg_daily.update(date=today.isoformat(), last=dict(cur))
-        else:
-            inst = set(energy.get("inst_names") or [])
-            now = datetime.now()
-            hk = now.strftime("%Y-%m-%dT%H")
-            k5 = now.strftime("%Y-%m-%dT%H:") + f"{now.minute // 5 * 5:02d}"
-            h = energy["hours"].setdefault(hk, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
-            f = energy5.setdefault(k5, {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
-            for n, kwh in cur.items():
-                if n in inst:
-                    continue  # いまの電力が読める回路は、そちらで記録している
-                dwh = (kwh - aiseg_daily["last"].get(n, kwh)) * 1000
-                if dwh > 0:
-                    h["circuits"][n] = h["circuits"].get(n, 0.0) + dwh
-                    f["circuits"][n] = f["circuits"].get(n, 0.0) + dwh
-            aiseg_daily["last"] = dict(cur)
+        hourly_fill_tick(today, cur)
     # 過去7日の回路ごとの使用量も、まだ無ければ1日ずつ読んでおく（電気の分析の「回路別」用）
     for i in range(1, 8):
         dk = (today - timedelta(days=i)).isoformat()

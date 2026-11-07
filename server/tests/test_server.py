@@ -283,6 +283,31 @@ class TestGuard(SolarTestBase):
             m["time"].time = real
 
 
+class TestHourlyFill(SolarTestBase):
+    def test_200v_fills_and_100v_not_double(self):
+        m = self.m
+        m["energy"]["hours"].clear()
+        m["energy5"].clear()
+        d = date(2026, 11, 7)
+        # 起動したとき：その時点の不足分は数えない
+        m["aiseg_daily"].update(date=None, offset={})
+        self.assertEqual(m["hourly_fill_tick"](d, {"エアコン200V": 3.0, "照明": 1.0}, datetime(2026, 11, 7, 10, 0)), {})
+        # 照明はいまの電力で 200Wh 記録済み。エアコンは記録なし
+        h = m["energy"]["hours"].setdefault("2026-11-07T10", {"use": 0.0, "gen": 0.0, "buy": 0.0, "sell": 0.0, "circuits": {}})
+        h["circuits"]["照明"] = 200.0
+        added = m["hourly_fill_tick"](d, {"エアコン200V": 3.5, "照明": 1.1}, datetime(2026, 11, 7, 10, 30))
+        self.assertAlmostEqual(added["エアコン200V"], 500.0)
+        self.assertNotIn("照明", added)
+        self.assertAlmostEqual(h["circuits"]["エアコン200V"], 500.0)
+        # 次の時間：増えた分だけ、その時間に入る
+        added = m["hourly_fill_tick"](d, {"エアコン200V": 4.2, "照明": 1.1}, datetime(2026, 11, 7, 11, 5))
+        self.assertAlmostEqual(added["エアコン200V"], 700.0)
+        self.assertAlmostEqual(m["energy"]["hours"]["2026-11-07T11"]["circuits"]["エアコン200V"], 700.0)
+        # 日が変わったとき：0 から数える
+        added = m["hourly_fill_tick"](date(2026, 11, 8), {"エアコン200V": 0.3}, datetime(2026, 11, 8, 0, 10))
+        self.assertAlmostEqual(added["エアコン200V"], 300.0)
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
