@@ -10,11 +10,13 @@
 #   - Home Assistant（HA_IP:8123）への通信を同じアドレスで中継する
 #     → iPad から見ると1つの https のサイトになり、家の中だけでマイクが使える
 #   - GitHub の最新リリースを5分おきに確認して自動で更新する
+# スクリプト全体を { } で囲む：curl | bash で実行したとき、最後まで読み込んでから動かす（途中のコマンドが続きを読んでしまわないように）
+{
 set -euo pipefail
 
 # セットアップの版。Caddy・サービス・コマンドなど、セットアップで入れるものを変えたら1つ上げる。
 # 自動更新（homepanel-update）が、新しい版の setup.sh を見つけると、自分でこのセットアップを実行し直す
-SETUP_VERSION=4
+SETUP_VERSION=5
 # セットアップが2つ同時に動かないようにする（自動の更新も、セットアップの最中はやり直しを始めない）
 exec 8>/run/homepanel-setup.lock
 flock -w 1800 8 || { echo "ほかのセットアップが終わりません"; exit 1; }
@@ -100,9 +102,9 @@ trap 'rm -rf "$TMP"' EXIT
 # リポジトリのファイルを1つ取る（main ブランチ）
 ghfile() {
   if [ -n "$TOKEN" ]; then
-    curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
+    curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
   else
-    curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
+    curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
   fi
 }
 # 最新リリースの添付ファイルを1つ取る（名前か、名前の末尾で）
@@ -110,14 +112,14 @@ ghasset() {
   local url
   if [ -n "$TOKEN" ]; then
     url=$(jq -r --arg n "$1" '[.assets[] | select(.name==$n or (.name|endswith($n)))][0].url // empty' "$TMP/release.json")
-    [ -n "$url" ] && curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/octet-stream" "$url" -o "$2"
+    [ -n "$url" ] && curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/octet-stream" "$url" -o "$2"
   else
     url=$(jq -r --arg n "$1" '[.assets[] | select(.name==$n or (.name|endswith($n)))][0].browser_download_url // empty' "$TMP/release.json")
-    [ -n "$url" ] && curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "$url" -o "$2"
+    [ -n "$url" ] && curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 5 --retry-all-errors "$url" -o "$2"
   fi
 }
 
-curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/release.json" \
+curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 5 --retry-all-errors "${AUTH[@]}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases/latest" -o "$TMP/release.json" \
   || { echo "最新リリースを読めません（リポジトリが非公開なら homepanel-github-token でトークンを登録してください）"; exit 1; }
 TAG=$(jq -r .tag_name "$TMP/release.json")
 
@@ -153,7 +155,7 @@ if ghfile server/tariffs.json "$TMP/tariffs.json" && jq -e .providers "$TMP/tari
 fi
 # TimeTree の取り込みの道具も新しくする（1日1回。TimeTree 側の変更に追いつくため）
 if [ -x /opt/timetree/bin/pip ] && [ -z "$(find /opt/timetree/.updated -mtime -1 2>/dev/null)" ]; then
-  /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null 2>&1 && touch /opt/timetree/.updated || true
+  timeout 600 /opt/timetree/bin/pip install -q -U timetree-exporter >/dev/null 2>&1 && touch /opt/timetree/.updated || true
 fi
 if ghfile server/homepanel-calendar.py "$TMP/calendar.py" && python3 -m py_compile "$TMP/calendar.py"; then
   cmp -s "$TMP/calendar.py" /usr/local/bin/homepanel-calendar || install -m 755 "$TMP/calendar.py" /usr/local/bin/homepanel-calendar
@@ -205,6 +207,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/homepanel-update
+# 万一どこかで止まっても、30分で打ち切って次の確認に進む
+TimeoutStartSec=30min
 EOF
 
 cat > /etc/systemd/system/homepanel-update.timer <<'EOF'
@@ -225,9 +229,9 @@ ghfile() {
   # 使えないトークン（期限切れなど）なら、トークンなしで読む
   if [ -n "$T" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $T" "https://api.github.com/repos/$REPO")" = "401" ]; then T=""; fi
   if [ -n "$T" ]; then
-    curl -fsSL -H "Authorization: Bearer $T" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
+    curl -fsSL --connect-timeout 20 --max-time 300 -H "Authorization: Bearer $T" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
   else
-    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
+    curl -fsSL --connect-timeout 20 --max-time 300 "https://raw.githubusercontent.com/$REPO/main/$1" -o "$2"
   fi
 }
 
@@ -587,3 +591,4 @@ cat <<EOF
  今すぐ更新するとき： homepanel-update
 ========================================================
 EOF
+} < /dev/null
