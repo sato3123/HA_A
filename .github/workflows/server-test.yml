@@ -51,7 +51,9 @@ jobs:
         # リポジトリが非公開なので、Actions のトークンで読む（家のサーバーでは homepanel-github-token で登録したトークン）
         env:
           GH_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 GITHUB_TOKEN="$GH_READ_TOKEN" bash server/setup.sh
+        # 止まったときに記録が残るよう、時間を区切る（ふだんは1〜2分）
+        timeout-minutes: 20
+        run: sudo HA_IP=127.0.0.1 SELF_IP=127.0.0.1 GITHUB_TOKEN="$GH_READ_TOKEN" bash -x server/setup.sh 2>&1 | sed -e 's/github_pat_[A-Za-z0-9_]*/***/g' -e 's/ghs_[A-Za-z0-9]*/***/g'; test "${PIPESTATUS[0]}" = 0
 
       - name: Check the server
         run: |

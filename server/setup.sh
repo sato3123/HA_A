@@ -65,7 +65,7 @@ TOKEN=$(cat /etc/homepanel/github_token 2>/dev/null || true)
 AUTH=()
 [ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
 # トークンの期限が切れた・消されたときは、トークンなしで読む（リポジトリが公開なら、そのまま更新できる）
-if [ -n "$TOKEN" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --retry 2 "${AUTH[@]}" "https://api.github.com/repos/$REPO")" = "401" ]; then
+if [ -n "$TOKEN" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --retry 2 "${AUTH[@]}" "https://api.github.com/repos/$REPO")" = "401" ]; then
   echo "注意：GitHub のトークンが使えません（期限切れなど）。トークンなしで更新を確認します"
   TOKEN=""; AUTH=()
 fi
@@ -182,7 +182,7 @@ EOF
 ghfile() {
   local T; T=$(cat /etc/homepanel/github_token 2>/dev/null || true)
   # 使えないトークン（期限切れなど）なら、トークンなしで読む
-  if [ -n "$T" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" "https://api.github.com/repos/$REPO")" = "401" ]; then T=""; fi
+  if [ -n "$T" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $T" "https://api.github.com/repos/$REPO")" = "401" ]; then T=""; fi
   if [ -n "$T" ]; then
     curl -fsSL -H "Authorization: Bearer $T" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$1?ref=main" -o "$2"
   else
