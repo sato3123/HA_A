@@ -14,7 +14,7 @@ set -euo pipefail
 
 # セットアップの版。Caddy・サービス・コマンドなど、セットアップで入れるものを変えたら1つ上げる。
 # 自動更新（homepanel-update）が、新しい版の setup.sh を見つけると、自分でこのセットアップを実行し直す
-SETUP_VERSION=2
+SETUP_VERSION=3
 
 # 前回のセットアップで使った値（Home Assistant の IP など）。環境変数で指定しなければ、これを使う
 if [ -f /etc/homepanel/setup.env ]; then
@@ -75,7 +75,8 @@ cat > /usr/local/bin/homepanel-update.new <<'UPDEOF'
 set -euo pipefail
 # 同時に2つ動かないようにする（タイマーと手動、セットアップの中から呼ぶときなど）
 exec 9>/run/homepanel-update.lock
-flock -n 9 || { echo "ほかの更新が動いています"; exit 0; }
+# ほかの更新（5分おきのタイマーなど）が動いていれば、終わるまで待つ
+flock -w 900 9 || { echo "ほかの更新が15分たっても終わりません"; exit 0; }
 REPO=$(cat /etc/homepanel/repo)
 WEB=/srv/homepanel
 APK_DIR=/srv/homepanel-android

@@ -165,6 +165,8 @@ jobs:
           # セットアップの新しい版を見つけたら、コマンドを入れなくても自分で実行し直す
           [ "$(cat /etc/homepanel/setup_version)" -ge 2 ] || fail "セットアップの版が記録されていません"
           grep -q '^HA_IP=127.0.0.1$' /etc/homepanel/setup.env || fail "セットアップで使った値が残っていません"
+          # 5分おきの更新（タイマー）と重ならないように、いったん止める（自動のセットアップがまた動かす）
+          sudo systemctl stop homepanel-update.timer homepanel-update.service
           echo 1 | sudo tee /etc/homepanel/setup_version > /dev/null
           sudo /usr/local/bin/homepanel-update | tee upd.log
           grep -q "セットアップの新しい版" upd.log || fail "セットアップの新しい版を見つけていません"
