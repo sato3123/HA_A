@@ -194,6 +194,9 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     val roomFilter by vm.roomFilter.collectAsState()
 
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    // 設定を開いたときに、最初に出すページ（はじめての設定の案内から）
+    var settingsPage by rememberSaveable { mutableStateOf<String?>(null) }
+    val simple by vm.simpleMode.collectAsState()
     var showAuto by rememberSaveable { mutableStateOf(false) }
     var showTimers by rememberSaveable { mutableStateOf(false) }
     var showCalendar by rememberSaveable { mutableStateOf(false) }
@@ -218,7 +221,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         return
     }
     if (showSettings) {
-        SettingsScreen(vm, onClose = { showSettings = false }, onEnableWake = onEnableWake)
+        SettingsScreen(vm, onClose = { showSettings = false; settingsPage = null }, onEnableWake = onEnableWake, initialPage = settingsPage)
         return
     }
 
@@ -267,6 +270,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             }
         }
         item(span = { full(this) }) { UpdateCard(vm, showWhenIdle = false) }
+        item(span = { full(this) }) { SetupGuideCard(vm) { p -> settingsPage = p; showSettings = true } }
         item(span = { full(this) }) { GroupButtons(vm, compact) }
         message?.let { m ->
             item(span = { full(this) }) {
@@ -275,7 +279,20 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         }
 
         // ---- 選んでいるユーザーの並び順で表示 ----
-        profile.sections.filter { it.visible }.forEach { sp ->
+        // ---- かんたん表示：時計と電気の様子、大きなボタンだけ ----
+        if (simple) {
+            if (clockShown) item(span = { full(this) }) { ClockWeather(weather, forecast) { mic() } }
+            item(span = { full(this) }) { LiveStrip(vm) }
+            val big = entities.filter { it.domain in simpleDomains() }
+            if (big.isEmpty()) {
+                item(span = { full(this) }) { Text("かんたん表示に出せる機器（照明・エアコン・スイッチなど）がありません（⚙ 設定 → 部屋と機器 で選べます）") }
+            }
+            items(big, key = { "s_" + it.entityId }) { e -> SimpleTile(e, vm) }
+            item(span = { full(this) }) {
+                TextButton(onClick = { vm.setSimpleMode(false) }) { Text("くわしい表示に戻す") }
+            }
+        }
+        profile.sections.filter { it.visible && !simple }.forEach { sp ->
             when (sp.section) {
                 HomeSection.CLOCK -> item(span = { full(this) }) { ClockWeather(weather, forecast) { mic() } }
                 HomeSection.THERMO -> item(span = { full(this) }) { ThermoStrip(vm) }

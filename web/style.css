@@ -343,3 +343,18 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .numin { display: inline-flex; align-items: center; gap: 6px; }
 .numin input { width: 76px; font-size: 18px; text-align: right; padding: 6px 8px; }
 .numin .u { font-size: 16px; }
+
+/* ---- かんたん表示（大きなボタンだけ） ---- */
+#home.simple [data-sec="thermo"], #home.simple [data-sec="calendar"], #home.simple [data-sec="timers"],
+#home.simple [data-sec="automations"], #home.simple [data-sec="devices"], #home.simple #solar, #home.simple #energy { display: none; }
+.simplegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin: 8px 0; }
+.simpletile { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 120px; padding: 16px; border-radius: 18px;
+  border: 0; background: var(--surface2); color: var(--on); font: inherit; text-align: left; cursor: pointer; }
+.simpletile b { font-size: 18px; }
+.simpletile .si { font-size: 30px; }
+.simpletile .ss { font-size: 14px; opacity: .8; }
+.simpletile.on { background: var(--pc); color: var(--on-pc); }
+.simpletile:disabled { opacity: .45; }
+/* いま自動で動いていること・自給率 */
+.estrip .auto { color: var(--primary); font-size: 14px; flex-basis: 100%; }
+.estrip .ssrate { flex-basis: 100%; }

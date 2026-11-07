@@ -105,7 +105,7 @@ fun HotPlanSummary(vm: MainViewModel) {
     }
 }
 
-/** 設定：夜の沸き上げをできるだけ遅く（夜止めの方式のとき） */
+/** 設定：夜の沸き上げをできるだけ遅く（「夜は止める」の方式のとき） */
 @Composable
 fun NightLateSettings(vm: MainViewModel) {
     val conf by vm.serverConf.collectAsState()
@@ -147,7 +147,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
                 Text("お湯の量を過去の使用量から自動で決める", style = MaterialTheme.typography.labelLarge)
                 Text(
                     "直近4週間の同じ種類の日（平日／土日祝）のお湯の使い方から、夜に使う量を予想して、夕方までに「予想＋余裕」のお湯を用意します。" +
-                        "足りなければ、間に合う時刻から沸かします（昼に余った電気で沸けば沸かしません）。夜止めのときは、夜に沸かす量も翌朝の予想＋余裕にします。",
+                        "足りなければ、間に合う時刻から沸かします（昼に余った電気で沸けば沸かしません）。「夜は止める」のときは、夜に沸かす量も翌朝の予想＋余裕にします。",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -178,7 +178,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
             }
             p.optJSONObject("night")?.let { n ->
                 Text("→ ${dayText(n.optString("date"))}の朝（0時〜${n.optInt("to")}時）に使う " + needText(n) +
-                    (if (n.has("pct")) "：夜止めの日は ${n.optInt("pct")}%" + (tank?.let { t -> "（約${t * n.optInt("pct") / 100}L）" } ?: "") + " まで沸かします" else ""),
+                    (if (n.has("pct")) "：夜を減らす日は ${n.optInt("pct")}%" + (tank?.let { t -> "（約${t * n.optInt("pct") / 100}L）" } ?: "") + " まで沸かします" else ""),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             Text("沸かす速さ：約${p.optInt("rate_lph")}L/時（${p.optString("rate_how")}）。足りない量から、沸かし始める時刻を決めます。", style = MaterialTheme.typography.labelSmall)

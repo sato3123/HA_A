@@ -47,7 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> Unit) {
+fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> Unit, initialPage: String? = null) {
     val all by vm.allEntities.collectAsState()
     val sel by vm.selection.collectAsState()
     val pipelines by vm.pipelines.collectAsState()
@@ -72,7 +72,10 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
     var remoteError by remember { mutableStateOf<String?>(null) }
     var confirmLogout by remember { mutableStateOf(false) }
     // いま開いている設定のページ（null = メニュー）
-    var page by rememberSaveable { mutableStateOf<String?>(null) }
+    var page by rememberSaveable { mutableStateOf(initialPage) }
+    // 詳しい設定（ふだんは使わない項目）を出すか
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
+    val simple by vm.simpleMode.collectAsState()
     androidx.activity.compose.BackHandler(enabled = page != null) { page = null }
 
     val selected = sel ?: all.map { it.entityId }.toSet()
@@ -100,12 +103,34 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
         }
         // ---- メニュー（項目ごとに分ける） ----
         if (page == null) {
-            items(SETTINGS_MENU, key = { "m_" + it.key }) { m ->
+            item { SectionTitle("よく使う設定") }
+            items(SETTINGS_MENU.filter { !it.adv }, key = { "m_" + it.key }) { m ->
                 MenuRow(m) { page = m.key }
+            }
+            item {
+                TextButton(onClick = { showAdvanced = !showAdvanced }) {
+                    Text(if (showAdvanced) "▲ 詳しい設定を閉じる" else "▼ 詳しい設定（機器を直接つなぐ・カメラ・外出先・記録など）")
+                }
+            }
+            if (showAdvanced) {
+                items(SETTINGS_MENU.filter { it.adv }, key = { "m_" + it.key }) { m ->
+                    MenuRow(m) { page = m.key }
+                }
             }
         }
 
         if (page == "display") {
+            // ---- かんたん表示 ----
+            item { SectionTitle("かんたん表示") }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("大きなボタンだけのホーム画面にする", style = MaterialTheme.typography.bodyLarge)
+                        Text("照明・エアコン・スイッチなどを大きなボタンで出し、タップで入／切します。家族や初めての人向け。細かい操作は ⚙ 設定 でオフに戻すとできます。", style = MaterialTheme.typography.bodySmall)
+                    }
+                    androidx.compose.material3.Switch(checked = simple, onCheckedChange = { vm.setSimpleMode(it) })
+                }
+            }
             // ---- 表示のユーザー ----
             item { SectionTitle("表示のユーザー（家族ごとの表示）") }
             item { ProfileSettings(vm) }
@@ -257,8 +282,13 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             item { ClimateAutoSettings(vm) }
         }
 
+        if (page == "selfsuff") {
+            item { SectionTitle("電気の自給率を上げる（オプション）") }
+            item { SelfSuffSettings(vm) }
+        }
+
         if (page == "solar") {
-            item { SectionTitle("おひさま沸き上げ（エコキュート）") }
+            item { SectionTitle("お湯（エコキュート）と太陽光") }
             item { SolarHeatSettings(vm) }
         }
 
@@ -278,7 +308,7 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
 
         if (page == "echonet") {
             // ---- ECHONET Lite ----
-            item { SectionTitle("ECHONET Lite（Home Assistant を通さずに直接つなぐ）") }
+            item { SectionTitle("機器を直接つなぐ（ECHONET Lite）") }
             item { EchonetSettings(vm) }
         }
 
@@ -588,24 +618,25 @@ private fun HomeLocationSettings(vm: MainViewModel) {
     }
 }
 
-data class MenuItem(val key: String, val icon: String, val title: String, val sub: String)
+data class MenuItem(val key: String, val icon: String, val title: String, val sub: String, val adv: Boolean = false)
 
 val SETTINGS_MENU = listOf(
-    MenuItem("display", "🎨", "ホーム画面の表示", "家族ごとの表示・並び順、配色、天気"),
+    MenuItem("display", "🎨", "ホーム画面の表示", "かんたん表示、家族ごとの表示・並び順、配色、天気"),
     MenuItem("rooms", "🚪", "部屋と機器", "部屋の並び順・追加、表示する機器"),
     MenuItem("thermo", "🌡", "温度計", "表示する温度計、名前"),
-    MenuItem("voice", "🎤", "音声と AI", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"),
-    MenuItem("screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間"),
-    MenuItem("calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"),
-    MenuItem("climate","❄","エアコンの自動温度調整","温度の範囲を決めて、自動で冷房・暖房"),
-    MenuItem("solar","☀","おひさま沸き上げ","太陽光で余った電気でエコキュートを沸かす"),
+    MenuItem("voice", "🎤", "音声と自宅の位置", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"),
+    MenuItem("selfsuff", "🌱", "電気の自給率を上げる", "余った電気のお知らせ・エアコン・充電など（使うものを選ぶ）"),
+    MenuItem("solar","☀","お湯（エコキュート）と太陽光","余った電気でお湯を沸かす、30分ごとの電気の上限"),
     MenuItem("tariff","💴","電気料金","電力会社とプラン、時間帯・季節ごとの単価"),
-    MenuItem("cameras","📷","カメラ","カメラを探して登録、2日分の記録と動きの分析"),
-    MenuItem("echonet", "📡", "ECHONET Lite", "Home Assistant を通さずに直接つなぐ機器"),
-    MenuItem("connection", "🌐", "外出先からの接続", "Home Assistant Cloud のリモートURL"),
-    MenuItem("account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト"),
-    MenuItem("oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか"),
+    MenuItem("climate","❄","エアコンの自動温度調整","温度の範囲を決めて、自動で冷房・暖房"),
+    MenuItem("calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"),
     MenuItem("system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"),
+    MenuItem("screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間", adv = true),
+    MenuItem("cameras","📷","カメラ","カメラを探して登録、2日分の記録と動きの分析", adv = true),
+    MenuItem("echonet", "📡", "機器を直接つなぐ", "Home Assistant を通さずに、家の中からエアコン・エコキュートなどを操作（ECHONET Lite）", adv = true),
+    MenuItem("connection", "🌐", "外出先からの接続", "Home Assistant Cloud のリモートURL", adv = true),
+    MenuItem("account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト", adv = true),
+    MenuItem("oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか", adv = true),
 )
 
 @Composable

@@ -59,9 +59,9 @@ DEFAULT_CONF = {
     "lat": None, "lon": None,               # 天気予報の場所（Home Assistant の自宅の位置を画面から送る）
     # AiSEG2（Panasonic の HEMS）から、いまの発電・消費を読む（スマートメーターの代わり。こちらが優先）
     "aiseg_url": "", "aiseg_user": "aiseg", "aiseg_password": "",
-    "night_heat_pct": 50,                   # 夜止め：夜はこの残量（%）まで沸かしたら止める（hot_auto のときは自動で決める）
+    "night_heat_pct": 50,                   # 「夜は止める」：夜はこの残量（%）まで沸かしたら止める（hot_auto のときは自動で決める）
     # お湯の量を過去の使用量から自動で決める：夕方 prep_hour 時までに「夜（prep_hour〜night_start_hour 時）に使う予想＋余裕」を用意し、
-    # 夜止めの夜に沸かす量も「翌朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕」にする
+    # 「夜は止める」の夜に沸かす量も「翌朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕」にする
     "hot_auto": False, "hot_margin_l": 50, "prep_hour": 17, "night_start_hour": 23,
     "heat_rate_lph": 0,                     # 沸き上げの速さ（L/時）。0 なら記録から求める
     # 多めにお湯が必要な日：[{date: "YYYY-MM-DD", liters, part: evening（夕方〜夜）/ morning（朝）, note}]
@@ -70,7 +70,7 @@ DEFAULT_CONF = {
     # 30分の電力が注意の値を超えそうなときは、沸き上げを一時停止し、下がったら元に戻す
     "heat_guard": True, "heat_guard_kw": 0,
     # 夜の沸き上げを、できるだけ遅く（朝に近く）する：沸かしたお湯は外気との温度差に比例して冷めるので、
-    # 冷める分と、その時刻の電気料金・外気温での効率（COP）から、いちばん安く済む開始時刻を選ぶ（夜止めの方式のとき）
+    # 冷める分と、その時刻の電気料金・外気温での効率（COP）から、いちばん安く済む開始時刻を選ぶ（「夜は止める」の方式のとき）
     "night_late": True, "night_end_hour": 7,
     "tank_temp": 65,                        # 沸き上げの温度（℃）
     "tank_loss_w_per_k": 1.0,               # タンクの冷めやすさ（外気との温度差1℃あたりの熱の逃げ方・W）
@@ -99,6 +99,17 @@ DEFAULT_CONF = {
     "groups": [],
     # 30分ごとの電力（デマンド）の見張り：対象（use＝使った電気 / buy＝買った電気）、上限（0 なら直近12か月の最大）、余裕（kW）、通知先（Home Assistant の notify）
     "demand_target": "buy", "demand_limit_kw": 0, "demand_margin_kw": 0.5, "demand_notify": [], "demand_enabled": False,
+    # ---- 自給率を上げる（どれもオプション。初めはオフ） ----
+    # ホーム画面に今日の自給率と目標を出す
+    "ss_show": False, "ss_target_pct": 50,
+    # 昼に売電が続いたら「いま使うとお得」と知らせる（kW 以上が min 分続いたら。from〜to 時のあいだ・2時間に1回まで）。知らせる先は電力の見張りと同じ
+    "ss_notify": False, "ss_notify_kw": 1.5, "ss_notify_min": 10, "ss_notify_from": 9, "ss_notify_to": 15,
+    # 昼の余剰でエアコンを先に動かす：動いているエアコンだけ、冷房は offset℃下げ・暖房は上げる。買電になったら元に戻す
+    "ss_aircon": False, "ss_aircon_entities": [], "ss_aircon_kw": 1.0, "ss_aircon_offset": 1.0, "ss_aircon_from": 10, "ss_aircon_to": 16,
+    # 余剰で動かす機器（電気自動車の充電・蓄電池の充電など）：[{entity, name, on_kw, off_kw}]。売電が on_kw 以上で入れ、買電が off_kw を超えたら切る
+    "ss_loads": False, "ss_loads_items": [], "ss_loads_min": 10, "ss_loads_from": 9, "ss_loads_to": 16,
+    # くもりの日も、昼に沸かせる見込みの分だけ夜の沸き上げを減らす（「夜は止める」方式のとき）
+    "ss_partial": False,
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -1084,6 +1095,151 @@ def demand_tick(use_w, buy_w, dt_h):
                 log(f"電力の見張り：{target} に知らせられませんでした（{e}）")
 
 
+# ================= 自給率を上げる（オプション） =================
+ss = {"sell_since": None, "buy_since": None, "notified_at": 0, "aircon": {}, "loads": {}, "last": None}
+
+
+def _in_hours(now, a, b):
+    a, b = int(a), int(b)
+    return a <= now.hour < b if a < b else (now.hour >= a or now.hour < b)
+
+
+def self_rate_today():
+    """今日の自給率（%）：1 − 買った電気 ÷ 使った電気"""
+    pre = date.today().isoformat()
+    use = buy = 0.0
+    with lock:
+        for k, v in energy["hours"].items():
+            if k.startswith(pre):
+                use += float(v.get("use") or 0)
+                buy += float(v.get("buy") or 0)
+    if use <= 0:
+        return None
+    return round(max(0.0, min(100.0, (1 - buy / use) * 100)), 1)
+
+
+def ss_notify_send(title, msg):
+    for target in conf.get("demand_notify") or []:
+        try:
+            dom, svc = str(target).split(".", 1)
+            if dom == "notify":
+                ha_call("notify", svc, {"title": title, "message": msg})
+        except Exception as e:
+            log(f"{title}：{target} に知らせられませんでした（{e}）")
+
+
+def selfsuff_tick(surplus, now=None):
+    """売電（surplus＞0）・買電（surplus＜0）が続いた時間を見て、通知・エアコン・余剰で動かす機器を動かす"""
+    now = now or datetime.now()
+    t = now.timestamp()
+    if surplus is None:
+        return
+    ss["sell_since"] = (ss["sell_since"] or t) if surplus > 0 else None
+    ss["buy_since"] = (ss["buy_since"] or t) if surplus < 0 else None
+    sell_kw, buy_kw = max(0.0, surplus) / 1000, max(0.0, -surplus) / 1000
+    ss["last"] = {"at": t, "sell_kw": round(sell_kw, 2), "buy_kw": round(buy_kw, 2)}
+
+    def held(key, minutes):
+        return ss[key] is not None and t - ss[key] >= minutes * 60
+
+    # 1. いま使うとお得の知らせ
+    if conf.get("ss_notify") and _in_hours(now, conf.get("ss_notify_from", 9), conf.get("ss_notify_to", 15)):
+        kw = float(conf.get("ss_notify_kw") or 1.5)
+        mn = float(conf.get("ss_notify_min") or 10)
+        if sell_kw >= kw and held("sell_since", mn) and t - ss["notified_at"] > 7200:
+            ss["notified_at"] = t
+            msg = (f"太陽光の電気が {sell_kw:.1f}kW 余って売電しています（{int(mn)}分以上）。"
+                   "いま洗濯機・食器洗い機・乾燥機などを使うと、買う電気を増やさずに済みます。")
+            log("自給率：" + msg)
+            state["ss_alert"] = {"at": t, "message": msg}
+            ss_notify_send("☀ いま使うとお得です", msg)
+
+    # 2. 余剰でエアコンを先に動かす（動いているエアコンだけ）
+    ac_on = conf.get("ss_aircon") and conf.get("ha_token") and _in_hours(now, conf.get("ss_aircon_from", 10), conf.get("ss_aircon_to", 16))
+    for eid in list(set(conf.get("ss_aircon_entities") or []) | set(ss["aircon"])):
+        st = ss["aircon"].get(eid)
+        want = ac_on and eid in (conf.get("ss_aircon_entities") or [])
+        try:
+            if st is None and want and sell_kw >= float(conf.get("ss_aircon_kw") or 1.0) and held("sell_since", 10):
+                a = ha_state(eid) or {}
+                mode = a.get("state")
+                cur = (a.get("attributes") or {}).get("temperature")
+                if mode in ("cool", "heat") and cur is not None:
+                    off = max(0.5, min(3.0, float(conf.get("ss_aircon_offset") or 1.0)))
+                    new = round((float(cur) - off if mode == "cool" else float(cur) + off) * 2) / 2
+                    ha_call("climate", "set_temperature", {"entity_id": eid, "temperature": new})
+                    ss["aircon"][eid] = {"base": float(cur), "set": new, "mode": mode, "at": t}
+                    log(f"自給率：電気が余っているので、{eid} を {cur}℃ → {new}℃ にしました（{'冷房' if mode == 'cool' else '暖房'}を先に）")
+            elif st is not None and (not want or held("buy_since", 10)):
+                a = ha_state(eid) or {}
+                cur = (a.get("attributes") or {}).get("temperature")
+                # 人が温度を変えていたら、そのままにする
+                if a.get("state") == st["mode"] and cur is not None and abs(float(cur) - st["set"]) < 0.01:
+                    ha_call("climate", "set_temperature", {"entity_id": eid, "temperature": st["base"]})
+                    log(f"自給率：{eid} を元の {st['base']}℃ に戻しました")
+                ss["aircon"].pop(eid, None)
+        except Exception as e:
+            print("自給率（エアコン）でエラー:", e, flush=True)
+
+    # 3. 余剰で動かす機器（電気自動車・蓄電池の充電など）
+    ld_on = conf.get("ss_loads") and conf.get("ha_token") and _in_hours(now, conf.get("ss_loads_from", 9), conf.get("ss_loads_to", 16))
+    mn = float(conf.get("ss_loads_min") or 10)
+    items = {x["entity"]: x for x in conf.get("ss_loads_items") or [] if isinstance(x, dict) and x.get("entity")}
+    for eid in list(set(items) | set(ss["loads"])):
+        it = items.get(eid) or {}
+        dom = eid.split(".")[0]
+        try:
+            if eid not in ss["loads"] and ld_on and it and sell_kw >= float(it.get("on_kw") or 1.5) and held("sell_since", mn):
+                a = ha_state(eid) or {}
+                if a.get("state") == "off":
+                    ha_call(dom, "turn_on", {"entity_id": eid})
+                    ss["loads"][eid] = {"at": t}
+                    log(f"自給率：電気が {sell_kw:.1f}kW 余っているので、{it.get('name') or eid} を入れました")
+            elif eid in ss["loads"] and (not ld_on or not it or (buy_kw >= float(it.get("off_kw") or 0.3) and held("buy_since", 5))):
+                ha_call(dom, "turn_off", {"entity_id": eid})
+                ss["loads"].pop(eid, None)
+                why = "買う電気が増えた" if ld_on and it else "時間外・設定がオフ"
+                log(f"自給率：{why}ので、{it.get('name') or eid} を切りました")
+        except Exception as e:
+            print("自給率（余剰で動かす機器）でエラー:", e, flush=True)
+
+
+def selfsuff_public():
+    return {"rate": self_rate_today(), "show": bool(conf.get("ss_show")), "target": int(conf.get("ss_target_pct") or 0),
+            "now": ss.get("last"), "alert": state.get("ss_alert"),
+            "aircon": sorted(ss["aircon"]), "loads": sorted(ss["loads"]), "partial": state.get("solar_partial")}
+
+
+def auto_now():
+    """いま自動で動いていること（理由つき）。ホーム画面に1行ずつ出す"""
+    out = []
+    a = state.get("away")
+    if a:
+        out.append({"icon": "🧳", "text": "留守のため、お湯の沸き上げを止めています" if a == "stop" else "留守からの帰りに合わせて、お湯を沸かしています"})
+    g = guard_public()
+    if g.get("active"):
+        out.append({"icon": "⏸", "text": "買う電気が多いので、お湯の沸き上げを一時停止しています" + (f"（{g['reason']}）" if g.get("reason") else "")})
+    if state.get("by_us"):
+        out.append({"icon": "☀", "text": "太陽光の余った電気で、お湯を沸かしています"})
+    nh = state.get("night_heat")
+    if nh and nh.get("start") and nh["start"] > time.time():
+        out.append({"icon": "🌙", "text": f"今夜は {datetime.fromtimestamp(nh['start']).strftime('%H:%M')} からお湯を沸かします（朝に近いほど冷める分が少なく安いため）"})
+    elif state.get("night_stop"):
+        out.append({"icon": "🌙", "text": "晴れの予報なので、夜の沸き上げを止めて昼に沸かします"})
+    sp = state.get("solar_partial")
+    if sp and sp.get("frac") and sp.get("date") in (date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()):
+        out.append({"icon": "⛅", "text": f"くもりでも昼に約{round(sp['frac'] * 100)}%ぶん沸かせる見込みなので、夜の沸き上げを減らしています"})
+    if ss["aircon"]:
+        out.append({"icon": "❄", "text": f"電気が余っているので、エアコン {len(ss['aircon'])}台を先に動かしています（買う電気が増えたら元の温度に戻します）"})
+    if ss["loads"]:
+        names = [next((x.get("name") for x in conf.get("ss_loads_items") or [] if x.get("entity") == e), None) or e for e in ss["loads"]]
+        out.append({"icon": "🔌", "text": "電気が余っているので動かしています：" + "、".join(names)})
+    al = state.get("demand_alert")
+    if al and time.time() - al.get("at", 0) < 1800:
+        out.append({"icon": "⚡", "text": "この30分の電気が上限に近づいています"})
+    return out
+
+
 def demand_report(day):
     key_day = day
     lim, how = demand_limit()
@@ -1869,6 +2025,7 @@ def run_plan(manual=False):
     if manual:
         state["shift_unsupported"] = False
     name = "今日" if target == date.today() else "明日"
+    info = None
     try:
         sunny, info = forecast_solar(target)
         note = info["note"]
@@ -1880,6 +2037,14 @@ def run_plan(manual=False):
             note = "（日射量の予報が使えないため、天気の種類で判断）"
         except Exception as e2:
             return result(False, f"{name}の天気予報を読めませんでした：{e2}")
+    # くもりの日でも、昼に沸かせる見込みの分だけ夜を減らす（オプション・「夜は止める」方式のとき）
+    state["solar_partial"] = None
+    if not sunny and conf.get("ss_partial") and conf.get("night_method") == "stop" and isinstance(info, dict) and info.get("need"):
+        frac = float(info.get("surplus") or 0) / float(info["need"])
+        if frac >= 0.3:
+            state["solar_partial"] = {"date": target.isoformat(), "frac": round(min(frac, 0.95), 2)}
+            sunny = True
+            note += f"（くもりでも昼に約{round(min(frac, 0.95) * 100)}%ぶん沸かせる見込みなので、夜はその分だけ減らします）"
     base_result = result
 
     def result(ok, msg, sunny_=None):
@@ -2260,7 +2425,7 @@ def temp_note(p):
 
 
 def night_need(d):
-    """夜止めの夜に沸かす量：d（翌日）の朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕＋多めの日の分"""
+    """「夜は止める」の夜に沸かす量：d（翌日）の朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕＋多めの日の分"""
     h1 = max(1, min(24, int(conf.get("start_hour", 9))))
     p = predict_hot(d, 0, h1)
     extra, note = hot_extra_for(d, "morning")
@@ -2278,18 +2443,22 @@ def night_need(d):
 
 
 def night_target_pct(d=None):
-    """夜止めで夜に沸かす量（%）。自動なら、翌朝の予想＋余裕から（20〜100%）。記録が無ければ設定の値"""
+    """「夜は止める」で夜に沸かす量（%）。自動なら、翌朝の予想＋余裕から（20〜100%）。記録が無ければ設定の値"""
     base = int(conf.get("night_heat_pct", 50))
     tank = (state.get("eco") or {}).get("tank")
-    if not conf.get("hot_auto") or not tank:
-        return base
     if d is None:
         now = datetime.now()
         d = now.date() if now.hour < 12 else now.date() + timedelta(days=1)
-    n = night_need(d)
-    if not n.get("need"):
-        return base
-    return max(20, min(100, -(-int(n["need"]) * 100 // tank)))
+    pct = base
+    if conf.get("hot_auto") and tank:
+        n = night_need(d)
+        if n.get("need"):
+            pct = max(20, min(100, -(-int(n["need"]) * 100 // tank)))
+    # くもりの日：昼に沸かせない見込みの分を、夜に足す
+    sp = state.get("solar_partial")
+    if sp and sp.get("frac") and sp.get("date") == d.isoformat():
+        pct = min(100, int(round(pct + (100 - pct) * (1 - sp["frac"]))))
+    return pct
 
 
 # ================= 夜の沸き上げの時刻を決める（冷める量と料金から、いちばん安い開始時刻） =================
@@ -2434,7 +2603,7 @@ def plan_night_heat(liters, now=None):
 
 
 def night_heat_target(sunny):
-    """今夜沸かす量（L）。晴れなら翌朝の分（夜止めの目標）、晴れなければ翌日1日分（予想＋余裕）。予想が無ければ満タン"""
+    """今夜沸かす量（L）。晴れなら翌朝の分（「夜は止める」の目標）、晴れなければ翌日1日分（予想＋余裕）。予想が無ければ満タン"""
     tank = (state.get("eco") or {}).get("tank") or 0
     d = plan_target()
     if sunny:
@@ -2499,7 +2668,7 @@ def night_heat_tick(eco, now):
 
 
 def schedule_night_heat(sunny):
-    """毎日の設定のあと：今夜沸かすなら、量と開始時刻を決める（夜止めの方式・できるだけ遅く がオンのとき）"""
+    """毎日の設定のあと：今夜沸かすなら、量と開始時刻を決める（「夜は止める」の方式・できるだけ遅く がオンのとき）"""
     target = night_heat_target(sunny)
     if target is None:
         return None
@@ -2562,7 +2731,7 @@ def prep_tick(eco, now):
     if st.get("heating"):
         # 沸かしている：目標まで沸いたら（または準備の時刻を1時間過ぎたら）やめる
         if remain < target and now.hour < ph + 1 and not eco.get("heating") and time.time() - st.get("resent", 0) > 600:
-            # ほかの設定（夜止めを自動に戻すなど）で止まったときは、もう一度沸かす
+            # ほかの設定（「夜は止める」を自動に戻すなど）で止まったときは、もう一度沸かす
             st["resent"] = time.time()
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
         if remain >= target or now.hour >= ph + 1:
@@ -2656,7 +2825,7 @@ def guard_tick(eco, surplus, step_s):
 
 def guard_release(reason, cool=0):
     mode = guard["mode"] or b"\x41"
-    # 止めているあいだに「夜止め」（目標まで沸いた・晴れの夜）になったときは、止めたままにする
+    # 止めているあいだに「「夜は止める」」（目標まで沸いた・晴れの夜）になったときは、止めたままにする
     if mode == b"\x41" and state.get("night_stop"):
         mode = b"\x43"
     err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, mode)
@@ -2764,7 +2933,7 @@ def stop_plan(sunny, name, eco, result):
 
 
 def eco_pause(reason):
-    """夜止めのときの沸き増しの終わり：自動に戻さず、止めたままにする（昼の高い電気で沸かさないため）"""
+    """「夜は止める」のときの沸き増しの終わり：自動に戻さず、止めたままにする（昼の高い電気で沸かさないため）"""
     err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43")
     log(f"沸き増しを止めました（{reason}）" if not err else f"沸き増しを止められませんでした（{err}）")
     with lock:
@@ -2892,6 +3061,10 @@ def tick():
             guard_tick(eco, surplus, 15 if conf["enabled"] and conf["start_hour"] <= h_ < conf["end_hour"] else 60)
         except Exception as e:
             print("買電の見張りでエラー:", e, flush=True)
+    try:
+        selfsuff_tick(surplus)
+    except Exception as e:
+        print("自給率の見張りでエラー:", e, flush=True)
     # 留守：決めた時刻まで沸き上げを止めておき、帰る前に沸かし始める（おひさま沸き上げがオフでも働く）
     if away_tick(eco):
         return
@@ -2902,7 +3075,7 @@ def tick():
         state["status"] = "エコキュートの IP アドレスが設定されていません"
         return
 
-    # 夜止め：目標の量まで沸いたら止める
+    # 「夜は止める」：目標の量まで沸いたら止める
     pct0 = remain_pct(eco)
     if state.get("night_pending") and not in_window and pct0 is not None and pct0 >= night_target_pct():
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x43"):
@@ -2935,7 +3108,7 @@ def tick():
             state["tank_by_us"] = False
             log("昼の時間帯が終わったので、タンクの運転モードを「標準」に戻しました")
 
-    # 夜止め：夜中にお湯が減りすぎたら、止めるのをやめる（安い夜の電気で沸かす）
+    # 「夜は止める」：夜中にお湯が減りすぎたら、止めるのをやめる（安い夜の電気で沸かす）
     pct = remain_pct(eco)
     if state.get("night_stop") and conf.get("safety_hour", 4) <= now.hour < conf["start_hour"] and pct is not None and pct < conf.get("safety_pct", 30):
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x41"):
@@ -2946,7 +3119,7 @@ def tick():
         night_heat_tick(eco, now)
     except Exception as e:
         print("夜の沸き上げでエラー:", e, flush=True)
-    # 夜止め：昼の時間帯が終わっても自動には戻さない（夕方に高い電気で沸かさないため）。
+    # 「夜は止める」：昼の時間帯が終わっても自動には戻さない（夕方に高い電気で沸かさないため）。
     # 毎日の設定で「今夜は沸かす」と決めたときや、毎日の設定ができていないときは、夜の沸き上げの時刻に自動へ戻す
     at_night = now.hour >= night_start_h() or now.hour < conf["start_hour"]
     tonight = (now.date() if now.hour < 12 else now.date() + timedelta(days=1)).isoformat()  # 今夜の毎日の設定の対象（翌日）
@@ -2959,7 +3132,7 @@ def tick():
             log("夜の沸き上げの時刻になったので、沸き上げを自動に戻しました" + ("" if plan_ok else "（毎日の設定ができていないため）"))
     elif state.get("night_resume") and not state.get("night_stop"):
         state["night_resume"] = False
-    # 夜止め：昼の時間帯の終わる2時間前に、まだお湯が少なければ、売電が無くても沸かす（お湯切れを防ぐ保険）
+    # 「夜は止める」：昼の時間帯の終わる2時間前に、まだお湯が少なければ、売電が無くても沸かす（お湯切れを防ぐ保険）
     if not conf.get("hot_auto") and state.get("night_stop") and in_window and now.hour >= conf["end_hour"] - 2 and not state["by_us"] \
             and pct is not None and pct < conf.get("ensure_pct", 60) and not (eco or {}).get("heating"):
         if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42"):
@@ -3140,7 +3313,7 @@ def live_state():
             "eco_today_kwh": (today.get("circuits_kwh") or {}).get("エコキュート"),
             "away_until": conf.get("away_until") or 0, "away": state.get("away"),
             "demand": demand_state.get("last"), "demand_alert": state.get("demand_alert"), "heat_guard": guard_public(),
-            "circuits": circuits_now_safe()}
+            "circuits": circuits_now_safe(), "selfsuff": selfsuff_public(), "auto_now": auto_now()}
 
 
 def public_state():
@@ -3152,7 +3325,7 @@ def public_state():
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
-                "hot_plan": hot_plan_safe(), "heat_guard": guard_public(),
+                "hot_plan": hot_plan_safe(), "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
                 "server_setup": server_setup_info(),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
@@ -3403,6 +3576,25 @@ class Api(BaseHTTPRequestHandler):
                     if not isinstance(ed, list) or len(ed) > 100 or not all(isinstance(x, dict) and is_el_entity(x.get("id")) for x in ed):
                         return self._ok({"error": "ECHONET Lite の機器の一覧が正しくありません"}, 400)
                     b["el_devices"] = [{"id": x["id"], "name": str(x.get("name") or "")[:40], "room": str(x.get("room") or "")[:20]} for x in ed]
+                if "ss_aircon_entities" in b:
+                    v = b["ss_aircon_entities"]
+                    if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"climate\.[a-z0-9_]+", str(x)) for x in v):
+                        return self._ok({"error": "エアコンの選び方が正しくありません（climate.〇〇）"}, 400)
+                if "ss_loads_items" in b:
+                    v = b["ss_loads_items"]
+                    if not isinstance(v, list) or len(v) > 10 or not all(isinstance(x, dict) and re.fullmatch(r"(switch|input_boolean)\.[a-z0-9_]+", str(x.get("entity", ""))) for x in v):
+                        return self._ok({"error": "余剰で動かす機器は、スイッチ（switch.〇〇 / input_boolean.〇〇）を選んでください"}, 400)
+                    b["ss_loads_items"] = [{"entity": x["entity"], "name": str(x.get("name") or "")[:30],
+                                            "on_kw": max(0.3, min(10.0, float(x.get("on_kw") or 1.5))),
+                                            "off_kw": max(0.1, min(10.0, float(x.get("off_kw") or 0.3)))} for x in v]
+                for k_, lo, hi in (("ss_target_pct", 0, 100), ("ss_notify_kw", 0.3, 10), ("ss_notify_min", 5, 60), ("ss_aircon_kw", 0.3, 10),
+                                   ("ss_aircon_offset", 0.5, 3), ("ss_loads_min", 5, 60), ("ss_notify_from", 0, 23), ("ss_notify_to", 1, 24),
+                                   ("ss_aircon_from", 0, 23), ("ss_aircon_to", 1, 24), ("ss_loads_from", 0, 23), ("ss_loads_to", 1, 24)):
+                    if k_ in b:
+                        try:
+                            b[k_] = max(lo, min(hi, float(b[k_])))
+                        except (TypeError, ValueError):
+                            return self._ok({"error": f"{k_} の値が正しくありません"}, 400)
                 if "demand_notify" in b:
                     if not isinstance(b["demand_notify"], list) or not all(re.fullmatch(r"notify\.[a-z0-9_]+", str(x)) for x in b["demand_notify"]):
                         return self._ok({"error": "通知先が正しくありません（notify.〇〇）"}, 400)

@@ -574,7 +574,39 @@
     if (temp === null && hum === null) return "";
     return `<span class="rclim">${temp !== null ? `🌡 ${fmt(Math.round(temp * 10) / 10)}℃` : ""}${hum !== null ? `　💧 ${Math.round(hum)}%` : ""}${ac ? "（エアコン）" : ""}</span>`;
   }
+  // ================= はじめての設定（4つの手順）と、かんたん表示 =================
+  function renderGuide() {
+    const box = $("#guide");
+    if (!box) return;
+    if (store.get("guideDone", false)) { box.innerHTML = ""; return; }
+    const steps = [["rooms", "① 部屋を決める"], ["rooms", "② ホーム画面に出す機器を選ぶ"], ["voice", "③ 自宅の位置"], ["display", "④ 配色・家族ごとの表示"]];
+    box.innerHTML = `<div class="card" style="padding:14px;margin-bottom:10px"><b>👋 はじめての設定（4つの手順）</b>
+      <div class="note">順番に開いて設定すると、すぐに使い始められます。あとから ⚙ 設定 でいつでも変えられます。</div>
+      ${steps.map(([k, t]) => `<div class="brow" style="align-items:center"><span style="flex:1">${t}</span><button class="tbtn" data-set="guideOpen" data-id="${k}">開く</button></div>`).join("")}
+      <div class="brow"><button class="tbtn" data-set="simpleOn">家族用に「かんたん表示」にする</button><span style="flex:1"></span><button class="tbtn" data-set="guideDone">終わった（もう出さない）</button></div></div>`;
+  }
+  const SIMPLE_DOMAINS = ["light", "switch", "input_boolean", "climate", "fan", "scene", "script", "cover"];
+  function applySimple() {
+    const on = store.get("simpleMode", false);
+    const home = $("#home");
+    if (home) home.classList.toggle("simple", on);
+    const sb = $("#simpleBox");
+    if (sb) sb.classList.toggle("hidden", !on);
+    renderSimple();
+  }
+  function renderSimple() {
+    const sb = $("#simpleBox");
+    if (!sb || !store.get("simpleMode", false)) return;
+    const list = shownEntitiesAll().filter((e) => SIMPLE_DOMAINS.includes(dom(e)));
+    const icon = (d) => ({ light: "💡", climate: "❄", fan: "🌀", cover: "🪟", scene: "▶", script: "▶" }[d] || "🔌");
+    const label = (e) => isUnav(e) ? "つながっていません" : ["scene", "script"].includes(dom(e)) ? "タップで実行" : dom(e) === "cover" ? (e.state === "open" ? "開いています" : "閉じています") : isOn(e) ? "ついています（タップで消す）" : "消えています（タップでつける）";
+    sb.innerHTML = `<div class="simplegrid">${list.map((e) => `<button class="simpletile${isOn(e) ? " on" : ""}" data-set="simpleTap" data-id="${esc(e.entity_id)}" ${isUnav(e) ? "disabled" : ""}>
+        <span class="si">${icon(dom(e))}</span><b>${esc(entName(e.entity_id))}</b><span class="ss">${label(e)}</span></button>`).join("") || `<div class="note">かんたん表示に出せる機器（照明・エアコン・スイッチなど）がありません（⚙ 設定 → 部屋と機器 で選べます）。</div>`}</div>
+      <button class="tbtn" data-set="simpleOff" style="margin:8px 0">くわしい表示に戻す</button>`;
+  }
+
   function renderEntities() {
+    renderSimple();
     const grid = $("#grid");
     if (!grid) return;
     const list = shownEntities();
@@ -1274,9 +1306,13 @@
       return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="menuBack">← 設定</button><h2>${esc(m[2])}</h2></div>
         ${settingsPageHTML(S.settingsPage)}<div style="height:40px"></div></div>`;
     }
+    const row = ([k, icon, title, sub]) => `<button class="menurow" data-set="menu" data-id="${k}"><span class="mi">${icon}</span>
+        <span class="rt"><b>${esc(title)}</b><div class="sub">${esc(sub)}</div></span><span class="chev">›</span></button>`;
     return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>設定</h2></div>
-      ${SETTINGS_MENU.map(([k, icon, title, sub]) => `<button class="menurow" data-set="menu" data-id="${k}"><span class="mi">${icon}</span>
-        <span class="rt"><b>${esc(title)}</b><div class="sub">${esc(sub)}</div></span><span class="chev">›</span></button>`).join("")}
+      <div class="sec">よく使う設定</div>
+      ${SETTINGS_MENU.filter((m) => !m[4]).map(row).join("")}
+      <button class="tbtn" data-set="advToggle" style="margin:10px 0">${S.showAdv ? "▲ 詳しい設定を閉じる" : "▼ 詳しい設定（カメラ・接続・アカウント・記録など）"}</button>
+      ${S.showAdv ? SETTINGS_MENU.filter((m) => m[4]).map(row).join("") : ""}
       <div style="height:40px"></div></div>`;
   }
   function renderSelList() {
@@ -2535,21 +2571,23 @@
   }
 
   // ================= 設定のメニュー =================
+  // [キー, アイコン, 名前, 説明, 詳しい設定か]
   const SETTINGS_MENU = [
-    ["display", "🎨", "ホーム画面の表示", "家族ごとの表示・並び順、配色、天気"],
+    ["display", "🎨", "ホーム画面の表示", "かんたん表示、家族ごとの表示・並び順、配色、天気"],
     ["rooms", "🚪", "部屋と機器", "部屋の並び順・追加、表示する機器"],
     ["thermo", "🌡", "温度計", "表示する温度計、名前"],
-    ["voice", "🎤", "音声と AI", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"],
-    ["screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間"],
+    ["voice", "🎤", "音声と自宅の位置", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"],
+    ["selfsuff", "🌱", "電気の自給率を上げる", "余った電気のお知らせ・エアコン・充電など（使うものを選ぶ）"],
     ["calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"],
     ["climate", "❄", "エアコンの自動温度調整", "サーバーでの調整の様子、全体のオン/オフ"],
-    ["cameras", "📷", "カメラ", "画質の選び方"],
-    ["camrec", "🎞", "カメラの記録と動き", "2日分の記録、動きのある時間・寝た時刻の目安"],
-    ["oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか"],
-    ["connection", "🌐", "接続", "このアプリのアドレス"],
-    ["account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト"],
     ["system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"],
-  ];
+    ["screensaver", "🖼", "スクリーンセーバー", "Google フォトのアルバム、表示までの時間", true],
+    ["cameras", "📷", "カメラ", "画質の選び方", true],
+    ["camrec", "🎞", "カメラの記録と動き", "2日分の記録、動きのある時間・寝た時刻の目安", true],
+    ["oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか", true],
+    ["connection", "🌐", "接続", "このアプリのアドレス", true],
+    ["account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト", true],
+  ].filter((m) => m[0] !== "selfsuff" || SERVER_MODE);
 
   // ================= 表示のユーザー（家族ごとのホーム画面） =================
   const SECTIONS = [
@@ -2938,6 +2976,63 @@
     catch (e) { if (path) S.solarErr = "サーバーに送れませんでした：" + e.message; else S.solar = null; }
     renderSolar();
     renderGroups();
+    const sb = $("#ssBox");
+    if (sb) sb.innerHTML = selfSuffHTML();
+  }
+
+  // ================= 電気の自給率を上げる（どれもオプション。家のサーバーが見張って動かす） =================
+  function ssChips(key, values, cur, fmtFn) {
+    return `<div class="chips">${values.map((v) => `<button class="chip${Number(cur) === v ? " sel" : ""}" data-set="ssNum" data-id="${key}" data-v="${v}">${esc(fmtFn(v))}</button>`).join("")}</div>`;
+  }
+  const kwT = (v) => v + "kW";
+  function ssHours(c, prefix, f, t) {
+    return `<div class="note">始める時刻</div>${ssChips(prefix + "_from", [8, 9, 10, 11], c[prefix + "_from"] ?? f, (v) => v + "時から")}
+      <div class="note">終わる時刻</div>${ssChips(prefix + "_to", [14, 15, 16, 17], c[prefix + "_to"] ?? t, (v) => v + "時まで")}`;
+  }
+  function ssOption(key, title, desc, on, body) {
+    return `<div class="card" style="padding:12px;margin:8px 0"><label class="row" style="padding:0"><span class="rt"><b>${title}</b><div class="sub">${desc}</div></span>
+      <input type="checkbox" data-set="ssBool" data-id="${key}" ${on ? "checked" : ""}></label>${on ? `<div style="margin-top:6px">${body}</div>` : ""}</div>`;
+  }
+  function selfSuffHTML() {
+    const j = S.solar;
+    if (!j || !j.config) return `<div class="note">家のサーバーから設定を読んでいます…</div>`;
+    const c = j.config;
+    const states = S.ha ? Object.values(S.ha.states) : [];
+    const acs = states.filter((e) => dom(e) === "climate" && !isElId(e.entity_id));
+    const sws = states.filter((e) => ["switch", "input_boolean"].includes(dom(e)));
+    const pickedAc = c.ss_aircon_entities || [];
+    const items = c.ss_loads_items || [];
+    const targets = c.demand_notify || [];
+    return `<div class="note">太陽光の電気をできるだけ家の中で使い、買う電気を減らすための機能です。どれも使うかどうかを選べます（初めはすべてオフ）。家のサーバーが見張って動かすので、この画面を閉じていても働きます。</div>
+      ${c.ha_token_set ? "" : `<div class="warn">エアコン・機器を動かす機能には、サーバーに Home Assistant の鍵の登録が必要です（Android 版の「エアコンの自動温度調整」から登録できます）。</div>`}
+      ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
+      ${ssOption("ss_show", "🌱 ホーム画面に今日の自給率を出す", "自給率＝使った電気のうち、買わずに済んだ割合。目標と比べて表示します。", c.ss_show,
+        `<div class="note">目標</div>${ssChips("ss_target_pct", [30, 50, 70, 90], c.ss_target_pct ?? 50, (v) => v + "%")}`)}
+      ${ssOption("ss_notify", "☀ 電気が余っているときに「いま使うとお得」と知らせる", "昼に売電が続いたら、洗濯機・食器洗い機・乾燥機などを回すよう、スマートフォンに知らせます（2時間に1回まで）。", c.ss_notify,
+        `<div class="note">売電がこれ以上のとき</div>${ssChips("ss_notify_kw", [1, 1.5, 2, 3], c.ss_notify_kw ?? 1.5, kwT)}
+         <div class="note">続いた時間</div>${ssChips("ss_notify_min", [5, 10, 20], c.ss_notify_min ?? 10, (v) => v + "分")}
+         ${ssHours(c, "ss_notify", 9, 15)}
+         <div class="${targets.length ? "note" : "warn"}">${targets.length ? "知らせる先：" + esc(targets.map((t) => t.replace("notify.mobile_app_", "")).join("、")) + "（30分ごとの電気の上限と同じ先）" : "知らせる先がまだありません。Android 版の「お湯（エコキュート）と太陽光」→「知らせる先」で、スマートフォンを選んでください。"}</div>`)}
+      ${ssOption("ss_aircon", "❄ 電気が余っているときに、エアコンを先に動かす", "動いているエアコンだけ、冷房は少し下げ・暖房は少し上げて、夕方に買う電気を減らします。買う電気が増えたら元の温度に戻します（人が温度を変えていたら、そのまま）。エアコンを勝手に入れることはありません。", c.ss_aircon,
+        `<div class="note">売電がこれ以上で10分続いたら</div>${ssChips("ss_aircon_kw", [0.5, 1, 1.5, 2], c.ss_aircon_kw ?? 1, kwT)}
+         <div class="note">変える温度</div>${ssChips("ss_aircon_offset", [0.5, 1, 1.5, 2], c.ss_aircon_offset ?? 1, (v) => v + "℃")}
+         ${ssHours(c, "ss_aircon", 10, 16)}
+         <div class="note">対象のエアコン</div>
+         ${acs.length ? acs.map((e) => `<label class="row"><input type="checkbox" data-set="ssAc" data-id="${esc(e.entity_id)}" ${pickedAc.includes(e.entity_id) ? "checked" : ""}><span class="rt">${esc(entName(e.entity_id))}</span></label>`).join("") : `<div class="note">エアコンが見つかりません</div>`}`)}
+      ${ssOption("ss_loads", "🔌 電気が余っているときに動かす機器（電気自動車・蓄電池の充電など）", "売電が決めた量を超えて続いたら、選んだスイッチを入れます。買う電気が増えたら切ります（このしくみで入れたものだけ）。", c.ss_loads,
+        `<div class="note">続いた時間</div>${ssChips("ss_loads_min", [5, 10, 20], c.ss_loads_min ?? 10, (v) => v + "分")}
+         ${ssHours(c, "ss_loads", 9, 16)}
+         <div class="note">動かす機器（スイッチ）</div>
+         ${sws.length ? sws.slice(0, 40).map((e) => {
+            const it = items.find((x) => x.entity === e.entity_id);
+            return `<label class="row"><input type="checkbox" data-set="ssLoad" data-id="${esc(e.entity_id)}" ${it ? "checked" : ""}><span class="rt">${esc(entName(e.entity_id))}</span></label>
+              ${it ? `<div style="margin-left:36px"><div class="note">売電がこれ以上で入れる（機器の消費電力くらい）</div>
+                <div class="chips">${[1, 1.5, 3, 6].map((v) => `<button class="chip${it.on_kw === v ? " sel" : ""}" data-set="ssLoadKw" data-id="${esc(e.entity_id)}" data-f="on_kw" data-v="${v}">${v}kW</button>`).join("")}</div>
+                <div class="note">買電がこれ以上で切る</div>
+                <div class="chips">${[0.1, 0.3, 0.5, 1].map((v) => `<button class="chip${it.off_kw === v ? " sel" : ""}" data-set="ssLoadKw" data-id="${esc(e.entity_id)}" data-f="off_kw" data-v="${v}">${v}kW</button>`).join("")}</div></div>` : ""}`;
+          }).join("") : `<div class="note">スイッチが見つかりません</div>`}`)}
+      ${ssOption("ss_partial", "⛅ くもりの日も、昼に沸かせる分だけ夜の沸き上げを減らす", "晴れない予報の日でも、日射量の予報から昼に沸かせる割合（30%以上）を見積もり、その分だけ夜の沸き上げを減らします。「夜は止める」のときに働きます。足りなければ夕方の準備で沸かします。", c.ss_partial,
+        c.night_method !== "stop" ? `<div class="warn">いまは「夜は止める」になっていないため、働きません。</div>` : "")}`;
   }
   const yenFmt = (v) => (v === null || v === undefined ? "－" : Math.round(v).toLocaleString("ja-JP") + "円");
   /** サーバーが電力会社のプランの単価で計算した電気代 */
@@ -3030,8 +3125,17 @@
       ${eco ? `<span>🛁 <b>${eco}</b>${rest}</span>` : ""}
       ${v.eco_today_kwh != null ? `<span>今日の沸き上げ <b>${Number(v.eco_today_kwh).toFixed(1)}kWh</b></span>` : ""}
       ${d && d.projected_kw != null ? `<span class="${over ? "warn" : "note"}">30分の電力（${esc(String(d.slot).slice(-5))}〜）：このままだと ${d.projected_kw.toFixed(1)}kW${d.warn_kw != null ? `（注意 ${d.warn_kw.toFixed(1)}kW・上限 ${d.limit_kw.toFixed(1)}kW）` : ""}</span>` : ""}
-      ${v.heat_guard && v.heat_guard.active ? `<span class="warn">⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${esc(v.heat_guard.reason)}）</span>` : ""}
+      ${ssRateHTML(v.selfsuff)}
+      ${(v.auto_now || []).length ? v.auto_now.map((a) => `<span class="auto">${esc(a.icon)} 自動：${esc(a.text)}</span>`).join("")
+        : v.heat_guard && v.heat_guard.active ? `<span class="warn">⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${esc(v.heat_guard.reason)}）</span>` : ""}
+      ${v.selfsuff && v.selfsuff.alert && Date.now() - v.selfsuff.alert.at * 1000 < 30 * 60000 ? `<span style="color:#43a047">☀ ${esc(v.selfsuff.alert.message)}</span>` : ""}
       ${alert ? `<span class="warn">⚠ ${esc(alert)}</span>` : ""}</div>`;
+  }
+  function ssRateHTML(s) {
+    if (!s || !s.show) return "";
+    const r = s.rate, t = s.target || 0, ok = r != null && t > 0 && r >= t;
+    return `<span class="ssrate">🌱 今日の自給率 <b style="color:${ok ? "#43a047" : "inherit"}">${r != null ? Math.round(r) + "%" : "－"}</b>
+      ${t > 0 ? `<span class="bar" style="display:inline-block;width:120px;vertical-align:middle"><span style="display:block;height:100%;width:${Math.min(100, Math.round(((r || 0) / t) * 100))}%;background:#43a047"></span></span> 目標 ${t}%${ok ? " 達成" : ""}` : ""}</span>`;
   }
 
   // ================= まとめて操作（ボタン1つで、いくつもの機器をつける・消す。ボタンは Android 版で作る） =================
@@ -3203,7 +3307,7 @@
     if (e) h += `<div class="note" style="color:var(--primary)">🛁 ${hotDay(e.date)}の${e.from}時までに用意：${hotNeedText(e)}${e.max != null ? `（多い日は ${e.max}L・${esc(e.how)}）` : ""}</div>`;
     if (st.heating) h += `<div class="fl">♨ 夕方の準備のために沸かしています</div>`;
     else if (st.short > 0 && st.start_at && !st.done) h += `<div class="note">今のままだと ${st.short}L 足りないので、${st.start_at} ごろから沸かします（昼に余った電気で沸けば不要）</div>`;
-    if (n) h += `<div class="note">${hotDay(n.date)}の朝（0時〜${n.to}時）：${hotNeedText(n)}${n.pct != null ? ` → 夜止めの日は ${n.pct}% まで沸かします` : ""}</div>`;
+    if (n) h += `<div class="note">${hotDay(n.date)}の朝（0時〜${n.to}時）：${hotNeedText(n)}${n.pct != null ? ` → 夜を減らす日は ${n.pct}% まで沸かします` : ""}</div>`;
     const l = p.learn;
     if (l) {
       h += `<label class="row" style="margin-top:6px"><span class="rt">🌡 気温を見込んで沸かす量を決める<div class="sub">寒い日にお湯を多く使う度合いと、外気との温度差で冷めて減る量を記録から学び、翌日の気温の予報で予想を直します。</div></span>
@@ -3415,6 +3519,7 @@
   }
   function afterSettingsOpen() {
     const p = S.page === "settings" && S.settingsPage;
+    if (p === "selfsuff") loadSolar();
     if (p === "climate") loadClimate();
     else if (p === "camrec") loadCamRec();
     else if (p === "oplog") loadOpLog();
@@ -3443,6 +3548,24 @@
       case "nightPct": loadSolar("/config", { night_heat_pct: Number(id) }); return true;
       case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
       case "heatGuard": loadSolar("/config", { heat_guard: el.checked }); return true;
+      case "ssBool": loadSolar("/config", { [id]: el.checked }); return true;
+      case "ssNum": loadSolar("/config", { [id]: Number(el.dataset.v) }); return true;
+      case "ssAc": {
+        const cur = (S.solar && S.solar.config && S.solar.config.ss_aircon_entities) || [];
+        loadSolar("/config", { ss_aircon_entities: el.checked ? [...new Set([...cur, id])] : cur.filter((x) => x !== id) });
+        return true;
+      }
+      case "ssLoad": {
+        const cur = (S.solar && S.solar.config && S.solar.config.ss_loads_items) || [];
+        const e = S.ha && S.ha.states[id];
+        loadSolar("/config", { ss_loads_items: el.checked ? [...cur.filter((x) => x.entity !== id), { entity: id, name: e ? nameOf(e) : id, on_kw: 1.5, off_kw: 0.3 }] : cur.filter((x) => x.entity !== id) });
+        return true;
+      }
+      case "ssLoadKw": {
+        const cur = (S.solar && S.solar.config && S.solar.config.ss_loads_items) || [];
+        loadSolar("/config", { ss_loads_items: cur.map((x) => (x.entity === id ? Object.assign({}, x, { [el.dataset.f]: Number(el.dataset.v) }) : x)) });
+        return true;
+      }
       case "nightLate": loadSolar("/config", { night_late: el.checked }); return true;
       case "hotTempLearn": loadSolar("/config", { hot_temp_learn: el.checked }); return true;
       case "hotMargin": loadSolar("/config", { hot_margin_l: Number(id) }); return true;
@@ -3875,7 +3998,10 @@
       case "display": {
         const ws = S.ha ? Object.values(S.ha.states).filter((e) => e.entity_id.startsWith("weather.")) : [];
         const w = weatherEntity();
-        return `<div class="sec">表示のユーザー（家族ごとの表示）</div>${profilesHTML()}
+        return `<div class="sec">かんたん表示</div>
+          <label class="row"><span class="rt">大きなボタンだけのホーム画面にする<div class="sub">照明・エアコン・スイッチなどを大きなボタンで出し、タップで入／切します。家族や初めての人向け。</div></span>
+            <input type="checkbox" data-set="simpleMode" ${store.get("simpleMode", false) ? "checked" : ""}></label>
+          <div class="sec">表示のユーザー（家族ごとの表示）</div>${profilesHTML()}
           <div class="sec">配色</div>${themesHTML()}
           ${ws.length > 1 ? `<div class="sec">天気</div>` + ws.map((x) => `<label class="row"><input type="radio" name="wx" data-set="weather" data-id="${esc(x.entity_id)}" ${w && x.entity_id === w.entity_id ? "checked" : ""}>
             <span class="rt">${esc(nameOf(x))}<div class="sub">${esc(x.entity_id)}</div></span></label>`).join("") : ""}`;
@@ -3897,6 +4023,7 @@
           <div id="selList"></div>`;
       }
       case "thermo": return `<div class="sec">温度・湿度（SwitchBot などの温度計）</div>${thermoSettingsHTML()}`;
+      case "selfsuff": return `<div class="sec">電気の自給率を上げる（オプション）</div><div id="ssBox">${selfSuffHTML()}</div>`;
       case "voice": {
         const pid = S.pipelineId || S.preferred;
         return `<div class="sec">音声</div>
@@ -3942,6 +4069,13 @@
     const id = el.dataset.id;
     switch (el.dataset.set) {
       case "menu": S.settingsPage = id; openPage("settings"); return true;
+      case "simpleTap": { const e = S.ha && S.ha.states[id]; if (e && !isUnav(e)) primary(e); return true; }
+      case "advToggle": S.showAdv = !S.showAdv; openPage("settings"); return true;
+      case "simpleMode": store.set("simpleMode", el.checked); applySimple(); return true;
+      case "simpleOn": store.set("simpleMode", true); applySimple(); renderGuide(); return true;
+      case "simpleOff": store.set("simpleMode", false); applySimple(); return true;
+      case "guideOpen": S.settingsPage = id; openPage("settings"); return true;
+      case "guideDone": store.set("guideDone", true); renderGuide(); return true;
       case "menuBack": S.settingsPage = null; openPage("settings"); return true;
       case "profile": switchProfile(id); if (S.page === "settings") openPageKeep(); return true;
       case "profileAdd": {
@@ -4062,7 +4196,9 @@
         <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
       <div class="msg hidden" id="msg"></div>
+      <div id="guide"></div>
       <div id="groups"></div>
+      <div id="simpleBox" class="hidden"></div>
       <div id="home">
         <div data-sec="clock"><section class="hero"><div><div class="time" id="time"></div><div class="date" id="date"></div></div><div id="weather"></div>
           <div class="vbox"><div class="vtexts"><div class="vstatus" id="vstatus"></div><div class="vnote" id="vnote"></div></div><button class="mic" id="mic">🎤</button></div></section></div>
@@ -4100,6 +4236,8 @@
     $("#btnAuto").onclick = () => openPage("auto");
     $("#btnTimers").onclick = () => { unlockAlarm(); openPage("timers"); };
     $("#mic").onclick = onMicPressed;
+    renderGuide();
+    applySimple();
 
     // 設定・使い方・更新ボタン（data-set）
     document.addEventListener("click", (ev) => {

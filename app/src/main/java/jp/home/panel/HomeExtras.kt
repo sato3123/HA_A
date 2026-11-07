@@ -101,8 +101,21 @@ fun LiveStrip(vm: MainViewModel) {
                     )
                 }
             }
-            v.guard?.takeIf { it.optBoolean("active") }?.let { g ->
-                Text("⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${g.optString("reason")}）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+            SelfRateLine(v.selfsuff)
+            // いま自動で動いていること（理由つき）。家族が「なぜ勝手に動いたのか」分かるように
+            if (v.autoNow.isNotEmpty()) {
+                v.autoNow.forEach { (icon, text) ->
+                    Text("$icon 自動：$text", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            } else {
+                v.guard?.takeIf { it.optBoolean("active") }?.let { g ->
+                    Text("⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${g.optString("reason")}）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            v.selfsuff?.optJSONObject("alert")?.let { a ->
+                if (System.currentTimeMillis() - (a.optDouble("at") * 1000).toLong() < 30 * 60_000) {
+                    Text("☀ " + a.optString("message"), style = MaterialTheme.typography.bodySmall, color = Color(0xFF66BB6A))
+                }
             }
             v.demandAlert?.let { a ->
                 if (System.currentTimeMillis() - (a.optDouble("at") * 1000).toLong() < 30 * 60_000) {

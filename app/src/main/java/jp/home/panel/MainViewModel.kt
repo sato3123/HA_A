@@ -164,6 +164,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             prefs.helpShown = v
         }
 
+    /** かんたん表示：ホーム画面を大きなボタンだけにする（家族・初めての人向け） */
+    val simpleMode = MutableStateFlow(prefs.simpleMode)
+    fun setSimpleMode(on: Boolean) {
+        prefs.simpleMode = on
+        simpleMode.value = on
+    }
+
+    /** はじめての設定の案内（ホーム画面）を出すか */
+    val setupGuideDone = MutableStateFlow(prefs.setupGuideDone)
+    fun finishSetupGuide() {
+        prefs.setupGuideDone = true
+        setupGuideDone.value = true
+    }
+
     val loginBusy = MutableStateFlow(false)
     val loginError = MutableStateFlow<String?>(null)
     val needOtp = MutableStateFlow(false)
@@ -766,6 +780,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val guard: JSONObject? = null,
         /** 回路ごとのいまの電力：(名前, W, 推定か)。200V の回路は1日の使用量の増え方からの推定 */
         val circuits: List<Triple<String, Double, Boolean>> = emptyList(),
+        /** 自給率（今日の値・目標・表示するか・知らせ） */
+        val selfsuff: JSONObject? = null,
+        /** いま自動で動いていること：(アイコン, 説明) */
+        val autoNow: List<Pair<String, String>> = emptyList(),
     )
 
     val live = MutableStateFlow<LiveView?>(null)
@@ -795,6 +813,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 d(e, "remain")?.toInt(), d(e, "tank")?.toInt(), d(j, "eco_today_kwh"),
                 j.optJSONObject("demand"), j.optJSONObject("demand_alert"), j.optJSONObject("heat_guard"),
                 j.optJSONArray("circuits")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { Triple(it.optString("name"), it.optDouble("w"), it.optBoolean("est")) } } ?: emptyList(),
+                j.optJSONObject("selfsuff"),
+                j.optJSONArray("auto_now")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { it.optString("icon") to it.optString("text") } } ?: emptyList(),
             )
             awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
             awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }
@@ -2908,7 +2928,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 家のサーバーのセットアップの版と、自動で実行し直した最後の結果 */
     val serverSetup = MutableStateFlow<JSONObject?>(null)
     val nightStop = MutableStateFlow(false)
-    /** 夜止めの日に、目標の量まで夜に沸かしている途中 */
+    /** 夜を減らす日に、目標の量まで夜に沸かしている途中 */
     val nightPending = MutableStateFlow(false)
     /** サーバーが記録した日ごとの値（お湯の使用量・天気・気温など）。日付（日本時間）→ 値 */
     val serverDaily = MutableStateFlow<List<Pair<String, JSONObject>>>(emptyList())

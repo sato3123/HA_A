@@ -286,6 +286,16 @@ class UiPrefs(context: Context) {
         get() = p.getBoolean("help_shown", false)
         set(v) = p.edit().putBoolean("help_shown", v).apply()
 
+    /** かんたん表示（大きなボタンだけ） */
+    var simpleMode: Boolean
+        get() = p.getBoolean("simple_mode", false)
+        set(v) = p.edit().putBoolean("simple_mode", v).apply()
+
+    /** はじめての設定の案内を閉じた */
+    var setupGuideDone: Boolean
+        get() = p.getBoolean("setup_guide_done", false)
+        set(v) = p.edit().putBoolean("setup_guide_done", v).apply()
+
     /** 天気に使う weather エンティティ。null = 最初に見つかったもの */
     var weatherEntityId: String?
         get() = p.getString("weather_entity", null)

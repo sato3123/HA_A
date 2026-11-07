@@ -338,6 +338,84 @@ class TestHotTrack(SolarTestBase):
             m["state"]["hot_from_aiseg"] = False
 
 
+class TestSelfSuff(SolarTestBase):
+    def setUp(self):
+        super().setUp()
+        m = self.m
+        self.saved = {k: m["conf"].get(k) for k in m["DEFAULT_CONF"] if k.startswith("ss_")}
+        self.saved["ha_token"] = m["conf"].get("ha_token")
+        self.saved["demand_notify"] = m["conf"].get("demand_notify")
+        m["ss"].update(sell_since=None, buy_since=None, notified_at=0, aircon={}, loads={})
+        self.calls_ha = []
+        self.states = {"climate.living": {"state": "cool", "attributes": {"temperature": 27}},
+                       "switch.ev": {"state": "off", "attributes": {}}}
+        self.g = {k: m[k] for k in ("ha_call", "ha_state")}
+        m["ha_call"] = lambda d, sv, data: self.calls_ha.append((d, sv, data))
+        m["ha_state"] = lambda e: self.states.get(e)
+        m["conf"]["ha_token"] = "x"
+
+    def tearDown(self):
+        m = self.m
+        m.update(self.g)
+        for k, v in self.saved.items():
+            m["conf"][k] = v
+
+    def run_for(self, w, start, minutes):
+        for i in range(minutes + 1):
+            self.m["selfsuff_tick"](w, start + timedelta(minutes=i))
+        return start + timedelta(minutes=minutes)
+
+    def test_all_off_by_default(self):
+        m = self.m
+        for k in ("ss_notify", "ss_aircon", "ss_loads", "ss_partial", "ss_show"):
+            self.assertFalse(m["DEFAULT_CONF"][k])
+        self.run_for(3000, datetime(2026, 11, 7, 11, 0), 30)
+        self.assertEqual(self.calls_ha, [])
+
+    def test_notify_aircon_loads(self):
+        m = self.m
+        m["conf"].update(ss_notify=True, demand_notify=["notify.mobile_app_x"], ss_aircon=True, ss_aircon_entities=["climate.living"],
+                         ss_loads=True, ss_loads_items=[{"entity": "switch.ev", "name": "EV", "on_kw": 1.5, "off_kw": 0.3}])
+        t = self.run_for(2000, datetime(2026, 11, 7, 11, 0), 12)
+        kinds = [(d, sv) for d, sv, _ in self.calls_ha]
+        self.assertIn(("notify", "mobile_app_x"), kinds)
+        self.assertIn(("climate", "set_temperature"), kinds)
+        self.assertIn(("switch", "turn_on"), kinds)
+        self.assertEqual([c for c in self.calls_ha if c[1] == "set_temperature"][0][2]["temperature"], 26.0)
+        # 2時間以内は2回目の通知をしない
+        n = sum(1 for d, _, _ in self.calls_ha if d == "notify")
+        self.states["climate.living"]["attributes"]["temperature"] = 26.0
+        self.run_for(2000, t, 20)
+        self.assertEqual(sum(1 for d, _, _ in self.calls_ha if d == "notify"), n)
+        # 買電が続いたら戻す・切る
+        self.calls_ha.clear()
+        self.run_for(-800, t + timedelta(minutes=30), 12)
+        self.assertIn(("climate", "set_temperature", {"entity_id": "climate.living", "temperature": 27.0}), self.calls_ha)
+        self.assertIn(("switch", "turn_off", {"entity_id": "switch.ev"}), self.calls_ha)
+
+    def test_aircon_left_alone_if_person_changed(self):
+        m = self.m
+        m["conf"].update(ss_aircon=True, ss_aircon_entities=["climate.living"])
+        t = self.run_for(2000, datetime(2026, 11, 7, 11, 0), 11)
+        self.states["climate.living"]["attributes"]["temperature"] = 24  # 人が変えた
+        self.calls_ha.clear()
+        self.run_for(-800, t + timedelta(minutes=1), 12)
+        self.assertEqual([c for c in self.calls_ha if c[1] == "set_temperature"], [])
+
+    def test_partial_night_target(self):
+        m = self.m
+        d = date(2026, 11, 8)
+        m["conf"]["hot_auto"], keep = False, m["conf"].get("hot_auto")
+        m["state"]["solar_partial"] = {"date": d.isoformat(), "frac": 0.5}
+        try:
+            base = int(m["conf"].get("night_heat_pct", 50))
+            self.assertEqual(m["night_target_pct"](d), min(100, int(round(base + (100 - base) * 0.5))))
+            self.assertEqual(m["night_target_pct"](date(2026, 11, 9)), base)
+        finally:
+            m["state"]["solar_partial"] = None
+            m["conf"]["hot_auto"] = keep
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
