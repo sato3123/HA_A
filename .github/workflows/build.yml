@@ -26,6 +26,7 @@ jobs:
           node --check web/app.js
           node --check web/capture-worklet.js
           node --check web/boot.js
+          node --check web/sw.js
 
       - name: Prepare signing key
         env:
