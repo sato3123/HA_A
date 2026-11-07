@@ -13,6 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
 
@@ -177,3 +178,6 @@ jobs:
           curl -fsS -H 'Authorization: Bearer good' http://127.0.0.1/solar-api/status | grep -q '"server_setup"' || fail "セットアップの様子を返していません"
           systemctl is-active homepanel-solar homepanel-camera caddy || fail "自動のセットアップのあと、サービスが止まっています"
           echo "::notice::サーバーのセットアップは正常です"
+          # テストが終わったら、入れたサービスとタイマーを止める（ランナーの後片付けとぶつからないように）
+          sudo systemctl disable --now homepanel-update.timer > /dev/null 2>&1 || true
+          sudo systemctl stop homepanel-update.service homepanel-selfsetup.service homepanel-solar homepanel-camera homepanel-photos caddy 2>/dev/null || true
