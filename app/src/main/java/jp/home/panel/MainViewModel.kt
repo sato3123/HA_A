@@ -1046,17 +1046,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             rulesLoading.value = true
             try {
                 val map = HashMap<String, Rule?>()
+                val needFallback = mutableListOf<Rule>()
+                val linked = elLinks.value.values.toSet()
                 for (a in automations.value) {
                     val id = a.attributes.optString("id")
                     if (!isAppRuleId(id)) continue
                     map[id] = try {
-                        parseRule(id, JSONObject(rest("GET", "/api/config/automation/config/$id")))
+                        val raw = rest("GET", "/api/config/automation/config/$id")
+                        parseRule(id, JSONObject(raw)).also { r ->
+                            // 直接つないでいる機器と結びつけた機器の操作で、まだ「利用不可なら直接操作」になっていないもの
+                            if (r != null && !raw.contains(EL_FALLBACK) && r.actions.any { it.entityId in linked }) needFallback.add(r)
+                        }
                     } catch (e: HaException) {
                         if (e.message?.contains("権限") == true) throw e
                         null
                     }
                 }
                 rules.value = map
+                // 前に作ったスケジュール・オートメーションも、Home Assistant の機器が利用不可のときは直接操作するように保存し直す
+                needFallback.forEach { r ->
+                    runCatching {
+                        rest("POST", "/api/config/automation/config/${r.id}", r.toConfig(
+                            nameOf = { id -> allEntities.value.firstOrNull { it.entityId == id }?.name ?: id },
+                            elFor = { haId -> elLinks.value.entries.firstOrNull { it.value == haId }?.key },
+                        ))
+                    }
+                }
                 ruleMessage.value = null
             } catch (e: CancellationException) {
                 throw e
@@ -1075,7 +1090,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ruleSummary(rule) { id -> allStates.value[id]?.name ?: id }.take(40)
                 }
                 val r = rule.copy(name = name)
-                rest("POST", "/api/config/automation/config/${r.id}", r.toConfig { id -> allEntities.value.firstOrNull { it.entityId == id }?.name ?: id })
+                rest("POST", "/api/config/automation/config/${r.id}", r.toConfig(
+                    nameOf = { id -> allEntities.value.firstOrNull { it.entityId == id }?.name ?: id },
+                    elFor = { haId -> elLinks.value.entries.firstOrNull { it.value == haId }?.key },
+                ))
                 rules.value = rules.value + (r.id to r)
                 ruleMessage.value = "「$name」を保存しました"
                 onDone(null)

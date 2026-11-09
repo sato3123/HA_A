@@ -61,6 +61,9 @@ const val RULE_MARK = "ホームパネルで作成"
 /** ECHONET Lite の機器の操作を、ホームパネルのサーバーに頼むイベント */
 const val EL_EVENT = "homepanel_el"
 
+/** Home Assistant の機器が利用不可のとき、直接（ECHONET Lite）操作に切り替える分かれ道の名前 */
+const val EL_FALLBACK = "ホームパネル：利用不可なら直接操作"
+
 fun newRule(schedule: Boolean) = Rule(
     id = (if (schedule) "hp_sched_" else "hp_auto_") + System.currentTimeMillis(),
     name = "",
@@ -101,7 +104,7 @@ private fun hhmm(s: String) = s.split(":").let { p ->
 }
 
 /** Home Assistant の自動化の設定（JSON）に変換 */
-fun Rule.toConfig(nameOf: ((String) -> String)? = null): JSONObject {
+fun Rule.toConfig(nameOf: ((String) -> String)? = null, elFor: ((String) -> String?)? = null): JSONObject {
     val trig = when (val t = trigger) {
         is Trig.Time -> JSONObject().put("trigger", "time").put("at", hhmm(t.at) + ":00")
         is Trig.State -> JSONObject().put("trigger", "state").put("entity_id", t.entityId).put("to", t.to)
@@ -148,26 +151,33 @@ fun Rule.toConfig(nameOf: ((String) -> String)? = null): JSONObject {
             return@forEach
         }
         // 風量は Home Assistant では別の操作（climate.set_fan_mode）なので、運転の操作のあとに続けて送る
+        val seq = JSONArray()
         val fan = if (a.service.startsWith("climate.") && a.service != "climate.set_fan_mode" && data.has("fan_mode")) data.remove("fan_mode") else null
-        fun fanAct() = fan?.let {
-            acts.put(JSONObject().put("action", "climate.set_fan_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", JSONObject().put("fan_mode", it)))
+        val main = if (a.service == "climate.set_temperature" && !data.has("temperature") && data.has("hvac_mode")) "climate.set_hvac_mode" else a.service
+        seq.put(JSONObject().put("action", main).put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
+        fan?.let {
+            seq.put(JSONObject().put("action", "climate.set_fan_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", JSONObject().put("fan_mode", it)))
         }
-        if (a.service == "climate.set_temperature" && !data.has("temperature") && data.has("hvac_mode")) {
-            acts.put(JSONObject().put("action", "climate.set_hvac_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
-            fanAct()
-            return@forEach
+        // 直接つないでいる（ECHONET Lite）機器と結びつけてある Home Assistant の機器は、Home Assistant 側で
+        // 「利用不可」になっていたら、ホームパネルのサーバーに直接操作してもらう（Home Assistant の連携が切れていても動くように）
+        val el = elFor?.invoke(a.entityId)
+        if (el != null && isEchonetEntity(el)) {
+            val elData = JSONObject(data.toString()).apply { fan?.let { put("fan_mode", it) } }
+            acts.put(
+                JSONObject().put("alias", EL_FALLBACK).put("choose", JSONArray().put(
+                    JSONObject().put("conditions", JSONArray().put(
+                        JSONObject().put("condition", "not").put("conditions", JSONArray().put(
+                            JSONObject().put("condition", "state").put("entity_id", a.entityId).put("state", JSONArray().put("unavailable").put("unknown"))
+                        ))
+                    )).put("sequence", seq)
+                )).put("default", JSONArray().put(
+                    JSONObject().put("event", EL_EVENT).put("event_data", JSONObject()
+                        .put("entity_id", el).put("service", a.service.substringAfter('.')).put("data", elData).put("name", nameOf?.invoke(a.entityId) ?: a.entityId))
+                ))
+            )
+        } else {
+            for (i in 0 until seq.length()) acts.put(seq.get(i))
         }
-        if (fan != null) {
-            acts.put(JSONObject().put("action", a.service).put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
-            fanAct()
-            return@forEach
-        }
-        acts.put(
-            JSONObject()
-                .put("action", a.service)
-                .put("target", JSONObject().put("entity_id", a.entityId))
-                .put("data", data)
-        )
     }
     return JSONObject()
         .put("id", id)
@@ -253,7 +263,17 @@ fun parseRule(id: String, j: JSONObject): Rule? {
         }
     }
 
-    val actsJ = j.listOf("actions", "action") ?: return null
+    val actsRaw = j.listOf("actions", "action") ?: return null
+    val actsJ = JSONArray()
+    for (i in 0 until actsRaw.length()) {
+        val a = actsRaw.optJSONObject(i) ?: return null
+        if (a.has("choose") && a.optString("alias") == EL_FALLBACK) {
+            val seq = a.optJSONArray("choose")?.optJSONObject(0)?.optJSONArray("sequence") ?: return null
+            for (k in 0 until seq.length()) actsJ.put(seq.get(k))
+        } else {
+            actsJ.put(a)
+        }
+    }
     val acts = mutableListOf<Act>()
     for (i in 0 until actsJ.length()) {
         val a = actsJ.optJSONObject(i) ?: return null

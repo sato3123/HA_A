@@ -1954,8 +1954,17 @@
         extra.push({ kind: "state", entity: e, state: String(st) });
       } else return null;
     }
-    const acts = asList(j.actions || j.action);
-    if (!acts) return null;
+    const actsRaw = asList(j.actions || j.action);
+    if (!actsRaw) return null;
+    // Android 版が付ける「利用不可なら直接操作」の分かれ道は、Home Assistant 側の操作だけを取り出す
+    const acts = [];
+    for (const a of actsRaw) {
+      if (a && a.choose && a.alias === "ホームパネル：利用不可なら直接操作") {
+        const seq = a.choose[0] && a.choose[0].sequence;
+        if (!Array.isArray(seq)) return null;
+        acts.push(...seq);
+      } else acts.push(a);
+    }
     const actions = [];
     for (const a of acts) {
       if (a.event === "homepanel_el") {
