@@ -153,8 +153,17 @@ fun Rule.toConfig(nameOf: ((String) -> String)? = null, elFor: ((String) -> Stri
         // 風量は Home Assistant では別の操作（climate.set_fan_mode）なので、運転の操作のあとに続けて送る
         val seq = JSONArray()
         val fan = if (a.service.startsWith("climate.") && a.service != "climate.set_fan_mode" && data.has("fan_mode")) data.remove("fan_mode") else null
-        val main = if (a.service == "climate.set_temperature" && !data.has("temperature") && data.has("hvac_mode")) "climate.set_hvac_mode" else a.service
-        seq.put(JSONObject().put("action", main).put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
+        val mode = data.optString("hvac_mode")
+        if (a.service == "climate.set_temperature" && data.has("temperature") && mode.isNotBlank() && mode != "off") {
+            // 運転モードと温度は別々に送る。温度の操作に運転モードを付けても、運転を入れない連携があるため
+            // （HEMS Echonet Lite など。目標温度だけ変わって、エアコンがつかない）
+            seq.put(JSONObject().put("action", "climate.set_hvac_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", JSONObject().put("hvac_mode", mode)))
+            seq.put(JSONObject().put("action", "climate.set_temperature").put("target", JSONObject().put("entity_id", a.entityId))
+                .put("data", JSONObject(data.toString()).apply { remove("hvac_mode") }))
+        } else {
+            val main = if (a.service == "climate.set_temperature" && !data.has("temperature") && data.has("hvac_mode")) "climate.set_hvac_mode" else a.service
+            seq.put(JSONObject().put("action", main).put("target", JSONObject().put("entity_id", a.entityId)).put("data", data))
+        }
         fan?.let {
             seq.put(JSONObject().put("action", "climate.set_fan_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", JSONObject().put("fan_mode", it)))
         }
@@ -293,6 +302,12 @@ fun parseRule(id: String, j: JSONObject): Rule? {
             ?: return null
         val map = data.keys().asSequence().filter { it != "entity_id" }.associateWith { data.get(it) }
         val last = acts.lastOrNull()
+        // 運転モード → 温度 の2つの操作は、1つの「運転モードと温度」にまとめて読む
+        if (svc == "climate.set_temperature" && last != null && last.entityId == entity && last.service == "climate.set_hvac_mode" &&
+            !last.data.containsKey("temperature") && map["temperature"] != null && !map.containsKey("hvac_mode")) {
+            acts[acts.size - 1] = last.copy(service = "climate.set_temperature", data = last.data + map)
+            continue
+        }
         if (svc == "climate.set_fan_mode" && last != null && last.entityId == entity && last.service in setOf("climate.set_temperature", "climate.set_hvac_mode") &&
             !last.data.containsKey("fan_mode") && map["fan_mode"] != null) {
             acts[acts.size - 1] = last.copy(data = last.data + ("fan_mode" to map["fan_mode"]!!))

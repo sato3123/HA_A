@@ -1901,9 +1901,17 @@
         // 風量は Home Assistant では別の操作（climate.set_fan_mode）なので、続けて送る
         let fan = null;
         if (a.service.startsWith("climate.") && a.service !== "climate.set_fan_mode" && data.fan_mode !== undefined) { fan = data.fan_mode; delete data.fan_mode; }
-        const main = a.service === "climate.set_temperature" && data.temperature === undefined && data.hvac_mode
-          ? { action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data } : { action: a.service, target: { entity_id: a.entity }, data };
-        return fan === null ? main : [main, { action: "climate.set_fan_mode", target: { entity_id: a.entity }, data: { fan_mode: fan } }];
+        let main;
+        if (a.service === "climate.set_temperature" && data.temperature !== undefined && data.hvac_mode && data.hvac_mode !== "off") {
+          // 運転モードと温度は別々に送る（温度の操作に運転モードを付けても、運転を入れない連携があるため）
+          const t = Object.assign({}, data); delete t.hvac_mode;
+          main = [{ action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data: { hvac_mode: data.hvac_mode } },
+            { action: "climate.set_temperature", target: { entity_id: a.entity }, data: t }];
+        } else {
+          main = [a.service === "climate.set_temperature" && data.temperature === undefined && data.hvac_mode
+            ? { action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data } : { action: a.service, target: { entity_id: a.entity }, data }];
+        }
+        return fan === null ? main : [...main, { action: "climate.set_fan_mode", target: { entity_id: a.entity }, data: { fan_mode: fan } }];
       }).flat(),
     };
   }
@@ -1980,6 +1988,13 @@
       if (!entity) return null;
       delete data.entity_id;
       const last = actions[actions.length - 1];
+      // 運転モード → 温度 の2つは、1つの「運転モードと温度」にまとめて読む
+      if (svc === "climate.set_temperature" && last && last.entity === entity && last.service === "climate.set_hvac_mode" &&
+          last.data.temperature === undefined && data.temperature !== undefined && data.hvac_mode === undefined) {
+        last.service = "climate.set_temperature";
+        Object.assign(last.data, data);
+        continue;
+      }
       if (svc === "climate.set_fan_mode" && last && last.entity === entity && ["climate.set_temperature", "climate.set_hvac_mode"].includes(last.service) && last.data.fan_mode === undefined && data.fan_mode !== undefined) {
         last.data.fan_mode = data.fan_mode;
         continue;

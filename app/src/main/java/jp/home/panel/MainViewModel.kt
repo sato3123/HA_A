@@ -1056,6 +1056,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         parseRule(id, JSONObject(raw)).also { r ->
                             // 直接つないでいる機器と結びつけた機器の操作で、まだ「利用不可なら直接操作」になっていないもの
                             if (r != null && !raw.contains(EL_FALLBACK) && r.actions.any { it.entityId in linked }) needFallback.add(r)
+                            // 前の形（温度の操作に運転モードを付けただけ）で、エアコンがつかないもの
+                            else if (r != null && !raw.contains("climate.set_hvac_mode") &&
+                                r.actions.any { it.service == "climate.set_temperature" && it.data["temperature"] != null && (it.data["hvac_mode"] ?: "off") != "off" }
+                            ) needFallback.add(r)
                         }
                     } catch (e: HaException) {
                         if (e.message?.contains("権限") == true) throw e
@@ -1063,7 +1067,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 rules.value = map
-                // 前に作ったスケジュール・オートメーションも、Home Assistant の機器が利用不可のときは直接操作するように保存し直す
+                // 前に作ったスケジュール・オートメーションを、新しい形（利用不可なら直接操作・運転モードと温度を別々に送る）で保存し直す
                 needFallback.forEach { r ->
                     runCatching {
                         rest("POST", "/api/config/automation/config/${r.id}", r.toConfig(
