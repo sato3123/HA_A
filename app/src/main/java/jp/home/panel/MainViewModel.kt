@@ -234,9 +234,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             try {
-                update.value = UpdateState.Downloading(info, 0f)
-                val file = updater.download(info) { p -> update.value = UpdateState.Downloading(info, p) }
-                update.value = UpdateState.Installing(info)
+                // ダウンロードの直前に、もう一度いまの版を読み直す。確認したあとに新しい版が出ていると、
+                // 古い版の SHA-256 で新しい APK を照らし合わせてしまい「SHA-256 が合いません」になるため
+                val fresh = runCatching { updater.check(shServer.value.takeIf { it.startsWith("http") }, serverAuthToken()) }.getOrNull() ?: info
+                update.value = UpdateState.Downloading(fresh, 0f)
+                val file = try {
+                    updater.download(fresh) { p -> update.value = UpdateState.Downloading(fresh, p) }
+                } catch (e: java.io.IOException) {
+                    if (e.message?.contains("SHA-256") != true) throw e
+                    // ダウンロード中に家のサーバーの APK が入れ替わったときなど：少し待って、読み直してからもう一度
+                    delay(5_000)
+                    val again = updater.check(shServer.value.takeIf { it.startsWith("http") }, serverAuthToken()) ?: throw e
+                    updater.download(again) { p -> update.value = UpdateState.Downloading(again, p) }
+                }
+                update.value = UpdateState.Installing(fresh)
                 launchRequest.emit(updater.installIntent(file))
             } catch (e: CancellationException) {
                 throw e
