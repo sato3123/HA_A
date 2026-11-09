@@ -2072,6 +2072,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private var knownPushed = ""
+
+    /** アプリが知っている ECHONET Lite のエアコンの IP を、家のサーバーに知らせる（Home Assistant へのつなぎ直しに使う） */
+    private fun pushKnownAirconsSoon(list: Collection<ElDevice>) {
+        if (shServer.value.isBlank()) return
+        val ips = list.filter { it.eoj.classCode == 0x0130 }.map { it.ip }.distinct().sorted()
+        val sig = ips.joinToString(",")
+        if (sig == knownPushed || ips.isEmpty()) return
+        viewModelScope.launch {
+            delay(3_000)
+            try {
+                serverCall("/config", JSONObject().put("el_known_ips", JSONArray(ips)))
+                knownPushed = sig
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) { }
+        }
+    }
+
     fun elEntity(entityId: String): ElDevice? = elDevices.value.firstOrNull { it.entityId == entityId }
 
     private fun startEchonet() {
@@ -2091,6 +2110,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             echonet.devices.collect { map ->
                 elDevices.value = map.values.sortedWith(compareBy({ it.cls.kind.ordinal }, { it.name }))
+                pushKnownAirconsSoon(map.values)
                 elLive.value = elLive(map.values)
                 mergeEntities()
             }
@@ -2929,6 +2949,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val hotPlan = MutableStateFlow<JSONObject?>(null)
     /** 家のサーバーのセットアップの版と、自動で実行し直した最後の結果 */
     val serverSetup = MutableStateFlow<JSONObject?>(null)
+
+    /** 家のサーバーがエアコンに「名乗って」と頼んでいる様子（Home Assistant へのつなぎ直し） */
+    val elRescue = MutableStateFlow<JSONObject?>(null)
     val nightStop = MutableStateFlow(false)
     /** 夜を減らす日に、目標の量まで夜に沸かしている途中 */
     val nightPending = MutableStateFlow(false)
@@ -3065,6 +3088,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         serverCost.value = j.optJSONObject("cost")
         hotPlan.value = j.optJSONObject("hot_plan")
         serverSetup.value = j.optJSONObject("server_setup")
+        elRescue.value = j.optJSONObject("el_rescue")
         serverForecast.value = j.optJSONObject("forecast")
         hotHourly.value = j.optJSONObject("hot_hourly")?.let { h ->
             fun arr(k: String) = h.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } } ?: emptyList()

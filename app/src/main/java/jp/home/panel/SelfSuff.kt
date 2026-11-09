@@ -24,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -278,3 +279,88 @@ fun SimpleTile(e: Entity, vm: MainViewModel) {
 
 /** かんたん表示で出す機器（照明・スイッチ・エアコン・扇風機・シーン・カーテン） */
 fun simpleDomains() = setOf("light", "switch", "input_boolean", "climate", "fan", "scene", "script", "cover")
+
+// ======================= Home Assistant へのつなぎ直し（エアコンに「名乗って」と頼む） =======================
+
+/**
+ * 家のサーバーが数分ごとに、ECHONET Lite のエアコンへ「名乗って」と頼む様子と設定。
+ * 全員あての呼びかけを聞き逃すエアコンが、Home Assistant（HEMS Echonet Lite）の一覧から消えたままになるのを防ぐ。
+ * 頼むのは読み取り用の依頼だけで、運転は変えない
+ */
+@Composable
+fun ElRescueCard(vm: MainViewModel) {
+    val server by vm.shServer.collectAsState()
+    val conf by vm.serverConf.collectAsState()
+    val st by vm.elRescue.collectAsState()
+    val devs by vm.elDevices.collectAsState()
+    var ipText by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf("") }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (server.isBlank()) {
+                Text("家のサーバーが登録されていません（「お湯（エコキュート）と太陽光」で登録できます）", style = MaterialTheme.typography.bodySmall)
+                return@Column
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("エアコンに数分ごとに「名乗って」と頼む", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Home Assistant の全員あての呼びかけを聞き逃すエアコンが、一覧から消えて「利用不可」のままになるのを防ぎます。" +
+                            "家のサーバーが IP アドレスあてに頼むだけで、運転・温度は変えません。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = conf["el_rescue"] != false, onCheckedChange = { vm.setServerConf("el_rescue", it) })
+            }
+            val j = st
+            if (j == null) {
+                Text("サーバーの様子を読んでいます（サーバーが新しい版になるまで、数分かかることがあります）", style = MaterialTheme.typography.bodySmall)
+            } else {
+                fun names(a: org.json.JSONArray?): List<String> = a?.let { x -> (0 until x.length()).map { x.optString(it) } } ?: emptyList()
+                val targets = names(j.optJSONArray("targets"))
+                val sent = names(j.optJSONArray("sent")).toSet()
+                val at = j.optDouble("at", Double.NaN)
+                Text(
+                    if (targets.isEmpty()) "頼む相手のエアコンがまだありません。上でエアコンを見つけるか、下に IP アドレスを入れてください。"
+                    else "頼む相手：",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                targets.forEach { ip ->
+                    val name = devs.firstOrNull { it.ip == ip && it.eoj.classCode == 0x0130 }?.let { withRoom(vm.roomNameOf(it.entityId), it.name) }
+                    Text(
+                        "・" + (name?.let { "$it（$ip）" } ?: ip) + if (ip in sent) "　✓ 頼みました" else "",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                if (!at.isNaN()) {
+                    val t = java.time.Instant.ofEpochMilli((at * 1000).toLong()).atZone(java.time.ZoneId.systemDefault())
+                    Text("最後に頼んだ時刻：${t.hour}:${String.format("%02d", t.minute)}（${j.optDouble("every_min", 3.0).toInt()}分ごと）",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (!j.isNull("error") && j.optString("error").isNotBlank()) {
+                    Text("うまく送れなかった相手：" + j.optString("error"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            HorizontalDivider()
+            Text("IP アドレスで足す（アプリで見つからないエアコンなど）", style = MaterialTheme.typography.labelLarge)
+            val extra = conf.strList("el_rescue_ips")
+            extra.forEach { ip ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(ip, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { vm.setServerConf("el_rescue_ips", JSONArray(extra - ip)) }) { Text("外す") }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = ipText, onValueChange = { ipText = it.filter { c -> c.isDigit() || c == '.' }.take(15) },
+                    label = { Text("例：192.168.1.12") }, singleLine = true, modifier = Modifier.weight(1f),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                )
+                val ok = Regex("""(192\.168|10\.\d{1,3})\.\d{1,3}\.\d{1,3}""").matches(ipText)
+                FilledTonalButton(enabled = ok && ipText !in extra, onClick = {
+                    vm.setServerConf("el_rescue_ips", JSONArray(extra + ipText))
+                    ipText = ""
+                }) { Text("足す") }
+            }
+        }
+    }
+}

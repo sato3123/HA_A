@@ -310,6 +310,8 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             // ---- ECHONET Lite ----
             item { SectionTitle("機器を直接つなぐ（ECHONET Lite）") }
             item { EchonetSettings(vm) }
+            item { SectionTitle("Home Assistant につなぎ直す（家のサーバー）") }
+            item { ElRescueCard(vm) }
         }
 
         if (page == "connection") {

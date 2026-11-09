@@ -82,6 +82,8 @@ DEFAULT_CONF = {
     # ECHONET Lite のエアコンに数分ごとに「名乗って」と頼む（読み取りだけ。運転は変えない）。
     # 全員あての呼びかけを聞き逃すエアコンが、Home Assistant（HEMS Echonet Lite）の一覧から消えたままになるのを防ぐ
     "el_rescue": True, "el_rescue_min": 3, "el_rescue_ips": [],
+    # Android 版が知っている ECHONET Lite のエアコンの IP（アプリが自動で送る）
+    "el_known_ips": [],
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
     "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
     "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
@@ -1786,6 +1788,7 @@ def el_rescue_targets():
         m = EL_ID.match(str(d.get("id") or "")) if isinstance(d, dict) else None
         if m and m.group(6).lower().startswith("0130"):
             ips.append(".".join(m.group(i) for i in range(2, 6)))
+    ips += [str(x) for x in conf.get("el_known_ips") or []]
     ips += [str(x) for x in conf.get("el_rescue_ips") or []]
     ok = []
     for ip in ips:
@@ -3395,6 +3398,7 @@ def public_state():
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "hot_plan": hot_plan_safe(), "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
                 "el_rescue": {"on": bool(conf.get("el_rescue", True)), "targets": el_rescue_targets(), "sent": el_rescue_state["sent"],
+                              "every_min": float(conf.get("el_rescue_min") or 3),
                               "at": el_rescue_state["last"] or None, "error": el_rescue_state["error"]},
                 "server_setup": server_setup_info(),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
@@ -3646,10 +3650,12 @@ class Api(BaseHTTPRequestHandler):
                     if not isinstance(ed, list) or len(ed) > 100 or not all(isinstance(x, dict) and is_el_entity(x.get("id")) for x in ed):
                         return self._ok({"error": "ECHONET Lite の機器の一覧が正しくありません"}, 400)
                     b["el_devices"] = [{"id": x["id"], "name": str(x.get("name") or "")[:40], "room": str(x.get("room") or "")[:20]} for x in ed]
-                if "el_rescue_ips" in b:
-                    v = b["el_rescue_ips"]
+                for k_ in ("el_rescue_ips", "el_known_ips"):
+                    if k_ not in b:
+                        continue
+                    v = b[k_]
                     if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"(192\.168|10\.\d{1,3})\.\d{1,3}\.\d{1,3}", str(x)) for x in v):
-                        return self._ok({"error": "IP アドレスは家の中のもの（192.168.〇.〇 など）を選んでください"}, 400)
+                        return self._ok({"error": "IP アドレスは家の中のもの（192.168.〇.〇 など）を入れてください"}, 400)
                 if "ss_aircon_entities" in b:
                     v = b["ss_aircon_entities"]
                     if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"climate\.[a-z0-9_]+", str(x)) for x in v):
