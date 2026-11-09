@@ -2103,11 +2103,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             solarStarted = true
             startSolarHeat()
         }
-        // 15秒ごとに状態を読み直す（機器からの通知があればすぐ反映）
+        // 60秒ごとに状態を読み直す（機器からの通知・Home Assistant 側の変化・操作のあとは、すぐ読み直している）。
+        // エアコンの無線アダプターは問い合わせが重なると返事が遅れ、Home Assistant の ECHONET Lite 連携が
+        // 「利用不可」になりやすいため、こちらからの定期的な問い合わせは少なくする
         viewModelScope.launch {
             while (isActive && elEnabled.value) {
                 if (foreground) echonet.refreshAll()
-                delay(15_000)
+                delay(60_000)
             }
         }
     }
