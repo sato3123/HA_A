@@ -79,6 +79,9 @@ DEFAULT_CONF = {
     "hot_temp_learn": True,              # いちばん安い時刻との差がこの円以内なら、できるだけ遅い時刻を選ぶ
     # ECHONET Lite の機器（Android 版が見つけたもの）：[{id: "climate.el_…", name, room}]。iPad 版の自動化の画面で選べるようにする
     "el_devices": [],
+    # ECHONET Lite のエアコンに数分ごとに「名乗って」と頼む（読み取りだけ。運転は変えない）。
+    # 全員あての呼びかけを聞き逃すエアコンが、Home Assistant（HEMS Echonet Lite）の一覧から消えたままになるのを防ぐ
+    "el_rescue": True, "el_rescue_min": 3, "el_rescue_ips": [],
     "ha_url": "http://192.168.1.45:8123", "ha_token": "",   # エアコンの自動温度調整で使う Home Assistant
     "climate_enabled": False,               # 自動温度調整の全体のオン/オフ
     "climate_rules": [],                    # [{entity, enabled, min, max, source, cool, heat, off}]
@@ -1772,6 +1775,71 @@ def el_target(eid):
     return m.group(1), ip, m.group(6).upper()
 
 
+# ---- 「名乗って」の依頼（ECHONET Lite のインスタンスリスト通知要求：0x63 / EPC 0xD5） ----
+el_rescue_state = {"last": 0, "sent": [], "error": None}
+
+
+def el_rescue_targets():
+    """名乗らせる相手：アプリで登録したエアコン（0x0130）と、設定で足した IP。家の中の IP だけ"""
+    ips = []
+    for d in conf.get("el_devices") or []:
+        m = EL_ID.match(str(d.get("id") or "")) if isinstance(d, dict) else None
+        if m and m.group(6).lower().startswith("0130"):
+            ips.append(".".join(m.group(i) for i in range(2, 6)))
+    ips += [str(x) for x in conf.get("el_rescue_ips") or []]
+    ok = []
+    for ip in ips:
+        if re.fullmatch(r"(192\.168|10\.\d{1,3})\.\d{1,3}\.\d{1,3}", ip) and ip not in ok:
+            ok.append(ip)
+    return ok
+
+
+def el_rescue_frame(tid):
+    # EHD 1081 / TID / SEOJ 05FF01（コントローラ）/ DEOJ 0EF001（ノードプロファイル）/ ESV 0x63 / OPC 1 / EPC D5 / PDC 0
+    return bytes.fromhex("1081") + int(tid & 0xFFFF).to_bytes(2, "big") + bytes.fromhex("05ff010ef0016301d500")
+
+
+def el_rescue_tick(now=None, sender=None):
+    if not conf.get("el_rescue", True):
+        return []
+    now = now or time.time()
+    every = max(1.0, min(30.0, float(conf.get("el_rescue_min") or 3))) * 60
+    if now - el_rescue_state["last"] < every:
+        return []
+    el_rescue_state["last"] = now
+    targets = el_rescue_targets()
+    if not targets:
+        return []
+    sent = []
+    try:
+        if sender is None:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(1)
+            sender = lambda data, ip: sock.sendto(data, (ip, 3610))
+        for i, ip in enumerate(targets):
+            try:
+                sender(el_rescue_frame(int(now) + i), ip)
+                sent.append(ip)
+            except OSError as e:
+                el_rescue_state["error"] = f"{ip}: {e}"
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    el_rescue_state["sent"] = sent
+    return sent
+
+
+def el_rescue_loop():
+    while True:
+        try:
+            el_rescue_tick()
+        except Exception as e:
+            print("名乗りの依頼でエラー:", e, flush=True)
+        time.sleep(30)
+
+
 def el_call(eid, service, data=None):
     """ECHONET Lite の機器を操作する（アプリの操作と同じ対応）。失敗したら例外"""
     data = data or {}
@@ -3326,6 +3394,8 @@ def public_state():
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "hot_plan": hot_plan_safe(), "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
+                "el_rescue": {"on": bool(conf.get("el_rescue", True)), "targets": el_rescue_targets(), "sent": el_rescue_state["sent"],
+                              "at": el_rescue_state["last"] or None, "error": el_rescue_state["error"]},
                 "server_setup": server_setup_info(),
                 "aiseg_daily": {"ok": aiseg_daily["ok"], "pages": aiseg_daily["pages"]},
                 "night_stop": bool(state.get("night_stop")), "power": state.get("power"), "surplus_from": state.get("surplus_from"), "aiseg_error": state.get("aiseg_error"), "config": c, "plan": state.get("plan"), "shift_unsupported": bool(state.get("shift_unsupported")), "log": state["log"][:40], "status": state["status"],
@@ -3576,6 +3646,10 @@ class Api(BaseHTTPRequestHandler):
                     if not isinstance(ed, list) or len(ed) > 100 or not all(isinstance(x, dict) and is_el_entity(x.get("id")) for x in ed):
                         return self._ok({"error": "ECHONET Lite の機器の一覧が正しくありません"}, 400)
                     b["el_devices"] = [{"id": x["id"], "name": str(x.get("name") or "")[:40], "room": str(x.get("room") or "")[:20]} for x in ed]
+                if "el_rescue_ips" in b:
+                    v = b["el_rescue_ips"]
+                    if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"(192\.168|10\.\d{1,3})\.\d{1,3}\.\d{1,3}", str(x)) for x in v):
+                        return self._ok({"error": "IP アドレスは家の中のもの（192.168.〇.〇 など）を選んでください"}, 400)
                 if "ss_aircon_entities" in b:
                     v = b["ss_aircon_entities"]
                     if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"climate\.[a-z0-9_]+", str(x)) for x in v):
@@ -3783,6 +3857,7 @@ def main():
     threading.Thread(target=climate_loop, daemon=True).start()
     threading.Thread(target=device_timer_loop, daemon=True).start()
     threading.Thread(target=ha_ws_loop, daemon=True).start()
+    threading.Thread(target=el_rescue_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

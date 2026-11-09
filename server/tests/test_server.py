@@ -416,6 +416,28 @@ class TestSelfSuff(SolarTestBase):
             m["conf"]["hot_auto"] = keep
 
 
+class TestElRescue(SolarTestBase):
+    def test_targets_frame_and_interval(self):
+        m = self.m
+        keep = {k: m["conf"].get(k) for k in ("el_devices", "el_rescue", "el_rescue_ips", "el_rescue_min")}
+        try:
+            m["conf"].update(el_rescue=True, el_rescue_min=3, el_rescue_ips=["8.8.8.8", "192.168.1.30"],
+                             el_devices=[{"id": "climate.el_192_168_1_12_013001"}, {"id": "light.el_192_168_1_20_029001"},
+                                         {"id": "climate.el_192_168_1_12_013001"}])
+            self.assertEqual(m["el_rescue_targets"](), ["192.168.1.12", "192.168.1.30"])
+            f = m["el_rescue_frame"](0x1234)
+            self.assertEqual(f.hex(), "1081123405ff010ef0016301d500")
+            got = []
+            m["el_rescue_state"]["last"] = 0
+            self.assertEqual(m["el_rescue_tick"](1000.0, lambda d, ip: got.append(ip)), ["192.168.1.12", "192.168.1.30"])
+            self.assertEqual(m["el_rescue_tick"](1100.0, lambda d, ip: got.append(ip)), [])  # 3分たっていない
+            self.assertEqual(len(m["el_rescue_tick"](1200.0, lambda d, ip: got.append(ip))), 2)
+            m["conf"]["el_rescue"] = False
+            self.assertEqual(m["el_rescue_tick"](5000.0, lambda d, ip: got.append(ip)), [])
+        finally:
+            m["conf"].update(keep)
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
