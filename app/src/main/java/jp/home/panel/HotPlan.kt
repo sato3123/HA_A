@@ -82,7 +82,7 @@ fun HotPlanSummary(vm: MainViewModel) {
     var dlg by remember { mutableStateOf(false) }
     if (dlg) HotExtraDialog(vm) { dlg = false }
     p.optJSONObject("evening")?.let { e ->
-        Text("🛁 ${dayText(e.optString("date"))}の夕方（${e.optInt("from")}時）までに用意：" + needText(e), style = MaterialTheme.typography.bodySmall)
+        Text("🛁 ${dayText(e.optString("date"))}の夕方（${e.optInt("from")}時）に残しておく（今夜の沸き上げ ${e.optInt("to").let { if (it > 24) "翌${it - 24}" else "$it" }}時まで使う分）：" + needText(e), style = MaterialTheme.typography.bodySmall)
     }
     p.optJSONObject("prep")?.let { st ->
         when {
@@ -173,7 +173,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         }
         hp?.let { p ->
             p.optJSONObject("evening")?.let { e ->
-                Text("→ ${dayText(e.optString("date"))}：${e.optInt("from")}時〜${e.optInt("to")}時に使う " + needText(e) +
+                Text("→ ${dayText(e.optString("date"))}：${e.optInt("from")}時〜${e.optInt("to").let { if (it > 24) "翌${it - 24}" else "$it" }}時（今夜の沸き上げまで）に使う " + needText(e) +
                     (if (!e.isNull("max")) "（多い日は ${e.optInt("max")}L・${e.optString("how")}）" else ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             p.optJSONObject("night")?.let { n ->

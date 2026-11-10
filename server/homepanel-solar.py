@@ -2344,7 +2344,36 @@ def predict_hot(d, h0, h1):
     # 翌日などの予想気温が、ふだん（学んだ日々の平均）より寒ければ多め、暖かければ少なめにする
     f, info = temp_factor(d) if d >= date.today() else (1.0, None)
     return {"liters": round(base * f), "base": round(base), "factor": f, "temp": info, "max": round(max(vals)), "days": len(vals), "removed": removed,
-            "type": kind, "hourly": sum(1 for _, _, h in use if h)}
+            "type": kind, "hourly": sum(1 for _, _, h in use if h), "p75": round((_quantile(vals, 0.75) or base) * f)}
+
+
+def evening_end_hour(d):
+    """夕方に用意したお湯を使う終わりの時刻（d の0時からの時間。24 を超えると翌日）：
+    今夜の沸き上げを始める時刻（夜の沸き上げの計画があればその時刻、無ければ夜の始まり）"""
+    h0 = int(conf.get("prep_hour", 17))
+    end = max(h0 + 1, min(24, int(conf.get("night_start_hour", 23))))
+    nh = state.get("night_heat") or {}
+    if nh.get("start"):
+        st = datetime.fromtimestamp(nh["start"])
+        if st.date() == d + timedelta(days=1):
+            end = max(end, min(24 + 9, 24 + st.hour))
+        elif st.date() == d and st.hour > h0:
+            end = max(end, st.hour)
+    return end
+
+
+def predict_span(d, h0, h1):
+    """h0〜h1 時（h1 は 24 を超えてよい＝翌日の朝まで）の予想。日をまたぐときは2日分を足す"""
+    if h1 <= 24:
+        return predict_hot(d, h0, h1)
+    a = predict_hot(d, h0, 24)
+    b = predict_hot(d + timedelta(days=1), 0, h1 - 24)
+    if a is None or b is None:
+        return a or b
+    out = dict(a)
+    for k in ("liters", "base", "max", "p75"):
+        out[k] = (a.get(k) or 0) + (b.get(k) or 0)
+    return out
 
 
 # ================= 気温による、お湯の使い方・冷めて減る量の学習 =================
@@ -2470,11 +2499,16 @@ def heat_rate():
     return 80.0, "目安"
 
 
-def evening_need(d=None):
-    """d（今日）の夕方に用意しておくお湯：夜（prep_hour〜night_start_hour 時）の予想＋余裕＋多めの日の分"""
+def evening_need(d=None, h_from=None):
+    """d（今日）の夕方に残しておくお湯：夕方（prep_hour 時）から今夜の沸き上げが始まるまでに使う予想＋余裕＋多めの日の分＋冷めて減る分。
+    予想は、直近の同じ種類の日の平均と、多めの日寄りの値（上位25%）の大きい方。h_from を渡すと、その時刻からの残りの分"""
     d = d or date.today()
-    h0, h1 = int(conf.get("prep_hour", 17)), max(int(conf.get("prep_hour", 17)) + 1, min(24, int(conf.get("night_start_hour", 23))))
-    p = predict_hot(d, h0, h1)
+    ph = int(conf.get("prep_hour", 17))
+    h0 = max(ph, int(h_from)) if h_from is not None else ph
+    h1 = evening_end_hour(d)
+    if h0 >= h1:
+        h0 = h1 - 1
+    p = predict_span(d, h0, h1)
     extra, note = hot_extra_for(d, "evening")
     margin = int(conf.get("hot_margin_l") or 0)
     # 用意する時刻から、使い終わる時刻までに冷めて減る分も足す
@@ -2483,9 +2517,12 @@ def evening_need(d=None):
     if p is None:
         return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note,
                 "need": (margin + extra) or None, "how": "記録がまだありません"}
-    return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
-            "need": p["liters"] + margin + extra + loss, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "") + temp_note(p),
-            "loss": loss, "temp": p.get("temp")}
+    use = max(p["liters"], p.get("p75") or 0)
+    how = f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "")
+    if use > p["liters"]:
+        how += f"より多めの日寄り（平均 {p['liters']}L → {use}L）"
+    return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": use, "avg": p["liters"], "max": p["max"], "margin": margin, "extra": extra,
+            "note": note, "need": use + margin + extra + loss, "how": how + temp_note(p), "loss": loss, "temp": p.get("temp")}
 
 
 def temp_note(p):
@@ -2781,7 +2818,9 @@ def hot_plan_public():
 
 
 def prep_tick(eco, now):
-    """夕方の準備：prep_hour 時までに、夜に使う予想＋余裕のお湯があるようにする。足りなければ、間に合う時刻から沸かす"""
+    """夕方の準備：prep_hour 時に「今夜の沸き上げまでに使う予想＋余裕」が残っているようにする。足りなければ、間に合う時刻から沸かす。
+    夕方の時刻を過ぎても、今夜の沸き上げが始まるまでは見張り、残りが「そこからの予想＋余裕」を下回ったら沸かし足す。
+    この沸き上げは、買電が多いときの一時停止より優先する（お湯切れを防ぐため）"""
     if not conf.get("hot_auto") or not eco or eco.get("remain") is None:
         return
     ph = int(conf.get("prep_hour", 17))
@@ -2789,38 +2828,56 @@ def prep_tick(eco, now):
     st = state.get("prep") or {}
     if st.get("date") != now.date().isoformat():
         st = {"date": now.date().isoformat(), "heating": False}
-    need = evening_need(now.date())
+    d0 = datetime.combine(now.date(), datetime.min.time())
+    end_h = evening_end_hour(now.date())
+    end_at = d0 + timedelta(hours=end_h)
+    in_evening = now >= d0 + timedelta(hours=ph)
+    if in_evening and now >= end_at:
+        st["heating"] = False
+        state["prep"] = st
+        return
+    need = evening_need(now.date(), now.hour if in_evening else None)
     st["need"] = need.get("need")
+    st["until"] = end_at.strftime("%H:%M") if end_h < 24 else f"翌{end_h - 24}:00"
     if not need.get("need"):
         state["prep"] = st
         return
     tank = eco.get("tank") or need["need"]
     target = min(int(need["need"]), int(tank * 0.98))
+    st["target"] = target
     rate, _ = heat_rate()
     short = target - remain
     st["short"] = max(0, short)
     if st.get("heating"):
-        # 沸かしている：目標まで沸いたら（または準備の時刻を1時間過ぎたら）やめる
-        if remain < target and now.hour < ph + 1 and not eco.get("heating") and time.time() - st.get("resent", 0) > 600:
-            # ほかの設定（「夜は止める」を自動に戻すなど）で止まったときは、もう一度沸かす
+        # 沸かしている：目標まで沸いたら（または今夜の沸き上げの時刻になったら）やめる
+        if remain < target and not eco.get("heating") and time.time() - st.get("resent", 0) > 600:
+            # ほかの設定（「夜は止める」を自動に戻す・買電の一時停止など）で止まったときは、もう一度沸かす
             st["resent"] = time.time()
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
-        if remain >= target or now.hour >= ph + 1:
+        if remain >= target or now >= end_at:
             st["heating"] = False
-            st["done"] = remain >= target
+            st["stopped_at"] = time.time()
             (eco_pause if state.get("night_stop") else eco_auto)(
-                f"夕方の準備：{remain}L になりました（目標 {target}L）" if remain >= target else "夕方の準備の時刻を過ぎたため")
+                f"夕方の準備：{remain}L になりました（目標 {target}L）" if remain >= target else "今夜の沸き上げの時刻になったため")
             state["ensure"] = False
         state["prep"] = st
         return
-    if now.hour >= ph or short <= 0 or st.get("done"):
+    # 少しの不足では沸かさない（細かく入れたり切ったりしないように）。止めてから30分は沸かし直さない
+    if short < 20 or time.time() - st.get("stopped_at", 0) < 1800:
         state["prep"] = st
         return
-    # 間に合うように始める時刻：足りない量 ÷ 沸かす速さ ＋ 15分の余裕
-    lead_h = short / rate + 0.25
-    start_at = datetime.combine(now.date(), datetime.min.time()) + timedelta(hours=ph - lead_h)
+    if in_evening:
+        start_at = now  # 夕方を過ぎて足りなくなった：すぐ沸かし足す
+        why = f"今夜の沸き上げ（{st['until']}）までに使う予想 {need['predicted'] or 0}L ＋ 余裕 {need['margin']}L"
+    else:
+        # 間に合うように始める時刻：足りない量 ÷ 沸かす速さ ＋ 15分の余裕
+        lead_h = short / rate + 0.25
+        start_at = d0 + timedelta(hours=ph - lead_h)
+        why = f"夕方〜今夜の沸き上げ（{st['until']}）までに使う予想 {need['predicted'] or 0}L ＋ 余裕 {need['margin']}L"
     st["start_at"] = start_at.strftime("%H:%M")
-    if now >= start_at and not eco.get("heating") and eco.get("can_manual", True) and not guard["active"]:
+    if now >= start_at and not eco.get("heating") and eco.get("can_manual", True):
+        if guard["active"]:
+            guard_release("夕方のお湯が足りないため（お湯切れを防ぐ）", cool=1800)
         s_ = eco_caps["set"]
         if s_ is None or 0xC0 in s_:
             el.setc(conf["eco_ip"], conf["eco_eoj"], 0xC0, b"\x41")
@@ -2830,8 +2887,8 @@ def prep_tick(eco, now):
             with lock:
                 state["by_us"] = True
                 state["ensure"] = True
-            log(f"夕方の準備：夜に使う予想 {need['predicted'] or 0}L ＋ 余裕 {need['margin']}L" + (f" ＋ 多めの日 {need['extra']}L" if need["extra"] else "")
-                + f" に対して、いま {remain}L なので沸かし始めました（{ph}時までに {target}L）")
+            log(f"夕方の準備：{why}" + (f" ＋ 多めの日 {need['extra']}L" if need["extra"] else "")
+                + f" に対して、いま {remain}L なので沸かし始めました（目標 {target}L）")
         else:
             log(f"夕方の準備：沸かし始められませんでした（{err}）")
     state["prep"] = st
@@ -2858,6 +2915,11 @@ def guard_tick(eco, surplus, step_s):
     if not conf.get("heat_guard") or not eco or not eco.get("can_manual", True) or surplus is None:
         if guard["active"]:
             guard_release("見張りをやめたため")
+        return
+    if (state.get("prep") or {}).get("heating"):
+        # 夕方の準備（お湯が足りない）で沸かしているあいだは止めない
+        if guard["active"]:
+            guard_release("夕方のお湯が足りないため（お湯切れを防ぐ）", cool=1800)
         return
     buy_w = max(0.0, -surplus)
     level_kw, how = guard_level_kw()

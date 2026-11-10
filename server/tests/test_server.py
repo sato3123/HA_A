@@ -438,6 +438,76 @@ class TestElRescue(SolarTestBase):
             m["conf"].update(keep)
 
 
+class TestEveningPrep(SolarTestBase):
+    def test_prep_targets_use_plus_margin_until_night_heat(self):
+        m = self.m
+        today = date.today()
+        days = m["energy"].setdefault("days", {})
+        saved_days = dict(days)
+        keep_conf = {k: m["conf"].get(k) for k in ("hot_auto", "prep_hour", "night_start_hour", "hot_margin_l", "hot_extra", "eco_ip", "eco_eoj", "hot_temp_learn")}
+        stubs = {k: m[k] for k in ("temp_factor", "loss_liters", "heat_rate", "el", "eco_auto", "eco_pause")}
+        calls = []
+
+        class FakeEl:
+            def setc(self, ip, eoj, epc, edt):
+                calls.append((epc, edt))
+                return None
+        try:
+            days.clear()
+            for i in range(1, 29):
+                hh = [0.0] * 24
+                for h in range(17, 23):
+                    hh[h] = 30.0 + (i % 4) * 5  # 夕方〜夜に 180〜270L
+                hh[1] = 10.0  # 深夜に少し
+                days[(today - timedelta(days=i)).isoformat()] = {"hot_h": hh, "hot_use_l": sum(hh)}
+            m["conf"].update(hot_auto=True, prep_hour=17, night_start_hour=23, hot_margin_l=100, hot_extra=[], eco_ip="192.168.1.9",
+                             eco_eoj="026b01", hot_temp_learn=False)
+            m["temp_factor"] = lambda d: (1.0, None)
+            m["loss_liters"] = lambda a, b: 0.0
+            m["heat_rate"] = lambda: (100.0, "test")
+            m["el"] = FakeEl()
+            m["eco_auto"] = lambda reason: calls.append(("auto", reason))
+            m["eco_pause"] = lambda reason: calls.append(("pause", reason))
+            m["state"]["night_heat"] = {"start": datetime.combine(today + timedelta(days=1), datetime.min.time()).replace(hour=3).timestamp()}
+            m["state"]["prep"] = None
+            m["state"]["night_stop"] = False
+            m["guard"]["active"] = False
+            # 今夜の沸き上げ（翌3時）まで：17〜24時の予想（上位25%寄り）＋ 0〜3時 ＋ 余裕100L
+            need = m["evening_need"](today)
+            self.assertEqual(need["to"], 27)
+            self.assertGreaterEqual(need["predicted"], need["avg"])
+            self.assertEqual(need["need"], need["predicted"] + 100)
+            self.assertGreater(need["predicted"], 6 * 30 + 10 - 1)
+            eco = {"remain": 150, "tank": 460, "heating": False, "can_manual": True}
+            # 14時：まだ始めない（間に合う時刻を計算するだけ）
+            m["prep_tick"](eco, datetime.combine(today, datetime.min.time()).replace(hour=14))
+            self.assertFalse(m["state"]["prep"]["heating"])
+            # 16時半：沸かし始める（買電の一時停止中でも）
+            m["guard"]["active"] = True
+            m["guard"]["mode"] = b"\x41"
+            m["prep_tick"](eco, datetime.combine(today, datetime.min.time()).replace(hour=16, minute=30))
+            self.assertTrue(m["state"]["prep"]["heating"])
+            self.assertIn((0xB0, b"\x42"), calls)
+            # 目標まで沸いたらやめる
+            eco["remain"] = m["state"]["prep"]["target"]
+            m["prep_tick"](eco, datetime.combine(today, datetime.min.time()).replace(hour=17, minute=5))
+            self.assertFalse(m["state"]["prep"]["heating"])
+            # 20時：たくさん使って、残りが「そこからの予想＋余裕」を下回った → 30分たっていれば沸かし足す
+            m["state"]["prep"]["stopped_at"] = 0
+            eco["remain"] = 120
+            m["prep_tick"](eco, datetime.combine(today, datetime.min.time()).replace(hour=20))
+            self.assertTrue(m["state"]["prep"]["heating"])
+            rest = m["evening_need"](today, 20)
+            self.assertLess(rest["need"], need["need"])
+        finally:
+            days.clear(); days.update(saved_days)
+            m["conf"].update(keep_conf)
+            m.update(stubs)
+            m["state"]["night_heat"] = None
+            m["state"]["prep"] = None
+            m["guard"]["active"] = False
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
