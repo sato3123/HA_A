@@ -735,6 +735,10 @@
       if (!el.hasAttribute("role")) el.setAttribute("role", "button");
     }
     for (const c of root.querySelectorAll ? root.querySelectorAll(".chip, .tab") : []) c.setAttribute("aria-pressed", c.classList.contains("sel") ? "true" : "false");
+    // UI-025：見出しの無い入力欄は、入力例（placeholder）を読み上げの名前にする
+    for (const inp of root.querySelectorAll ? root.querySelectorAll("input[placeholder]:not([aria-label]), textarea[placeholder]:not([aria-label])") : []) {
+      if (!inp.id || !document.querySelector(`label[for="${CSS.escape(inp.id)}"]`)) inp.setAttribute("aria-label", inp.getAttribute("placeholder"));
+    }
     for (const inp of root.querySelectorAll ? root.querySelectorAll('label.sw input[type="checkbox"]:not([aria-label])') : []) {
       const tile = inp.closest(".tile, .auto, .row");
       const nm = tile && (tile.querySelector(".name, .an, .rt") || {}).textContent;
@@ -1734,8 +1738,8 @@
     const present = groupedByRoom(shownEntitiesAll()).map(([r]) => r);
     if (present.length <= 1) { bar.innerHTML = ""; return; }
     const f = present.some((r) => r.key === S.roomFilter) ? S.roomFilter : null;
-    bar.innerHTML = `<button class="chip${f === null ? " sel" : ""}" data-set="roomFilter" data-id="">${f === null ? "✓ " : ""}すべて</button>` +
-      present.map((r) => `<button class="chip${f === r.key ? " sel" : ""}" data-set="roomFilter" data-id="${esc(r.key)}">${f === r.key ? "✓ " : ""}${esc(r.name)}</button>`).join("");
+    bar.innerHTML = `<button class="chip${f === null ? " sel" : ""}" data-set="roomFilter" data-id="">すべて</button>` +
+      present.map((r) => `<button class="chip${f === r.key ? " sel" : ""}" data-set="roomFilter" data-id="${esc(r.key)}">${esc(r.name)}</button>`).join("");
     // UI-012：選んでいる部屋が見えるところまで、横にスクロールする
     const selb = bar.querySelector(".chip.sel");
     if (selb && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, selb.offsetLeft - 16);
@@ -2118,7 +2122,7 @@
       <div class="note" style="font-size:15px;color:var(--on)">${tab === 0 ? "決まった時刻・曜日に機器を自動で操作します（例：平日の7時にエアコンをつける）。"
         : "「人感センサーが反応したら照明をつける」「日の入りにカーテンを閉める」のように、きっかけに合わせて自動で操作します。"}</div>
       <div class="note">設定は Home Assistant に保存されるので、この iPad を閉じていても実行されます。</div>
-      ${S.haTz && S.haTz !== "Asia/Tokyo" ? `<div class="warn">⚠ Home Assistant の時間帯が「${esc(S.haTz)}」になっています。スケジュールの時刻がずれるので、Home Assistant の「設定 → システム → 一般」で時間帯を「Asia/Tokyo」にしてください。</div>` : ""}
+      ${S.haTz && S.haTz !== "Asia/Tokyo" ? `<div class="warn">Home Assistant の時間帯が「${esc(S.haTz)}」になっています。スケジュールの時刻がずれるので、Home Assistant の「設定 → システム → 一般」で時間帯を「Asia/Tokyo」にしてください。</div>` : ""}
       ${can ? "" : `<div class="info-box">作成・編集には管理者の権限が必要です。⚙ 設定 → アカウント で「管理者ログインを追加」してください。オン/オフと今すぐ実行は、このままでも使えます。</div>`}
       ${S.autoMsg ? `<div class="info-box">${esc(S.autoMsg)}</div>` : ""}
       <div style="margin:12px 0"><button class="btn" data-set="newRule" ${can ? "" : "disabled"}>${tab === 0 ? "＋ 新しいスケジュール" : "＋ 新しいオートメーション"}</button></div>
@@ -3310,7 +3314,7 @@
       ${(v.auto_now || []).length ? v.auto_now.map((a) => `<span class="auto">${esc(a.icon)} 自動：${esc(a.text)}</span>`).join("")
         : v.heat_guard && v.heat_guard.active ? `<span class="warn">⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${esc(v.heat_guard.reason)}）</span>` : ""}
       ${v.selfsuff && v.selfsuff.alert && Date.now() - v.selfsuff.alert.at * 1000 < 30 * 60000 ? `<span style="color:#43a047">☀ ${esc(v.selfsuff.alert.message)}</span>` : ""}
-      ${alert ? `<span class="warn">⚠ ${esc(alert)}</span>` : ""}</div>`;
+      ${alert ? `<span class="warn">${esc(alert)}</span>` : ""}</div>`;
   }
   function ssRateHTML(s) {
     if (!s || !s.show) return "";

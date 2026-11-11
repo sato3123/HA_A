@@ -30,9 +30,9 @@ val PALETTES = listOf(
     Palette("teal", "ティール", true, 0xFF80CBC4, 0xFF003732, 0xFF1C4A47, 0xFFCFF5F1, 0xFF0E1515, 0xFF151D1C, 0xFF1D2B2A, 0xFFDFE6E5, 0xFFBFCBC9),
     Palette("mono", "モノクロ", true, 0xFFE0E0E0, 0xFF1A1A1A, 0xFF424242, 0xFFFAFAFA, 0xFF101010, 0xFF181818, 0xFF262626, 0xFFE6E6E6, 0xFFBDBDBD),
     Palette("night", "ナイト（暗め）", true, 0xFFB0855A, 0xFF1F1408, 0xFF3A2817, 0xFFD9BFA0, 0xFF000000, 0xFF0A0A0A, 0xFF141210, 0xFFA89F96, 0xFF8A827A),
-    Palette("light_orange", "ライト・オレンジ", false, 0xFFE65100, 0xFFFFFFFF, 0xFFFFE0B2, 0xFF3E2400, 0xFFFFF8F3, 0xFFFFFFFF, 0xFFF3E9E0, 0xFF1F1B16, 0xFF51453A),
+    Palette("light_orange", "ライト・オレンジ", false, 0xFFB34000, 0xFFFFFFFF, 0xFFFFE0B2, 0xFF3E2400, 0xFFFFF8F3, 0xFFFFFFFF, 0xFFF3E9E0, 0xFF1F1B16, 0xFF51453A),
     Palette("light_blue", "ライト・ブルー", false, 0xFF1565C0, 0xFFFFFFFF, 0xFFD6E8FF, 0xFF0B2A4A, 0xFFF7F9FC, 0xFFFFFFFF, 0xFFE3EAF2, 0xFF191C20, 0xFF42474E),
-    Palette("light_green", "ライト・グリーン", false, 0xFF2E7D32, 0xFFFFFFFF, 0xFFD7F5D8, 0xFF0B3311, 0xFFF6FBF5, 0xFFFFFFFF, 0xFFE2EDE2, 0xFF191D19, 0xFF424942),
+    Palette("light_green", "ライト・グリーン", false, 0xFF2A7230, 0xFFFFFFFF, 0xFFD7F5D8, 0xFF0B3311, 0xFFF6FBF5, 0xFFFFFFFF, 0xFFE2EDE2, 0xFF191D19, 0xFF424942),
 )
 
 fun paletteOf(id: String?): Palette = PALETTES.firstOrNull { it.id == id } ?: PALETTES.first()
@@ -48,6 +48,8 @@ fun Palette.colorScheme(): ColorScheme {
             surface = c(surface), onSurface = c(onSurface),
             surfaceVariant = c(surfaceVariant), onSurfaceVariant = c(onSurfaceVariant),
             surfaceContainerLow = c(surface), surfaceContainer = c(surface), surfaceContainerHigh = c(surfaceVariant),
+            // UI-018：枠線は背景と 3:1 以上（iPad 版と同じ色）
+            outline = c(if (!dark) 0xFF79747E else if (id == "night") 0xFF6F665E else 0xFF857F8C),
         )
     } else {
         lightColorScheme(
@@ -58,6 +60,26 @@ fun Palette.colorScheme(): ColorScheme {
             surface = c(surface), onSurface = c(onSurface),
             surfaceVariant = c(surfaceVariant), onSurfaceVariant = c(onSurfaceVariant),
             surfaceContainerLow = c(surface), surfaceContainer = c(surface), surfaceContainerHigh = c(surfaceVariant),
+            // UI-018：枠線は背景と 3:1 以上（iPad 版と同じ色）
+            outline = c(if (!dark) 0xFF79747E else if (id == "night") 0xFF6F665E else 0xFF857F8C),
         )
     }
+}
+
+
+/**
+ * UI-017：据え置きのタブレットで離れて見ても読めるよう、補助の文字を少し大きく、行間を広くする。
+ * sp なので、端末の「文字の大きさ」の設定にもそのまま合わせて大きくなる
+ */
+fun readableTypography(): androidx.compose.material3.Typography {
+    val t = androidx.compose.material3.Typography()
+    fun androidx.compose.ui.text.TextStyle.at(size: Int, line: Int) =
+        copy(fontSize = androidx.compose.ui.unit.TextUnit(size.toFloat(), androidx.compose.ui.unit.TextUnitType.Sp),
+            lineHeight = androidx.compose.ui.unit.TextUnit(line.toFloat(), androidx.compose.ui.unit.TextUnitType.Sp))
+    return t.copy(
+        bodySmall = t.bodySmall.at(14, 20),
+        bodyMedium = t.bodyMedium.at(15, 22),
+        labelSmall = t.labelSmall.at(12, 16),
+        labelMedium = t.labelMedium.at(13, 18),
+    )
 }

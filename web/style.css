@@ -1,16 +1,16 @@
 :root { --radius: 16px; }
-/* ---- 配色（Android 版 Themes.kt と同じ色。生成元：Themes.kt） ---- */
-:root { --primary: #ffb74d; --on-primary: #3e2400; --pc: #5d4020; --on-pc: #ffe0b2; --bg: #141218; --surface: #1d1b20; --surface2: #2b2930; --on: #e6e1e5; --muted: #cac4d0; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="blue"] { --primary: #90caf9; --on-primary: #0b2a4a; --pc: #1e3a5f; --on-pc: #d6e8ff; --bg: #0f1418; --surface: #161d23; --surface2: #1f2a33; --on: #e1e6ec; --muted: #c0cad4; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="green"] { --primary: #a5d6a7; --on-primary: #0b3311; --pc: #1f4d2b; --on-pc: #d7f5d8; --bg: #0f1511; --surface: #161d18; --surface2: #1f2b22; --on: #e0e6e0; --muted: #c1ccc1; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="purple"] { --primary: #ce93d8; --on-primary: #3a0e45; --pc: #4a2655; --on-pc: #f6d9ff; --bg: #151218; --surface: #1d1921; --surface2: #2a2430; --on: #e8e0ea; --muted: #cdc3d1; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="red"] { --primary: #ef9a9a; --on-primary: #4a0e0e; --pc: #5c2222; --on-pc: #ffdad6; --bg: #181212; --surface: #201919; --surface2: #302424; --on: #ede0de; --muted: #d6c3c1; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="teal"] { --primary: #80cbc4; --on-primary: #003732; --pc: #1c4a47; --on-pc: #cff5f1; --bg: #0e1515; --surface: #151d1c; --surface2: #1d2b2a; --on: #dfe6e5; --muted: #bfcbc9; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="mono"] { --primary: #e0e0e0; --on-primary: #1a1a1a; --pc: #424242; --on-pc: #fafafa; --bg: #101010; --surface: #181818; --surface2: #262626; --on: #e6e6e6; --muted: #bdbdbd; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="night"] { --primary: #b0855a; --on-primary: #1f1408; --pc: #3a2817; --on-pc: #d9bfa0; --bg: #000000; --surface: #0a0a0a; --surface2: #141210; --on: #a89f96; --muted: #8a827a; --outline: #49454f; --error: #f2b8b5; color-scheme: dark; }
-:root[data-theme="light_orange"] { --primary: #e65100; --on-primary: #ffffff; --pc: #ffe0b2; --on-pc: #3e2400; --bg: #fff8f3; --surface: #ffffff; --surface2: #f3e9e0; --on: #1f1b16; --muted: #51453a; --outline: #c4c6cf; --error: #b3261e; color-scheme: light; }
-:root[data-theme="light_blue"] { --primary: #1565c0; --on-primary: #ffffff; --pc: #d6e8ff; --on-pc: #0b2a4a; --bg: #f7f9fc; --surface: #ffffff; --surface2: #e3eaf2; --on: #191c20; --muted: #42474e; --outline: #c4c6cf; --error: #b3261e; color-scheme: light; }
-:root[data-theme="light_green"] { --primary: #2e7d32; --on-primary: #ffffff; --pc: #d7f5d8; --on-pc: #0b3311; --bg: #f6fbf5; --surface: #ffffff; --surface2: #e2ede2; --on: #191d19; --muted: #424942; --outline: #c4c6cf; --error: #b3261e; color-scheme: light; }
+/* ---- 配色（Android 版 Themes.kt と同じ色。生成元：Themes.kt）。UI-018：文字 4.5:1・枠線 3:1 以上になるよう調整（ライトのオレンジ・グリーンの強調色、全部の枠線） ---- */
+:root { --primary: #ffb74d; --on-primary: #3e2400; --pc: #5d4020; --on-pc: #ffe0b2; --bg: #141218; --surface: #1d1b20; --surface2: #2b2930; --on: #e6e1e5; --muted: #cac4d0; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="blue"] { --primary: #90caf9; --on-primary: #0b2a4a; --pc: #1e3a5f; --on-pc: #d6e8ff; --bg: #0f1418; --surface: #161d23; --surface2: #1f2a33; --on: #e1e6ec; --muted: #c0cad4; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="green"] { --primary: #a5d6a7; --on-primary: #0b3311; --pc: #1f4d2b; --on-pc: #d7f5d8; --bg: #0f1511; --surface: #161d18; --surface2: #1f2b22; --on: #e0e6e0; --muted: #c1ccc1; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="purple"] { --primary: #ce93d8; --on-primary: #3a0e45; --pc: #4a2655; --on-pc: #f6d9ff; --bg: #151218; --surface: #1d1921; --surface2: #2a2430; --on: #e8e0ea; --muted: #cdc3d1; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="red"] { --primary: #ef9a9a; --on-primary: #4a0e0e; --pc: #5c2222; --on-pc: #ffdad6; --bg: #181212; --surface: #201919; --surface2: #302424; --on: #ede0de; --muted: #d6c3c1; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="teal"] { --primary: #80cbc4; --on-primary: #003732; --pc: #1c4a47; --on-pc: #cff5f1; --bg: #0e1515; --surface: #151d1c; --surface2: #1d2b2a; --on: #dfe6e5; --muted: #bfcbc9; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="mono"] { --primary: #e0e0e0; --on-primary: #1a1a1a; --pc: #424242; --on-pc: #fafafa; --bg: #101010; --surface: #181818; --surface2: #262626; --on: #e6e6e6; --muted: #bdbdbd; --outline: #857f8c; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="night"] { --primary: #b0855a; --on-primary: #1f1408; --pc: #3a2817; --on-pc: #d9bfa0; --bg: #000000; --surface: #0a0a0a; --surface2: #141210; --on: #a89f96; --muted: #8a827a; --outline: #6f665e; --error: #f2b8b5; color-scheme: dark; }
+:root[data-theme="light_orange"] { --primary: #b34000; --on-primary: #ffffff; --pc: #ffe0b2; --on-pc: #3e2400; --bg: #fff8f3; --surface: #ffffff; --surface2: #f3e9e0; --on: #1f1b16; --muted: #51453a; --outline: #79747e; --error: #b3261e; color-scheme: light; }
+:root[data-theme="light_blue"] { --primary: #1565c0; --on-primary: #ffffff; --pc: #d6e8ff; --on-pc: #0b2a4a; --bg: #f7f9fc; --surface: #ffffff; --surface2: #e3eaf2; --on: #191c20; --muted: #42474e; --outline: #79747e; --error: #b3261e; color-scheme: light; }
+:root[data-theme="light_green"] { --primary: #2a7230; --on-primary: #ffffff; --pc: #d7f5d8; --on-pc: #0b3311; --bg: #f6fbf5; --surface: #ffffff; --surface2: #e2ede2; --on: #191d19; --muted: #424942; --outline: #79747e; --error: #b3261e; color-scheme: light; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; background: var(--bg); color: var(--on); }
@@ -27,7 +27,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---- 上部バー ---- */
 .top { display: flex; align-items: center; gap: 8px; }
 .top .sp { flex: 1; }
-.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .tbtn { background: none; border: none; color: var(--primary); padding: 8px 10px; font-size: 15px; border-radius: 10px; }
 .tbtn:active { background: var(--surface2); }
@@ -43,14 +43,14 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .wicon { font-size: 36px; line-height: 1; }
 .wtemp { font-size: 26px; font-weight: 300; line-height: 1.05; display: inline; }
 .wcond { font-size: 15px; display: inline; margin-left: 6px; }
-.wsub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.wsub { font-size: 14px; color: var(--muted); margin-top: 2px; }
 .wdays { display: flex; gap: 12px; }
-.wday { text-align: center; font-size: 11px; color: var(--muted); }
+.wday { text-align: center; font-size: 13px; color: var(--muted); }
 .wday .e { font-size: 18px; }
 
 /* ---- カード共通 ---- */
 .card { background: var(--surface2); border-radius: var(--radius); padding: 14px; }
-.msg { color: var(--error); font-size: 13px; margin: 6px 0; }
+.msg { color: var(--error); font-size: 14px; margin: 6px 0; }
 .btn { background: var(--primary); color: var(--on-primary); border: none; border-radius: 20px; padding: 10px 20px; font-weight: 600; }
 .btn.outline { background: none; color: var(--primary); border: 1px solid var(--outline); }
 .btn:disabled { opacity: .4; }
@@ -64,7 +64,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239, 83, 80, .6); } 50% { box-shadow: 0 0 0 12px rgba(239, 83, 80, 0); } }
 .vstatus { font-size: 15px; white-space: pre-line; }
 .vreply { font-size: 15px; color: var(--muted); margin-top: 4px; white-space: pre-line; max-height: 9em; overflow: auto; }
-.vnote { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.vnote { font-size: 14px; color: var(--muted); margin-top: 4px; }
 .tform { display: flex; gap: 8px; }
 .tform input { flex: 1; background: var(--bg); border: 1px solid var(--outline); color: var(--on); border-radius: 12px; padding: 9px 12px; font-size: 16px; }
 
@@ -77,7 +77,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tile.unav { opacity: .7; border: 1px dashed var(--outline); }
 .head { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
 .ht { flex: 1; min-width: 0; }
-.dom { font-size: 11px; opacity: .8; }
+.dom { font-size: 13px; opacity: .8; }
 .name { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .name.large { font-size: 22px; }
 .st { font-size: 14px; opacity: .9; }
@@ -91,7 +91,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .sw input:checked + span::before { transform: translateX(20px); background: var(--on-primary); }
 
 /* スライダー */
-.rng .rl { font-size: 13px; margin-bottom: 2px; }
+.rng .rl { font-size: 14px; margin-bottom: 2px; }
 input[type=range] { width: 100%; accent-color: var(--primary); height: 32px; }
 
 /* ボタン行・チップ */
@@ -99,10 +99,10 @@ input[type=range] { width: 100%; accent-color: var(--primary); height: 32px; }
 .tb { background: rgba(255, 255, 255, .1); border: none; border-radius: 12px; padding: 10px 16px; font-size: 18px; min-width: 52px; }
 .tb:active { background: rgba(255, 255, 255, .2); }
 .stepper { display: flex; align-items: center; gap: 8px; }
-.stepper .sl { flex: 1; font-size: 13px; }
+.stepper .sl { flex: 1; font-size: 14px; }
 .stepper .tv { font-size: 30px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.chips .ct { width: 100%; font-size: 13px; }
+.chips .ct { width: 100%; font-size: 14px; }
 .chip { background: none; border: 1px solid var(--outline); border-radius: 10px; padding: 7px 12px; font-size: 14px; }
 .chip.sel { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -130,7 +130,7 @@ input[type=range] { width: 100%; accent-color: var(--primary); height: 32px; }
 .row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-radius: 10px; cursor: pointer; }
 .row:active { background: var(--surface2); }
 .row .rt { flex: 1; min-width: 0; }
-.row .sub { font-size: 12px; color: var(--muted); }
+.row .sub { font-size: 14px; color: var(--muted); }
 .row input[type=checkbox], .row input[type=radio] { width: 22px; height: 22px; accent-color: var(--primary); flex: none; }
 .search { width: 100%; background: var(--surface2); border: 1px solid var(--outline); color: var(--on); border-radius: 12px; padding: 12px; font-size: 16px; margin-bottom: 6px; }
 .gtitle { font-size: 14px; font-weight: 600; margin: 12px 0 2px; color: var(--muted); }
@@ -138,7 +138,7 @@ input[type=range] { width: 100%; accent-color: var(--primary); height: 32px; }
 .help h4 { margin: 0 0 6px; font-size: 17px; }
 .help li { margin: 4px 0; line-height: 1.6; }
 .help ul { margin: 0; padding-left: 1.2em; }
-.note { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.note { font-size: 14px; color: var(--muted); line-height: 1.6; }
 .warn { color: var(--error); font-size: 14px; line-height: 1.6; }
 .update { background: var(--pc); color: var(--on-pc); border-radius: var(--radius); padding: 14px; margin: 8px 0 12px; display: flex; flex-direction: column; gap: 8px; }
 .bar { height: 6px; background: rgba(255, 255, 255, .2); border-radius: 3px; overflow: hidden; }
@@ -155,7 +155,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 
 /* ---- 配色の選択 ---- */
 .themes { display: flex; flex-wrap: wrap; gap: 10px; }
-.theme { width: 112px; height: 96px; border-radius: 14px; border: 1px solid rgba(136,136,136,.35); padding: 10px 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 13px; }
+.theme { width: 112px; height: 96px; border-radius: 14px; border: 1px solid rgba(136,136,136,.35); padding: 10px 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 14px; }
 .theme.sel { border: 3px solid var(--primary); }
 .theme .dots { display: flex; gap: 4px; }
 .theme .dots span { width: 22px; height: 22px; border-radius: 50%; display: block; }
@@ -167,7 +167,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .auto { display: flex; align-items: center; gap: 10px; background: var(--surface2); border-radius: var(--radius); padding: 12px; margin-bottom: 8px; cursor: pointer; }
 .auto .at { flex: 1; min-width: 0; }
 .auto .an { font-size: 17px; font-weight: 600; }
-.auto .as { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.auto .as { font-size: 14px; color: var(--muted); margin-top: 2px; }
 .field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
 .field > .fl { color: var(--primary); font-size: 16px; font-weight: 600; }
 .field input[type=text], .field input[type=time], .field input[type=password] { font: inherit; font-size: 17px; background: var(--surface2); color: var(--on); border: 1px solid var(--outline); border-radius: 10px; padding: 10px; max-width: 420px; }
@@ -205,7 +205,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 
 /* ---- 上部（家族の切り替え） ---- */
 .profbar { display: flex; gap: 6px; flex-wrap: wrap; margin-left: 8px; }
-.chip.sm { padding: 4px 10px; font-size: 13px; }
+.chip.sm { padding: 4px 10px; font-size: 14px; }
 #home > div.off { display: none; }
 #home > div { margin-bottom: 8px; }
 
@@ -213,7 +213,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .menurow { width: 100%; display: flex; align-items: center; gap: 14px; text-align: left; background: var(--surface2); border: none; border-radius: var(--radius); padding: 14px 16px; margin: 0 0 8px; }
 .menurow .mi { font-size: 26px; width: 34px; text-align: center; }
 .menurow .rt { flex: 1; min-width: 0; }
-.menurow .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.menurow .sub { font-size: 14px; color: var(--muted); margin-top: 2px; }
 .menurow .chev { font-size: 24px; color: var(--muted); }
 .tbtn:disabled { opacity: .3; }
 
@@ -229,13 +229,13 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .fl { color: var(--primary); font-weight: 600; }
 .chart { width: 100%; height: auto; }
 .chart .grid { stroke: var(--outline); stroke-width: 1; }
-.chart .lbl { fill: var(--muted); font-size: 12px; }
+.chart .lbl { fill: var(--muted); font-size: 14px; }
 
 /* ---- 温度計 ---- */
 .thermos { display: flex; flex-wrap: wrap; gap: 8px; }
 .thermo { display: flex; align-items: center; gap: 10px; background: var(--surface2); border: none; border-radius: var(--radius); padding: 10px 14px; min-width: 160px; text-align: left; }
 .thermo .lv { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.thermo .tn { display: block; font-size: 13px; color: var(--muted); }
+.thermo .tn { display: block; font-size: 14px; color: var(--muted); }
 .thermo .tvv { display: block; font-size: 24px; font-weight: 500; }
 .thermo .tvv small { font-size: 14px; margin-left: 8px; font-weight: 400; }
 
@@ -260,7 +260,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .cambar .tbtn { color: #fff; }
 .cammodes { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 12px; right: 12px; color: #fff; }
 .cammodes .chip { border-color: rgba(255,255,255,.5); text-align: left; }
-.camnote { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.65); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 13px; max-width: 90%; }
+.camnote { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.65); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 14px; max-width: 90%; }
 
 /* ---- スマートフォン（幅の狭い画面） ---- */
 @media (max-width: 600px) {
@@ -327,7 +327,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .cstep { display: inline-flex; align-items: center; gap: 6px; }
 .cstep .tv { font-size: 22px; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
 .cstep .tb { width: 40px; height: 40px; min-width: 40px; padding: 0; }
-.msel { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+.msel { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
 .msel select { font: inherit; font-size: 15px; color: inherit; background: var(--surface); border: 1px solid var(--outline); border-radius: 18px; padding: 6px 10px; }
 .tile.on .msel select { background: transparent; }
 .roomh .rclim { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 12px; }
@@ -400,9 +400,9 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .roombar .chip { flex: none; white-space: nowrap; }
 /* UI-011：設定温度は見出し＋数字＋−／＋をひとまとまりに */
 .cgroup { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
-.cgl { font-size: 13px; color: var(--muted); }
+.cgl { font-size: 14px; color: var(--muted); }
 .cstep .tb.atlimit { opacity: .45; }
-.msel span { font-size: 13px; color: var(--muted); }
+.msel span { font-size: 14px; color: var(--muted); }
 /* UI-013：「詳しい設定」は見出しとして見えるように */
 .advtoggle { width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; text-align: left; background: none; border: none; border-top: 1px solid var(--outline);
   color: var(--on); padding: 16px 4px 10px; margin-top: 10px; font-size: 16px; font-weight: 700; min-height: 48px; }
@@ -413,7 +413,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 /* UI-014・UI-015：並び替え・名前・操作の行は、狭い画面では折り返す */
 .editrow { flex-wrap: wrap; row-gap: 4px; }
 .editrow .ord { display: inline-flex; gap: 2px; flex: none; }
-.editrow .rt { flex: 1 1 160px; }
+.editrow .rt { flex: 1 1 110px; }
 .editrow .ops { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
 .editrow .vis { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; min-height: 44px; }
 .profhead { position: sticky; top: 56px; z-index: 2; background: var(--surface); padding: 6px 0; }
@@ -427,10 +427,29 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .cambar #camName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* UI-024：自動化の行は「編集（左）」と「実行・オン/オフ（右）」を線で分ける */
 .auto .autoops { display: inline-flex; align-items: center; gap: 10px; border-left: 1px solid var(--outline); padding-left: 10px; flex: none; }
-.auto .edhint { font-size: 13px; font-weight: 400; color: var(--primary); margin-left: 6px; }
+.auto .edhint { font-size: 14px; font-weight: 400; color: var(--primary); margin-left: 6px; }
 .auto .swl { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
 .auto .swt { font-size: 12px; color: var(--muted); }
 .btn.sm { padding: 6px 12px; font-size: 14px; }
 @media (max-width: 480px) { .auto { flex-wrap: wrap; } .auto .autoops { border-left: none; padding-left: 0; margin-left: auto; } }
 /* UI-019：使えない機器は、薄くするだけでなく文字でも */
 .tile.unav .st::before { content: "⚠ "; }
+
+/* ==== UI-017：補助の文字は 14px 以上、行間を少し広く ==== */
+.note, .row .sub, .menurow .sub, .auto .as, .vnote, .wsub { line-height: 1.55; }
+.chart .lbl { font-size: 13px; }
+/* ==== UI-027：時刻・温度などの数字は幅をそろえる ==== */
+.time, .tv, .tvv, .wnow, .hwrow, .estrip, .kv { font-variant-numeric: tabular-nums; }
+/* ==== UI-032：説明・エラー・記録・ID はコピーできる ==== */
+.note, .warn, .msg, .sub, .kv, .logrow, .oprow, .accrow, .info-box, .summary, code, pre, .dlg .attr { -webkit-user-select: text; user-select: text; }
+/* ==== UI-031：お知らせの種類を、色だけでなく印でも ==== */
+div.warn::before { content: "⚠ "; }
+.msg::before { content: "⚠ "; }
+.ok-msg { color: var(--primary); }
+.ok-msg::before { content: "✓ "; }
+/* ==== UI-016：選んでいるものは、色だけでなく ✓ でも示す（一つを選ぶ・いくつも選ぶ、どちらも） ==== */
+.chip.sel::before { content: "✓ "; }
+.chip.timer::before, .chip.sel.timer::before { content: none; }
+.tab.sel { font-weight: 700; }
+.btn.outline { border-width: 1.5px; }
+.tbtn:disabled, .btn:disabled, .chip:disabled { cursor: not-allowed; }

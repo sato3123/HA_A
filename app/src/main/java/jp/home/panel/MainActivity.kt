@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             val themeId by vm.themeId.collectAsState()
-            MaterialTheme(colorScheme = paletteOf(themeId).colorScheme()) {
+            MaterialTheme(colorScheme = paletteOf(themeId).colorScheme(), typography = readableTypography()) {
                 App(
                     vm,
                     onMic = { withMic { vm.onMicPressed() } },
