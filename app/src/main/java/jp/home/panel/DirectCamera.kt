@@ -142,7 +142,7 @@ fun DirectCameraSettings(vm: MainViewModel) {
     var editingPass by remember { mutableStateOf<String?>(null) }
     var finding by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
+        HelpText(
             "Home Assistant を通さずに、家の Wi-Fi の中のネットワークカメラ（RTSP 対応）に直接つなぎます。" +
                 "遅れが少なく、Home Assistant が止まっていても見られます。追加したカメラはホーム画面の機器と同じように並びます。",
             style = MaterialTheme.typography.bodySmall,
@@ -163,7 +163,7 @@ fun DirectCameraSettings(vm: MainViewModel) {
             Button(onClick = { finding = true }) { Text("🔍 カメラを探す") }
             androidx.compose.material3.OutlinedButton(onClick = { editingPass = null; editing = IpCamera(java.util.UUID.randomUUID().toString().take(8), "", "") }) { Text("＋ 手で追加") }
         }
-        Text(
+        HelpText(
             "RTSP の URL の例（カメラの説明書や設定アプリで確認できます）：\n" +
                 "・TP-Link Tapo：rtsp://192.168.1.x:554/stream1（軽量は stream2）\n" +
                 "・Hikvision：rtsp://192.168.1.x:554/Streaming/Channels/101（軽量は 102）\n" +

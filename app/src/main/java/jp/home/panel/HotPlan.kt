@@ -117,7 +117,7 @@ fun NightLateSettings(vm: MainViewModel) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("🌙 夜の沸き上げは、できるだけ朝に近い時刻にする", style = MaterialTheme.typography.labelLarge)
-            Text("夜に沸かす日は、沸かしたお湯が朝までに冷める分（外気との温度差に比例）と、その時刻の電気料金・外気温でのヒートポンプの効率から、いちばん安く済む開始時刻を選びます。" +
+            HelpText("夜に沸かす日は、沸かしたお湯が朝までに冷める分（外気との温度差に比例）と、その時刻の電気料金・外気温でのヒートポンプの効率から、いちばん安く済む開始時刻を選びます。" +
                 "差が1円以内なら遅いほうにします。朝の安い時間の終わりの15分前に沸き終わるようにします。", style = MaterialTheme.typography.bodySmall)
         }
         Switch(checked = on, onCheckedChange = { vm.setServerConf("night_late", it) })
@@ -148,7 +148,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("お湯の量を過去の使用量から自動で決める", style = MaterialTheme.typography.labelLarge)
-                Text(
+                HelpText(
                     "直近4週間の同じ種類の日（平日／土日祝）のお湯の使い方から、夜に使う量を予想して、夕方までに「予想＋余裕」のお湯を用意します。" +
                         "足りなければ、間に合う時刻から沸かします（昼に余った電気で沸けば沸かしません）。「夜は止める」のときは、夜に沸かす量も翌朝の予想＋余裕にします。",
                     style = MaterialTheme.typography.bodySmall,
@@ -167,7 +167,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("昼に電気が余ったら、翌日分も先に沸かす", style = MaterialTheme.typography.bodyMedium)
-                Text("翌日分を昼に沸かすほうが電気代が安いとき（売れたはずの電気＋冷める分 ＜ 夜に買う電気）だけ、今夜の分＋翌日1日分の予想まで余った電気で沸かします。その分、夜の沸き上げが減ります。オフにすると満タン近くまで沸かします。",
+                HelpText("翌日分を昼に沸かすほうが電気代が安いとき（売れたはずの電気＋冷める分 ＜ 夜に買う電気）だけ、今夜の分＋翌日1日分の予想まで余った電気で沸かします。その分、夜の沸き上げが減ります。オフにすると満タン近くまで沸かします。",
                     style = MaterialTheme.typography.bodySmall)
             }
             Switch(checked = conf["hot_store_tomorrow"] != false, onCheckedChange = { vm.setServerConf("hot_store_tomorrow", it) })
@@ -264,7 +264,7 @@ private fun TempLearnInfo(vm: MainViewModel, l: JSONObject) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("🌡 気温を見込んで沸かす量を決める", style = MaterialTheme.typography.labelLarge)
-            Text("寒い日にお湯を多く使う度合いと、外気との温度差で冷めて減る量を記録から学び、翌日の気温の予報で予想を直します。", style = MaterialTheme.typography.bodySmall)
+            HelpText("寒い日にお湯を多く使う度合いと、外気との温度差で冷めて減る量を記録から学び、翌日の気温の予報で予想を直します。", style = MaterialTheme.typography.bodySmall)
         }
         Switch(checked = on, onCheckedChange = { vm.setServerConf("hot_temp_learn", it) })
     }

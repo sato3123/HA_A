@@ -71,7 +71,7 @@ fun AccountList(vm: MainViewModel) {
     var usersMsg by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { server = vm.serverAccounts() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("このアプリとホームパネルのサーバーが使っているアカウントです。パスワードや鍵（トークン）の中身は表示しません。", style = MaterialTheme.typography.bodySmall)
+        HelpText("このアプリとホームパネルのサーバーが使っているアカウントです。パスワードや鍵（トークン）の中身は表示しません。", style = MaterialTheme.typography.bodySmall)
         Group("📱 このアプリ（Home Assistant）") {
             Line("普段使いのユーザー", (user ?: "確認中") + when (admin) { true -> "（管理者）"; false -> "（管理者以外）"; null -> "" }, true)
             Line("管理者ログイン（自動化の編集用）", adminUser ?: if (admin == true) "普段使いのユーザーが管理者" else "なし", adminUser != null || admin == true)
@@ -93,7 +93,7 @@ fun AccountList(vm: MainViewModel) {
                 Line("AiSEG2", if (aiseg.isNotBlank()) "$aiseg・パスワード$aisegPw" else "なし", aiseg.isNotBlank())
                 val rec = sv.second?.optJSONArray("cameras")?.length() ?: 0
                 Line("記録しているカメラ", "${rec}台", rec > 0)
-                Text("鍵は Home Assistant のプロフィール →「セキュリティ」→「長期アクセストークン」にも表示され、そこで無効にできます。", style = MaterialTheme.typography.bodySmall)
+                HelpText("鍵は Home Assistant のプロフィール →「セキュリティ」→「長期アクセストークン」にも表示され、そこで無効にできます。", style = MaterialTheme.typography.bodySmall)
             }
         }
         Group("📷 カメラのアカウント") {
@@ -157,7 +157,7 @@ fun OperationLogScreen(vm: MainViewModel) {
         selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
     )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Home Assistant の記録から、人・自動化が操作したものと、ホームパネルのサーバーが行った操作を新しい順に表示します。", style = MaterialTheme.typography.bodySmall)
+        HelpText("Home Assistant の記録から、人・自動化が操作したものと、ホームパネルのサーバーが行った操作を新しい順に表示します。", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(24 to "24時間", 72 to "3日", 168 to "7日").forEach { (h, l) -> FilterChip(selected = hours == h, onClick = { hours = h }, label = { Text(l) }, colors = chip) }
             Text("　")

@@ -69,7 +69,7 @@ fun EchonetSettings(vm: MainViewModel) {
                 }
                 if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             }
-            Text(
+            HelpText(
                 "見つからないときは「すべてのアドレスに問い合わせ」を試してください。ルーターが一斉の呼びかけ（マルチキャスト）を通さなくても、1台ずつ直接問い合わせて探します（20秒ほどかかります）。",
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -124,14 +124,14 @@ fun EchonetSettings(vm: MainViewModel) {
                         }
                     }
                 }
-                Text(
+                HelpText(
                     "操作できる機器は、ホーム画面の機器の一覧に一緒に並びます。「表示する機器」で表示・非表示や部屋を変えられます。",
                     style = MaterialTheme.typography.bodySmall,
                 )
 
                 // ---- Home Assistant の機器との連携（家の中は ECHONET Lite、外出先は Home Assistant） ----
                 Text("Home Assistant の機器との連携", style = MaterialTheme.typography.labelLarge)
-                Text(
+                HelpText(
                     "ECHONET Lite の機器を Home Assistant の同じ機器と「🔗 連携」すると、ホーム画面では1つにまとまり、" +
                         "家の中では ECHONET Lite で直接（速く、Home Assistant が止まっていても動く）、外出先では Home Assistant 経由で操作します。",
                     style = MaterialTheme.typography.bodySmall,
@@ -159,7 +159,7 @@ fun EchonetSettings(vm: MainViewModel) {
             }
 
             Text("見つからない機器を IP アドレスで追加", style = MaterialTheme.typography.labelLarge)
-            Text(
+            HelpText(
                 "ルーターによっては、機器を探す呼びかけ（マルチキャスト）が届かないことがあります。その場合は、機器（またはその機器の HEMS アダプター）の IP アドレスを入れてください。",
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -184,7 +184,7 @@ fun EchonetSettings(vm: MainViewModel) {
                     TextButton(onClick = { vm.removeElIp(ip) }) { Text("外す") }
                 }
             }
-            Text(
+            HelpText(
                 "※ ECHONET Lite には暗証番号などの仕組みがないため、家の Wi-Fi の中だけで使ってください。" +
                     "電気錠・電動ゲート・給湯器などは、安全のため操作の対象から外しています。",
                 style = MaterialTheme.typography.bodySmall,

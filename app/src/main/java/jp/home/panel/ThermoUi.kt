@@ -103,7 +103,7 @@ fun ThermoSettings(vm: MainViewModel) {
     var renaming by remember { mutableStateOf<Thermo?>(null) }
     val states by vm.allStates.collectAsState()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
+        HelpText(
             "Home Assistant に取り込んだ温度計（SwitchBot 温湿度計など）の温度と湿度を、ホーム画面に表示します。" +
                 "温度と湿度のセンサーは、同じ機器のものを1つにまとめて表示します。「✎ 名前」で部屋の名前などに変えられます。",
             style = MaterialTheme.typography.bodySmall,

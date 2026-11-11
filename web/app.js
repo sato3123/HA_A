@@ -581,7 +581,12 @@
     if (!box) return;
     if (store.get("guideDone", false)) { box.innerHTML = ""; return; }
     const steps = [["rooms", "① 部屋を決める"], ["rooms", "② ホーム画面に出す機器を選ぶ"], ["voice", "③ 自宅の位置"], ["display", "④ 配色・家族ごとの表示"]];
-    box.innerHTML = `<div class="card" style="padding:14px;margin-bottom:10px"><b>👋 はじめての設定（4つの手順）</b>
+    // 要点だけ1行で出し、押すと手順を開く
+    if (!S.guideOpen) {
+      box.innerHTML = `<div class="card gsum" role="button" tabindex="0" data-set="guideToggle" aria-expanded="false"><b>👋 はじめての設定</b><span class="note">4つの手順</span><span class="sp"></span><span class="emore">開く ›</span></div>`;
+      return;
+    }
+    box.innerHTML = `<div class="card" style="padding:14px;margin-bottom:10px"><div class="brow" style="align-items:center"><b style="flex:1">👋 はじめての設定（4つの手順）</b><button class="tbtn" data-set="guideToggle" aria-expanded="true">たたむ</button></div>
       <div class="note">順番に開いて設定すると、すぐに使い始められます。あとから ⚙ 設定 でいつでも変えられます。</div>
       ${steps.map(([k, t]) => `<div class="brow gstep" style="align-items:center"><button class="gname" data-set="guideOpen" data-id="${k}">${t} <span aria-hidden="true">›</span></button><button class="tbtn" data-set="guideOpen" data-id="${k}" aria-label="${t}を開く">開く</button></div>`).join("")}
       <div class="brow"><button class="tbtn" data-set="simpleOn">家族用に「かんたん表示」にする</button><span style="flex:1"></span><button class="tbtn" data-set="guideDone">終わった（もう出さない）</button></div></div>`;
@@ -747,11 +752,34 @@
   }
   new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) a11yMark(n); })
     .observe(document.documentElement, { childList: true, subtree: true });
-  const MODALS = ["#sheet", "#info", "#thermoDlg", "#camBox", "#vpop", "#page", "#alarm"];
+  // ================= 長い説明は2行だけ見せて、押すと全部（表示だけ。文章は変えない） =================
+  const openedNotes = new Set();
+  let clampQueued = false;
+  function clampNotes() {
+    clampQueued = false;
+    document.querySelectorAll(".note:not([data-cl]):not(#empty), .sub:not([data-cl])").forEach((n) => {
+      if (n.offsetParent === null) return; // 見えていないものは、見えたときに
+      n.dataset.cl = "1";
+      const txt = n.textContent.trim();
+      if (txt.length < (n.classList.contains("sub") ? 50 : 60) || n.closest("#esum, #saver, .gsum") || n.querySelector("button, a, input, select, textarea, label")) return;
+      if (openedNotes.has(txt)) return;
+      n.classList.add("clamp");
+      if (n.scrollHeight <= n.clientHeight + 2) { n.classList.remove("clamp"); return; }
+      const b = document.createElement("button");
+      b.className = "morebtn"; b.type = "button"; b.textContent = "続きを読む ▾";
+      b.setAttribute("aria-expanded", "false");
+      b.onclick = (ev) => { ev.stopPropagation(); n.classList.remove("clamp"); openedNotes.add(txt); b.remove(); };
+      // チェックボックスの見出しの中に置くと押し先が変わるので、見出しの外に置く
+      (n.closest("label") || n).after(b);
+    });
+  }
+  new MutationObserver(() => { if (!clampQueued) { clampQueued = true; requestAnimationFrame(clampNotes); } })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  const MODALS = ["#sheet", "#info", "#thermoDlg", "#energyDlg", "#camBox", "#vpop", "#page", "#alarm"];
 
   const modalFocus = new Map();
   function openModal() {
-    for (const sel of ["#alarm", "#camBox", "#info", "#thermoDlg", "#vpop", "#sheet", "#page"]) {
+    for (const sel of ["#alarm", "#camBox", "#info", "#thermoDlg", "#vpop", "#sheet", "#energyDlg", "#page"]) {
       const m = $(sel);
       if (m && !m.classList.contains("hidden")) return m;
     }
@@ -766,6 +794,7 @@
       const el = m.target;
       if (!el.id || !MODALS.includes("#" + el.id)) continue;
       const shown = !el.classList.contains("hidden");
+      if (shown) requestAnimationFrame(clampNotes);
       if (shown && !modalFocus.has(el)) {
         modalFocus.set(el, document.activeElement);
         setTimeout(() => { const f = focusables(el)[0]; if (f && !el.contains(document.activeElement)) try { f.focus({ preventScroll: true }); } catch (e) { /* なにもしない */ } }, 30);
@@ -787,7 +816,7 @@
     if (!m) return;
     if (ev.key === "Escape") {
       // それぞれの「閉じる」と同じ操作だけをする
-      const close = m.querySelector('#sheetClose, [data-set="popClose"], [data-set="camClose"], [data-set="close"], [data-set="infoClose"], [data-set="thermoClose"], .dlg-x');
+      const close = m.querySelector('#sheetClose, [data-set="popClose"], [data-set="camClose"], [data-set="close"], [data-set="infoClose"], [data-set="thermoClose"], [data-set="energyClose"], .dlg-x');
       if (close && !(m.id === "page" && S.edit)) { ev.preventDefault(); close.click(); }
       return;
     }
@@ -3119,6 +3148,7 @@
     const box = $("#energy");
     if (!box) return;
     const en = S.energy;
+    renderESum();
     if (!en) { box.innerHTML = costStripHTML(); return; }
     const t = en.t;
     box.innerHTML = `<div class="card estrip"><b>⚡ 今日の電気</b><span>使用 <b>${kwh(t.used)}</b></span><span>買電 <b>${kwh(t.gridIn)}</b></span>
@@ -3270,6 +3300,7 @@
     const box = $("#solar");
     if (!box) return;
     const j = S.solar;
+    renderESum();
     if (!j || !j.config || !j.config.eco_ip) { box.innerHTML = ""; return; }
     const e = j.eco || {}, p = j.plan;
     const pct = e.remain && e.tank ? Math.min(100, Math.round(e.remain * 100 / e.tank)) : null;
@@ -3298,6 +3329,7 @@
   function renderLive() {
     const box = $("#live");
     if (!box) return;
+    renderESum();
     const v = S.live;
     if (!v) { box.innerHTML = ""; return; }
     const kw = (w) => (w / 1000).toFixed(1) + "kW";
@@ -3320,6 +3352,46 @@
         : v.heat_guard && v.heat_guard.active ? `<span class="warn">⏸ 買電が多いので、お湯の沸き上げを一時停止しています（${esc(v.heat_guard.reason)}）</span>` : ""}
       ${v.selfsuff && v.selfsuff.alert && Date.now() - v.selfsuff.alert.at * 1000 < 30 * 60000 ? `<span style="color:#43a047">☀ ${esc(v.selfsuff.alert.message)}</span>` : ""}
       ${alert ? `<span class="warn">${esc(alert)}</span>` : ""}</div>`;
+  }
+  // ================= ホーム：電気とお湯の要点だけ（くわしい情報は押すと開く） =================
+  function renderESum() {
+    const box = $("#esum");
+    if (!box) return;
+    const v = S.live, en = S.energy, j = S.solar;
+    const c = j && j.cost;
+    const kw = (w) => (Math.abs(w) / 1000).toFixed(1);
+    const kpi = [];
+    const k = (icon, label, val, unit, color) => `<div class="ek"><span class="ekl">${icon} ${label}</span><span class="ekv"${color ? ` style="color:${color}"` : ""}>${val}<small>${unit}</small></span></div>`;
+    if (v) {
+      if (v.generation_w != null) kpi.push(k("☀", "発電", kw(v.generation_w), "kW", "#43a047"));
+      if (v.consumption_w != null) kpi.push(k("🏠", "消費", kw(v.consumption_w), "kW", "#fb8c00"));
+      if (v.surplus_w != null) kpi.push(v.surplus_w >= 0 ? k("⚡", "売電", kw(v.surplus_w), "kW", "#1e88e5") : k("⚡", "買電", kw(v.surplus_w), "kW", "#e53935"));
+    } else if (en) {
+      kpi.push(k("🏠", "今日の使用", (Math.round(en.t.used * 10) / 10).toFixed(1), "kWh"));
+      if (en.hasSolar) kpi.push(k("☀", "今日の発電", (Math.round(en.t.solar * 10) / 10).toFixed(1), "kWh", "#43a047"));
+      kpi.push(k("⚡", "今日の買電", (Math.round(en.t.gridIn * 10) / 10).toFixed(1), "kWh"));
+    }
+    const eco = (v && v.eco) || (j && j.eco) || {};
+    if (eco.remain != null) {
+      const pct = eco.tank ? Math.min(100, Math.round(eco.remain * 100 / eco.tank)) : null;
+      kpi.push(`<div class="ek"><span class="ekl">🛁 お湯</span><span class="ekv">${pct != null ? pct + "<small>%</small>" : eco.remain + "<small>L</small>"}</span>${pct != null ? `<span class="ekbar"><span style="width:${pct}%"></span></span>` : ""}</div>`);
+    }
+    if (!kpi.length && !c) { box.innerHTML = ""; return; }
+    // いちばん大事なことを1行だけ（注意 → 自動で動いていること → 沸き上げ中）
+    let line = "", warn = false;
+    const d = v && v.demand;
+    const recent = (a) => a && Date.now() - a.at * 1000 < 30 * 60000;
+    if (d && d.warn_kw != null && d.projected_kw > d.warn_kw) { line = `30分の電力がこのままだと ${d.projected_kw.toFixed(1)}kW（注意 ${d.warn_kw.toFixed(1)}kW）`; warn = true; }
+    else if (v && recent(v.demand_alert)) { line = v.demand_alert.message; warn = true; }
+    else if (j && j.plan && !j.plan.ok) { line = "お湯の毎日の設定がうまくいきませんでした"; warn = true; }
+    else if (v && (v.auto_now || []).length) line = `${v.auto_now[0].icon} 自動：${v.auto_now[0].text}`;
+    else if (v && v.heat_guard && v.heat_guard.active) line = "⏸ 買電が多いので、お湯の沸き上げを一時停止しています";
+    else if (v && v.selfsuff && v.selfsuff.show && v.selfsuff.rate != null) line = `🌱 今日の自給率 ${Math.round(v.selfsuff.rate)}%${v.selfsuff.target ? `（目標 ${v.selfsuff.target}%）` : ""}`;
+    else if (eco.heating) line = "♨ 沸き上げ中";
+    const more = (v && (v.auto_now || []).length > 1) ? `（ほか${v.auto_now.length - 1}件）` : "";
+    box.innerHTML = `<div class="card esum" role="button" tabindex="0" data-set="energyOpen" aria-label="電気とお湯。押すとくわしい情報を開きます">
+      <div class="ekpis">${kpi.join("")}</div>
+      <div class="efoot"><span class="${warn ? "warn" : "eline"}">${esc(line)}${more}</span><span class="sp"></span>${c && c.today_yen != null ? `<span class="ecost">今日 <b>${yenFmt(c.today_yen)}</b></span>` : ""}<span class="emore">くわしく ›</span></div></div>`;
   }
   function ssRateHTML(s) {
     if (!s || !s.show) return "";
@@ -4320,6 +4392,9 @@
       case "info": showInfo(id); return true;
       case "infoClose": S.info = null; renderInfo(); return true;
       case "thermoOpen": openThermo(id, 24); return true;
+      case "guideToggle": S.guideOpen = !S.guideOpen; renderGuide(); return true;
+      case "energyOpen": $("#energyDlg").classList.remove("hidden"); return true;
+      case "energyClose": $("#energyDlg").classList.add("hidden"); return true;
       case "thermoHours": openThermo(S.thermo.key, Number(id)); return true;
       case "thermoClose": S.thermo = null; renderThermoDialog(); return true;
       case "thermoVis": {
@@ -4420,7 +4495,7 @@
         <div data-sec="thermo"><div class="thermos" id="thermo"></div></div>
         <div data-sec="calendar"><div id="cal"></div></div>
         <div data-sec="timers"><div class="timerstrip hidden" id="timerStrip"></div></div>
-        <div data-sec="energy"><div id="live"></div><div id="energy"></div><div id="solar"></div></div>
+        <div data-sec="energy"><div id="esum"></div></div>
         <div data-sec="automations"><div id="quick"></div></div>
         <div data-sec="devices"><h2 class="sechead">🏠 機器の操作</h2><div class="roombar" id="roombar"></div><main class="grid" id="grid"></main>
           <div class="note" id="empty" style="text-align:center;padding:32px"></div></div>
@@ -4429,6 +4504,9 @@
     <div class="vpop hidden" id="vpop" role="dialog" aria-modal="true" aria-label="音声"><div class="vpop-in"><button class="tbtn vpop-x" data-set="popClose">✕ 閉じる</button><div id="vpopBody"></div></div></div>
     <div class="sheet hidden" id="sheet" role="dialog" aria-modal="true" aria-label="機器の詳細"><div class="sheet-bg" id="sheetBg"></div>
       <div class="sheet-body"><button class="sheet-close" id="sheetClose" aria-label="閉じる">×</button><div id="sheetContent"></div></div></div>
+    <div class="dlgwrap hidden" id="energyDlg" role="dialog" aria-modal="true" aria-label="電気とお湯のくわしい情報"><div class="dlg-bg" data-set="energyClose"></div>
+      <div class="dlg"><div class="pagebar"><h3 style="flex:1;margin:0">⚡ 電気とお湯</h3><button class="tbtn" data-set="energyClose">閉じる</button></div>
+      <div id="live"></div><div id="energy"></div><div id="solar"></div></div></div>
     <div class="dlgwrap hidden" id="info" role="dialog" aria-modal="true" aria-label="動作の詳細"></div>
     <div class="dlgwrap hidden" id="thermoDlg" role="dialog" aria-modal="true" aria-label="温度計"></div>
     <div class="cambox hidden" id="camBox" role="dialog" aria-modal="true" aria-label="カメラ"><video id="camVideo" playsinline autoplay muted></video><img id="camImg" class="hidden" alt="">

@@ -163,7 +163,7 @@ fun CameraRecordingSettings(vm: MainViewModel) {
                     FilterChip(selected = th == v, onClick = { vm.setCamThreshold(v) }, label = { Text("$v%") }, colors = chip)
                 }
             }
-            Text("暗い部屋では、カメラの赤外線（夜間モード）の画像で動きを調べます。寝返りなど小さな動きも拾いたいときは小さめにしてください。",
+            HelpText("暗い部屋では、カメラの赤外線（夜間モード）の画像で動きを調べます。寝返りなど小さな動きも拾いたいときは小さめにしてください。",
                 style = MaterialTheme.typography.bodySmall)
         }
     }
@@ -223,7 +223,7 @@ fun MotionDialog(vm: MainViewModel, entity: String, name: String, onDismiss: () 
                             style = MaterialTheme.typography.bodyLarge,
                         )
                     }
-                    Text("（夜19時〜3時に動きが30分以上止まり始めた時刻を「寝た」、朝4時〜11時に動きが続き始めた時刻を「起きた」としています）",
+                    HelpText("（夜19時〜3時に動きが30分以上止まり始めた時刻を「寝た」、朝4時〜11時に動きが続き始めた時刻を「起きた」としています）",
                         style = MaterialTheme.typography.bodySmall)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(12 to "12時間", 24 to "24時間", 48 to "48時間").forEach { (h, l) ->

@@ -312,7 +312,7 @@ fun wmoWeather(code: Int?): Pair<String, String> = when (code) {
 @Composable
 private fun DailyWeatherTable(days: List<String>, data: List<EnergyHour>, daily: Map<String, org.json.JSONObject>) {
     Text("日ごとの電気と天気・気温", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-    if (daily.isEmpty()) Text("天気・気温の記録はまだありません（サーバーが3時間ごとに記録します。自宅の位置をサーバーに送ってください）。", style = MaterialTheme.typography.bodySmall)
+    if (daily.isEmpty()) HelpText("天気・気温の記録はまだありません（サーバーが3時間ごとに記録します。自宅の位置をサーバーに送ってください）。", style = MaterialTheme.typography.bodySmall)
     val maxUse = days.maxOfOrNull { d -> data.filter { it.date == d }.sumOf { it.use } }?.coerceAtLeast(1.0) ?: 1.0
     days.forEach { d ->
         val h = data.filter { it.date == d }
@@ -423,7 +423,7 @@ private fun FiveMinuteView(vm: MainViewModel) {
     if (list == null && err == null) Text("読んでいます…", style = MaterialTheme.typography.bodySmall)
     if (list == null) return
     if (list.isEmpty()) {
-        Text("この日の5分ごとの記録はまだありません（記録は8日分です。サーバーを新しい版にした時点からたまります）。", style = MaterialTheme.typography.bodySmall)
+        HelpText("この日の5分ごとの記録はまだありません（記録は8日分です。サーバーを新しい版にした時点からたまります）。", style = MaterialTheme.typography.bodySmall)
         return
     }
     val HOUSE = "家全体（使った電気）"

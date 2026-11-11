@@ -91,7 +91,7 @@ fun ProfileSettings(vm: MainViewModel) {
     var confirmDelete by remember { mutableStateOf<Profile?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
+        HelpText(
             "家族それぞれが、ホーム画面の並び順・表示する項目・配色を自分用に変えられます。" +
                 "ホーム画面上部の「👤 名前」から切り替えます（この端末の中だけの設定で、ログインとは別です）。",
             style = MaterialTheme.typography.bodySmall,
@@ -164,7 +164,7 @@ fun ProfileSettings(vm: MainViewModel) {
 fun BackupSettings(vm: MainViewModel) {
     val msg by vm.backupMessage.collectAsState()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
+        HelpText(
             "このアプリの設定（表示する機器・部屋・ユーザーごとの表示・配色・音声・スクリーンセーバー・自宅の位置など）を、" +
                 "Android の「ファイル」（ダウンロードフォルダなど）に書き出せます。別の端末や入れ直したときに読み込めば、同じ設定に戻せます。" +
                 "ログイン情報・外出先用URLなどの接続情報は書き出しません。",

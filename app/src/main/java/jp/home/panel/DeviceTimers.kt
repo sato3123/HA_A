@@ -118,7 +118,7 @@ fun DeviceTimerSection(e: Entity, vm: MainViewModel) {
             FilledTonalButton(onClick = { picking = true }) { Text("時刻を指定") }
         }
         msg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-        Text("タイマーはホームパネルのサーバーが Home Assistant を通して動かすので、タブレットを切っていても動きます。", style = MaterialTheme.typography.bodySmall)
+        HelpText("タイマーはホームパネルのサーバーが Home Assistant を通して動かすので、タブレットを切っていても動きます。", style = MaterialTheme.typography.bodySmall)
     }
     if (picking) {
         val st = rememberTimePickerState(initialHour = (LocalDateTime.now().hour + 1) % 24, initialMinute = 0, is24Hour = true)

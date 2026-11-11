@@ -495,3 +495,27 @@ div.warn::before { content: "⚠ "; }
   .chart .lbl { font-size: 22px; }
   .chart .lbl.now { font-size: 24px; }
 }
+
+/* ホームの「電気とお湯」：要点だけのカード（押すと、くわしい情報の画面） */
+.esum { cursor: pointer; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.esum:hover { filter: brightness(1.06); }
+.ekpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 10px 14px; }
+.ek { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ekl { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.ekv { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.ekv small { font-size: 14px; font-weight: 500; margin-left: 2px; opacity: .8; }
+.ekbar { display: block; height: 4px; border-radius: 2px; background: var(--surface2); overflow: hidden; margin-top: 4px; }
+.ekbar span { display: block; height: 100%; background: var(--primary); }
+.efoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+.efoot .sp { flex: 1; }
+.efoot .eline { color: var(--muted); }
+.efoot .warn { margin: 0; }
+.efoot .emore { color: var(--primary); font-weight: 600; white-space: nowrap; }
+.efoot .ecost { white-space: nowrap; }
+#energyDlg .dlg { max-width: 860px; }
+.gsum { display: flex; align-items: center; gap: 10px; padding: 12px 16px; margin-bottom: 10px; cursor: pointer; }
+.gsum .sp { flex: 1; }
+.gsum .emore { color: var(--primary); font-weight: 600; }
+/* 長い説明は2行まで（「続きを読む」で全部） */
+.note.clamp, .sub.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.morebtn { display: inline-block; background: none; border: 0; color: var(--primary); font: inherit; font-size: 14px; font-weight: 600; padding: 6px 0; min-height: 36px; cursor: pointer; }

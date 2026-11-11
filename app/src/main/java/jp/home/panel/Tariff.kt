@@ -189,7 +189,7 @@ fun TariffSettings(vm: MainViewModel) {
             enabled = fuelV != null && sellV != null && sellV >= 0,
             onClick = { save("tariff_fuel" to fuelV!!, "tariff_sell" to sellV!!) },
         ) { Text("燃料費調整額と売電の単価を保存") }
-        Text(
+        HelpText(
             "燃料費調整額は毎月変わります。単価表に電力会社の公表値がある月はそれを自動で使い、無い月（まだ公表されていない月など）はここに入れた値を使います（検針票の「燃料費調整単価」。マイナスのこともあります）。売電の単価は、太陽光の買取の契約の単価です。\n" +
                 "※ 単価は各社の公式の料金表をもとにしていますが、実際の請求額と少しずれることがあります（ポイント・割引・端数の扱いなど）。料金表が変わったときは単価表を更新します。",
             style = MaterialTheme.typography.bodySmall,
@@ -217,7 +217,7 @@ private fun CustomTariff(sc: Map<String, Any?>, onSave: (JSONObject) -> Unit) {
     var ne by remember { mutableStateOf(c.optString("night_end", "7")) }
     val num = KeyboardOptions(keyboardType = KeyboardType.Decimal)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("検針票やプランの説明にある単価を入れてください（税込）。夜の単価が無いプランは、夜の欄を空にします。", style = MaterialTheme.typography.bodySmall)
+        HelpText("検針票やプランの説明にある単価を入れてください（税込）。夜の単価が無いプランは、夜の欄を空にします。", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             OutlinedTextField(basic, { basic = it }, label = { Text("基本料金（円/月）") }, singleLine = true, keyboardOptions = num, modifier = Modifier.widthIn(max = 180.dp))
             OutlinedTextField(day, { day = it }, label = { Text("昼の単価（円/kWh）") }, singleLine = true, keyboardOptions = num, modifier = Modifier.widthIn(max = 180.dp))

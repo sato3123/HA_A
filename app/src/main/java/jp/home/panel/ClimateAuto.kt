@@ -95,7 +95,7 @@ fun ClimateAutoSettings(vm: MainViewModel) {
         acs.associate { it.entityId to (serverState?.optJSONObject(it.entityId)?.optString("status").orEmpty()) }.filterValues { it.isNotBlank() }
     } else localStatus
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
+        HelpText(
             "温度の範囲を決めておくと、部屋の温度がその範囲を外れたときに、エアコンを自動で冷房・暖房にして範囲内に戻します。" +
                 "温度は、エアコンの室温か、部屋に置いた温度計（SwitchBot など）から選べます。1分ごとに確かめます。",
             style = MaterialTheme.typography.bodySmall,
@@ -177,7 +177,7 @@ fun ClimateAutoSettings(vm: MainViewModel) {
                 }
             }
         }
-        Text(
+        HelpText(
             "・上限より0.5℃高くなったら冷房（設定温度＝上限）、下限より0.5℃低くなったら暖房（設定温度＝下限）にします。\n" +
                 "・温度計を使うときは、20分たっても範囲に戻らなければ、設定温度を1℃ずつ（最大3℃）強めます。\n" +
                 "・同じエアコンの操作は5分に1回までです。手でエアコンを操作したときは、その設定がしばらく優先されます（10分）。",

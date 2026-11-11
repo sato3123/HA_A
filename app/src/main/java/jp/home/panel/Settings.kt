@@ -129,7 +129,7 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("大きなボタンだけのホーム画面にする", style = MaterialTheme.typography.bodyLarge)
-                        Text("照明・エアコン・スイッチなどを大きなボタンで出し、タップで入／切します。家族や初めての人向け。細かい操作は ⚙ 設定 でオフに戻すとできます。", style = MaterialTheme.typography.bodySmall)
+                        HelpText("照明・エアコン・スイッチなどを大きなボタンで出し、タップで入／切します。家族や初めての人向け。細かい操作は ⚙ 設定 でオフに戻すとできます。", style = MaterialTheme.typography.bodySmall)
                     }
                     androidx.compose.material3.Switch(checked = simple, onCheckedChange = { vm.setSimpleMode(it) })
                 }
@@ -332,7 +332,7 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             item { SectionTitle("外出先からの接続（Home Assistant Cloud）") }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
+                    HelpText(
                         "Home Assistant の「設定 → Home Assistant Cloud → リモートコントロール」に表示されるURLを入力します。" +
                             "家の中ではローカル接続、外では自動でこのURLを使います。空にすると家の中専用に戻ります。",
                         style = MaterialTheme.typography.bodySmall,
@@ -526,14 +526,14 @@ private fun AccountSection(vm: MainViewModel, onLogout: () -> Unit) {
             )
             adminUser != null -> {
                 Text("管理者ログイン（自動化の編集用）：$adminUser", style = MaterialTheme.typography.bodyLarge)
-                Text(
+                HelpText(
                     "機器の操作は普段使いのユーザーで行い、オートメーション・スケジュールの編集だけ管理者の権限を使います。",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedButton(onClick = vm::adminLogout) { Text("管理者ログインを解除") }
             }
             else -> {
-                Text(
+                HelpText(
                     "オートメーション・スケジュールを作成・編集するには、管理者ユーザーでのログインを追加してください。" +
                         "普段の操作はこのまま管理者以外のユーザーで行えます。",
                     style = MaterialTheme.typography.bodySmall,
@@ -583,7 +583,7 @@ private fun ScreensaverSettings(vm: MainViewModel) {
                 androidx.compose.material3.FilterChip(interval == sec, { vm.setScreensaver(interval = sec) }, { Text(if (sec >= 60) "${sec / 60}分" else "${sec}秒") })
             }
         }
-        Text(
+        HelpText(
             "Google フォトのアルバムを「共有」して「リンクを作成」し、そのリンク（https://photos.app.goo.gl/…）を貼り付けてください。" +
                 "Google の仕様変更で、共有リンクにしたアルバムだけ表示できます（非公式の方法のため、Google 側の変更で使えなくなることがあります）。",
             style = MaterialTheme.typography.bodySmall,
@@ -609,7 +609,7 @@ private fun HomeLocationSettings(vm: MainViewModel) {
     var input by rememberSaveable(loc) { mutableStateOf(loc) }
     var note by remember { mutableStateOf<String?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
+        HelpText(
             "「近くのスーパーの営業時間は？」のような場所に関わる質問のとき、ここに登録した場所を基準に AI が答えます。" +
                 "機器の操作などには使いません。住所は番地まで入れなくても、町名や最寄り駅までで十分です。",
             style = MaterialTheme.typography.bodySmall,
@@ -627,7 +627,7 @@ private fun HomeLocationSettings(vm: MainViewModel) {
             }
         }
         note?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-        Text(
+        HelpText(
             "※ OpenAI 連携の「Include home location」をオンにしている場合は、Home Assistant の「設定 → システム → 一般」の位置も使われます。",
             style = MaterialTheme.typography.bodySmall,
         )

@@ -145,7 +145,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
+        HelpText(
             "太陽光で余った電気でエコキュートのお湯を沸かして、電気を買う量を減らします。\n" +
                 "・前の日の夜に天気予報を見て、晴れならエコキュートの「昼間沸き上げ（エネルギーシフト）」を使い、夜の沸き上げを昼にずらします。\n" +
                 "・昼の時間帯に売電が続いたら、沸き増しを始めます。余らなくなったら、自動の沸き上げに戻します。\n" +
@@ -174,7 +174,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 TextButton(onClick = { vm.setSolarWhere("server", serverText) }) { Text("保存") }
             }
             Button(onClick = { vm.pushSolarToServer() }) { Text("このタブレットの設定をサーバーに送る") }
-            Text("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、下の時間帯などの設定をサーバーに送ります。最初に1回押してください。", style = MaterialTheme.typography.bodySmall)
+            HelpText("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、下の時間帯などの設定をサーバーに送ります。最初に1回押してください。", style = MaterialTheme.typography.bodySmall)
             serverMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
             // 夜の沸き上げの減らし方（サーバー）
@@ -228,7 +228,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
 
             // 日射量の予報（晴れ扱いにするかの判断）
             Text("日射量の予報（昼に沸かすかの判断）", style = MaterialTheme.typography.labelLarge)
-            Text(
+            HelpText(
                 "前の日の夜に、気象庁（JMA）・ECMWF・GFS の3つの日射量の予報を合わせて、昼の時間帯の発電量を予想します。" +
                     "この家のパネルの「日射量→発電量」は、AiSEG2 の発電の記録から自動で学習します。予想した余り（発電−ふだんの使用）が、沸かすのに必要な量以上なら晴れ扱いにします。",
                 style = MaterialTheme.typography.bodySmall,
@@ -265,7 +265,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
 
             // AiSEG2 から売電・買電を読む（スマートメーターの代わり）
             Text("AiSEG2 から売電・買電を読む", style = MaterialTheme.typography.labelLarge)
-            Text(
+            HelpText(
                 "Panasonic の AiSEG2 を使っている場合、サーバーが AiSEG2 から、いまの発電と消費を15秒ごとに読みます（スマートメーターより優先）。" +
                     "パスワードは AiSEG2 の画面（ブラウザで AiSEG2 の IP アドレスを開いたとき）のログインパスワードです。サーバーにだけ保存し、このタブレットには残しません。",
                 style = MaterialTheme.typography.bodySmall,
@@ -317,7 +317,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
         Text("エコキュート", style = MaterialTheme.typography.labelLarge)
         val heaters = vm.waterHeaters
         if (heaters.isEmpty()) {
-            Text("見つかっていません。⚙ 設定 →「ECHONET Lite」で「機器を探す」を押してください（AiSEG2 や無線 LAN アダプターでつながっているエコキュートが見つかります）。",
+            HelpText("見つかっていません。⚙ 設定 →「ECHONET Lite」で「機器を探す」を押してください（AiSEG2 や無線 LAN アダプターでつながっているエコキュートが見つかります）。",
                 style = MaterialTheme.typography.bodySmall)
         } else {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -363,7 +363,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 FilterChip(selected = threshold == w, onClick = { vm.setSolarHeat(threshold = w) }, label = { Text("${w / 1000.0}kW") }, colors = chipColors)
             }
         }
-        Text("エコキュートが沸かすときの電力（多くの機種で 1〜1.5kW）より少し多めにすると、電気を買わずに沸かせます。", style = MaterialTheme.typography.bodySmall)
+        HelpText("エコキュートが沸かすときの電力（多くの機種で 1〜1.5kW）より少し多めにすると、電気を買わずに沸かせます。", style = MaterialTheme.typography.bodySmall)
 
         // 余剰電力の読み取り先
         Text("売電の量の読み取り先", style = MaterialTheme.typography.labelLarge)
@@ -396,7 +396,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
             OutlinedButton(onClick = { pickSensor = true }) { Text("センサーを選ぶ") }
             if (sensor.isNotBlank()) TextButton(onClick = { vm.setSolarHeat(sensor = "") }) { Text("自動に戻す") }
         }
-        Text(
+        HelpText(
             "売電の電力（W）のセンサーがあれば、それがいちばん正確です。電力量（kWh）のセンサーでは、5分以上の増え方から計算します" +
                 "（スマートメーターの値は30分ごとにしか変わらないため、反応が遅くなります）。",
             style = MaterialTheme.typography.bodySmall,

@@ -152,7 +152,7 @@ fun CalendarSettings(vm: MainViewModel) {
                         "カレンダーの名前は「TimeTree 家族」のように TimeTree から始めると、ここで最初から選ばれます",
                     "4. このアプリでカレンダーにチェックを入れる",
                 ).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                Text(
+                HelpText(
                     "※ TimeTree の公式の連携（API）は 2023年12月で終了しているため、非公式の道具（timetree-exporter）を使っています。TimeTree 側の変更で止まることがあり、そのときはサーバーが毎日道具を新しくします。",
                     style = MaterialTheme.typography.bodySmall,
                 )

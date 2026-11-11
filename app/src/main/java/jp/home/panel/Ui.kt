@@ -204,6 +204,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
     var showTimers by rememberSaveable { mutableStateOf(false) }
     var showCalendar by rememberSaveable { mutableStateOf(false) }
     var showEnergy by rememberSaveable { mutableStateOf(false) }
+    var showEnergyDetail by rememberSaveable { mutableStateOf(false) }
     // 初めてホーム画面を開いたときは使い方を自動で表示
     var showHelp by rememberSaveable { mutableStateOf(!vm.helpShown) }
     var detailId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -285,7 +286,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
         // ---- かんたん表示：時計と電気の様子、大きなボタンだけ ----
         if (simple) {
             if (clockShown) item(span = { full(this) }) { ClockWeather(weather, forecast) { mic() } }
-            item(span = { full(this) }) { LiveStrip(vm) }
+            item(span = { full(this) }) { EnergySummaryCard(vm, onOpen = { showEnergyDetail = true }) }
             val big = entities.filter { it.domain in simpleDomains() }
             if (big.isEmpty()) {
                 item(span = { full(this) }) { Text("かんたん表示に出せる機器（照明・エアコン・スイッチなど）がありません（⚙ 設定 → 部屋と機器 で選べます）") }
@@ -303,11 +304,8 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                 HomeSection.TIMERS -> item(span = { full(this) }) { TimerStrip(vm, onOpen = { showTimers = true }) }
                 HomeSection.AUTOMATIONS -> item(span = { full(this) }) { AutomationQuick(vm) }
                 HomeSection.ENERGY -> item(span = { full(this) }) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LiveStrip(vm)
-                        EnergyStrip(vm, onOpen = { showEnergy = true })
-                        EcoCuteCard(vm)
-                    }
+                    // 要点だけ。くわしい情報（今までの表示すべて）は押すと開く
+                    EnergySummaryCard(vm, onOpen = { showEnergyDetail = true })
                 }
                 HomeSection.DEVICES -> {
                     // UI-009：いちばんよく使う「機器の操作」を見出しで分かるように（並び順・中身は今までどおり）
@@ -378,6 +376,7 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
 
     if (showTimers) TimerDialog(vm, onDismiss = { showTimers = false })
     if (showCalendar) CalendarDialog(vm, onDismiss = { showCalendar = false })
+    if (showEnergyDetail) EnergyDetailDialog(vm, onOpenEnergy = { showEnergy = true }, onDismiss = { showEnergyDetail = false })
     if (showEnergy) EnergyDialog(vm, onDismiss = { showEnergy = false })
     VoicePopup(vm)
 

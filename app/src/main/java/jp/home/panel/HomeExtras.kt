@@ -180,7 +180,7 @@ fun AwayDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         title = { Text("🧳 留守にする") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("帰る日時まで、エコキュートの沸き上げ（夜の沸き上げも）を止めます。帰る少し前から沸かし始めるので、帰ったときにはお湯があります。", style = MaterialTheme.typography.bodySmall)
+                HelpText("帰る日時まで、エコキュートの沸き上げ（夜の沸き上げも）を止めます。帰る少し前から沸かし始めるので、帰ったときにはお湯があります。", style = MaterialTheme.typography.bodySmall)
                 Text("帰る日", style = MaterialTheme.typography.labelLarge)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     (0..13).forEach { i ->
@@ -377,7 +377,7 @@ fun DemandView(vm: MainViewModel) {
         style = MaterialTheme.typography.bodySmall,
     )
     if (vals.all { it == null }) {
-        Text("この日の30分ごとの記録はまだありません（サーバーを新しい版にした時点からたまります。直近12か月の最大も、記録がたまるほど正確になります）。", style = MaterialTheme.typography.bodySmall)
+        HelpText("この日の30分ごとの記録はまだありません（サーバーを新しい版にした時点からたまります。直近12か月の最大も、記録がたまるほど正確になります）。", style = MaterialTheme.typography.bodySmall)
     } else {
         val bar = MaterialTheme.colorScheme.primary
         val err2 = MaterialTheme.colorScheme.error
@@ -463,7 +463,7 @@ private fun DemandSettings(vm: MainViewModel) {
             Text("知らせる先（Home Assistant のスマートフォンのアプリ）", style = MaterialTheme.typography.labelLarge)
             when {
                 services == null -> Text("読んでいます…", style = MaterialTheme.typography.bodySmall)
-                services!!.isEmpty() -> Text("通知先が見つかりません。スマートフォンに Home Assistant のアプリを入れてログインすると「notify.mobile_app_〇〇」が出てきます（サーバーに Home Assistant の鍵の登録も必要です）。", style = MaterialTheme.typography.bodySmall)
+                services!!.isEmpty() -> HelpText("通知先が見つかりません。スマートフォンに Home Assistant のアプリを入れてログインすると「notify.mobile_app_〇〇」が出てきます（サーバーに Home Assistant の鍵の登録も必要です）。", style = MaterialTheme.typography.bodySmall)
                 else -> services!!.filter { it.startsWith("notify.mobile_app") || it in notify }.ifEmpty { services!! }.forEach { s ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = s in notify, onCheckedChange = { c -> vm.setDemand(notify = if (c) (notify + s).toList() else (notify - s).toList()) })

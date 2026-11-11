@@ -231,7 +231,7 @@ fun FindCamerasDialog(onPick: (IpCamera, String) -> Unit, onDismiss: () -> Unit)
                 if (p != null) PickedCamera(p, onBack = { picked = null }, onNext = onPick)
                 else {
                 if (found == null) {
-                    Text("家のネットワークの中のカメラを探しています…（ONVIF の問い合わせと、RTSP のポート 554 の確認。30秒ほどかかります）",
+                    HelpText("家のネットワークの中のカメラを探しています…（ONVIF の問い合わせと、RTSP のポート 554 の確認。30秒ほどかかります）",
                         style = MaterialTheme.typography.bodySmall)
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                 }
@@ -277,7 +277,7 @@ private fun PickedCamera(c: FoundCamera, onBack: () -> Unit, onNext: (IpCamera, 
     OutlinedTextField(user, { user = it.trim() }, label = { Text("カメラのユーザー名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(pass, { pass = it }, label = { Text("カメラのパスワード") }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
-    Text("Tapo などは、カメラのアプリの「高度な設定 → カメラのアカウント」で作ったユーザー名とパスワードです。", style = MaterialTheme.typography.bodySmall)
+    HelpText("Tapo などは、カメラのアプリの「高度な設定 → カメラのアカウント」で作ったユーザー名とパスワードです。", style = MaterialTheme.typography.bodySmall)
     if (c.onvif != null) {
         OutlinedButton(onClick = {
             msg = "ONVIF で調べています…"

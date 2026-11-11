@@ -108,7 +108,7 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
             else "「人感センサーが反応したら照明をつける」「日の入りにカーテンを閉める」のように、きっかけに合わせて自動で操作します。",
             style = MaterialTheme.typography.bodyMedium,
         )
-        Text(
+        HelpText(
             "設定は Home Assistant に保存されるので、このタブレットの電源が切れていても実行されます。",
             style = MaterialTheme.typography.bodySmall,
         )

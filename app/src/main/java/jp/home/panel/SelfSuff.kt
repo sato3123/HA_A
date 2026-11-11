@@ -110,7 +110,7 @@ fun SelfSuffSettings(vm: MainViewModel) {
     val conf by vm.serverConf.collectAsState()
     val all by vm.allEntities.collectAsState()
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
+        HelpText(
             "太陽光の電気をできるだけ家の中で使い、買う電気を減らすための機能です。どれも使うかどうかを選べます（初めはすべてオフ）。" +
                 "家のサーバー（ホームパネルのサーバー）が見張って動かすので、このアプリを閉じていても働きます。",
             style = MaterialTheme.typography.bodySmall,
@@ -222,9 +222,24 @@ fun SetupGuideCard(vm: MainViewModel, onOpen: (String) -> Unit) {
     if (done) return
     val sel by vm.selection.collectAsState()
     val rooms by vm.rooms.collectAsState()
+    // 要点だけ1行で出し、押すと手順を開く
+    var open by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    if (!open) {
+        Card(onClick = { open = true }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("👋 はじめての設定", style = MaterialTheme.typography.titleMedium)
+                Text("  4つの手順", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f))
+                Text("開く ›", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        return
+    }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("👋 はじめての設定（4つの手順）", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("👋 はじめての設定（4つの手順）", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { open = false }) { Text("たたむ") }
+            }
             Text("順番に開いて設定すると、すぐに使い始められます。あとから ⚙ 設定 でいつでも変えられます。", style = MaterialTheme.typography.bodySmall)
             HorizontalDivider()
             listOf(
@@ -307,7 +322,7 @@ fun ElRescueCard(vm: MainViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("エアコンに数分ごとに「名乗って」と頼む", style = MaterialTheme.typography.titleSmall)
-                    Text(
+                    HelpText(
                         "Home Assistant の全員あての呼びかけを聞き逃すエアコンが、一覧から消えて「利用不可」のままになるのを防ぎます。" +
                             "家のサーバーが IP アドレスあてに頼むだけで、運転・温度は変えません。",
                         style = MaterialTheme.typography.bodySmall,
@@ -381,7 +396,7 @@ fun RunAlertSettings(vm: MainViewModel) {
     val all by vm.allEntities.collectAsState()
     val now by vm.runAlertNow.collectAsState()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
+        HelpText(
             "選んだ機器が、決めた時間より長く続けて動いていたら、スマートフォンに知らせます（1回の運転につき1回）。" +
                 "家のサーバーが1分ごとに見張るので、このアプリを閉じていても働きます。",
             style = MaterialTheme.typography.bodySmall,
