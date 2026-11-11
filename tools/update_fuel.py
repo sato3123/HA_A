@@ -22,7 +22,9 @@ from datetime import date
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARIFFS = os.path.join(ROOT, "server", "tariffs.json")
 KEPCO_URL = "https://kepco.jp/~/media/Files/KepcoJp/Customer/pdf/seido/{ym}.ashx"
-UA = "Mozilla/5.0 (homepanel tariff updater; +https://github.com/sato3123/HA_A)"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+HEADERS = {"User-Agent": UA, "Accept": "application/pdf,text/html;q=0.9,*/*;q=0.8", "Accept-Language": "ja,en;q=0.8",
+           "Referer": "https://kepco.jp/ryokin/fuelcost/"}
 
 
 def add_month(y, m, n):
@@ -35,7 +37,7 @@ def add_month(y, m, n):
 
 
 def fetch_pdf_text(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers=HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             data = r.read()
