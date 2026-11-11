@@ -2,6 +2,7 @@
 
 package jp.home.panel
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -232,8 +233,11 @@ fun SetupGuideCard(vm: MainViewModel, onOpen: (String) -> Unit) {
                 Triple("voice", "③ 自宅の位置（天気・日の出の計算）", false),
                 Triple("tariff", "④ 電気料金のプラン（電気代の計算）", false),
             ).forEach { (page, label, ok) ->
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 40.dp)) {
-                    Text((if (ok) "✅ " else "") + label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                // UI-033：手順の名前も押せる（「開く」と同じ）
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.heightIn(min = 48.dp).fillMaxWidth().clickable { onOpen(page) }) {
+                    Text((if (ok) "✅ " else "") + label + "  ›", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer)
                     FilledTonalButton(onClick = { onOpen(page) }) { Text("開く") }
                 }
             }

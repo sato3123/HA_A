@@ -453,3 +453,25 @@ div.warn::before { content: "⚠ "; }
 .tab.sel { font-weight: 700; }
 .btn.outline { border-width: 1.5px; }
 .tbtn:disabled, .btn:disabled, .chip:disabled { cursor: not-allowed; }
+
+/* ==== フェーズ5 ==== */
+/* UI-033：はじめての設定は、手順の名前も押せる */
+.gstep .gname { flex: 1; text-align: left; background: none; border: none; color: var(--on); font-size: 16px; padding: 10px 4px; min-height: 44px; }
+/* UI-030：選んでいる配色は、太い枠＋外側の線＋✓ で（明るい配色でも分かる） */
+.theme.sel { outline: 2px solid var(--on); outline-offset: 2px; }
+/* UI-026：見出しへ移動したとき、固定の見出しの下に隠れない */
+.page h2, .page h3, .page [id] { scroll-margin-top: 72px; }
+/* UI-028・UI-034：記録・属性は長い値を折り返し、狭い画面では縦に並べる */
+.kv { flex-wrap: wrap; }
+.kv > :last-child { min-width: 0; flex: 1 1 140px; }
+@media (max-width: 480px) {
+  .oprow, .accrow { flex-wrap: wrap; row-gap: 2px; }
+  .oprow .opw, .accrow .accl { width: auto !important; flex: 1 1 auto; }
+  .oprow .opt { width: auto; }
+  .oprow > :last-child { flex-basis: 100%; }
+}
+/* UI-035：余白と角丸の共通の値 */
+:root { --gap-s: 6px; --gap-m: 10px; --gap-l: 16px; }
+.card, .tile, .auto, .menurow { border-radius: var(--radius); }
+/* UI-036：時計などの数字が変わっても横に揺れない（幅をそろえる・上の UI-027）。マイクの点滅は控えめに */
+.mic.listen { animation-duration: 1.8s; }

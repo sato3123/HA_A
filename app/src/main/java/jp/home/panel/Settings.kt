@@ -477,6 +477,7 @@ private fun ThemePicker(selected: String, onSelect: (String) -> Unit) {
                     .background(Color(p.background), RoundedCornerShape(14.dp))
                     .border(if (sel) 3.dp else 1.dp, if (sel) Color(p.primary) else Color(0x55888888), RoundedCornerShape(14.dp))
                     .clickable { onSelect(p.id) }
+                    .semantics { contentDescription = "配色 " + p.name + if (sel) "（選択中）" else "" }
                     .padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {

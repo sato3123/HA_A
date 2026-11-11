@@ -583,7 +583,7 @@
     const steps = [["rooms", "① 部屋を決める"], ["rooms", "② ホーム画面に出す機器を選ぶ"], ["voice", "③ 自宅の位置"], ["display", "④ 配色・家族ごとの表示"]];
     box.innerHTML = `<div class="card" style="padding:14px;margin-bottom:10px"><b>👋 はじめての設定（4つの手順）</b>
       <div class="note">順番に開いて設定すると、すぐに使い始められます。あとから ⚙ 設定 でいつでも変えられます。</div>
-      ${steps.map(([k, t]) => `<div class="brow" style="align-items:center"><span style="flex:1">${t}</span><button class="tbtn" data-set="guideOpen" data-id="${k}">開く</button></div>`).join("")}
+      ${steps.map(([k, t]) => `<div class="brow gstep" style="align-items:center"><button class="gname" data-set="guideOpen" data-id="${k}">${t} <span aria-hidden="true">›</span></button><button class="tbtn" data-set="guideOpen" data-id="${k}" aria-label="${t}を開く">開く</button></div>`).join("")}
       <div class="brow"><button class="tbtn" data-set="simpleOn">家族用に「かんたん表示」にする</button><span style="flex:1"></span><button class="tbtn" data-set="guideDone">終わった（もう出さない）</button></div></div>`;
   }
   const SIMPLE_DOMAINS = ["light", "switch", "input_boolean", "climate", "fan", "scene", "script", "cover"];
