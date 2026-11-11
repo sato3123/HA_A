@@ -3869,7 +3869,13 @@ class Api(BaseHTTPRequestHandler):
             eco_caps["set"] = None
             log("設定を変えました：" + "、".join(k for k in b if k in allowed))
             wake.set()
-            return self._ok(public_state())
+            res = public_state()
+            ignored = [k for k in b if k not in allowed]
+            if ignored:
+                # 知らない項目は保存しない。画面が「保存できた」と思い込まないように、返す
+                res["ignored"] = ignored
+                print("保存しなかった設定の項目:", ignored, flush=True)
+            return self._ok(res)
         if p == "/timers":
             # 追加：{entity, name, action, data, at（時刻・秒）または after_min}
             if not conf.get("ha_token"):

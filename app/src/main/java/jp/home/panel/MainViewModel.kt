@@ -2925,16 +2925,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun serverPost(path: String, body: JSONObject) {
+    /** どの画面にいても出す短い知らせ（保存できなかったときなど） */
+    val toastRequest = MutableSharedFlow<String>(extraBufferCapacity = 4)
+
+    /** サーバーに送る。保存できたら true。できなければ知らせて false（サーバーが受け付けなかった項目も含む） */
+    private suspend fun serverPost(path: String, body: JSONObject): Boolean {
+        var ok = true
         try {
-            applyServerState(serverCall(path, body))
-            shServerMsg.value = null
+            val r = serverCall(path, body)
+            applyServerState(r)
+            val ignored = r.optJSONArray("ignored")
+            if (ignored != null && ignored.length() > 0) {
+                ok = false
+                val names = (0 until ignored.length()).joinToString("・") { ignored.optString(it) }
+                shServerMsg.value = "保存できなかった項目があります（$names）。サーバーの更新を待ってから、もう一度お試しください"
+                toastRequest.tryEmit(shServerMsg.value!!)
+            } else {
+                shServerMsg.value = null
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            shServerMsg.value = "サーバーに送れませんでした：${e.message}"
+            ok = false
+            shServerMsg.value = "サーバーに保存できませんでした：${e.message}"
+            toastRequest.tryEmit(shServerMsg.value!!)
         }
         updateSolarView()
+        return ok
     }
 
     // ---- 電気の分析（サーバーが AiSEG2 から記録した時間ごと・回路ごとの電気） ----
@@ -2972,8 +2989,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val serverConf = MutableStateFlow<Map<String, Any?>>(emptyMap())
 
     fun setServerConf(key: String, value: Any) = viewModelScope.launch {
-        serverConf.value = serverConf.value + (key to value)
-        serverPost("/config", JSONObject().put(key, value))
+        val before = serverConf.value
+        serverConf.value = before + (key to value)
+        // 保存できなかったら、画面の表示も元に戻す（保存できたように見えないように）
+        if (!serverPost("/config", JSONObject().put(key, value)) && serverConf.value[key] == value) {
+            serverConf.value = if (before.containsKey(key)) serverConf.value + (key to before[key]) else serverConf.value - key
+        }
     }
 
     /** サーバーに登録した AiSEG2 の状態（画面用） */

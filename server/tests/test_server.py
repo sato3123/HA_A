@@ -566,6 +566,216 @@ class TestStoreAheadCost(SolarTestBase):
             m["conf"]["tariff_sell"] = keep
 
 
+# ---- 設定の保存：すべての項目が保存でき、読み直しても残ること。アプリが送る項目が、サーバーで受け付ける項目であること ----
+CONFIG_SAMPLES = {
+    # 項目: (送る値, 保存されるはずの値（省略＝送った値）)
+    "enabled": (True,), "eco_ip": ("192.168.1.9",), "eco_eoj": ("026B02",), "meter_ip": ("192.168.1.10",), "meter_eoj": ("028802",),
+    "start_hour": (11,), "end_hour": (16,), "threshold_w": (1500,), "stop_buy_w": (400,), "plan_hour": (21,), "shift": (False,),
+    "night_method": ("stop",), "stop_min_pct": (40,), "safety_hour": (5,), "safety_pct": (25,), "ensure_pct": (50,), "lat": (35.6,), "lon": (139.7,),
+    "aiseg_url": ("http://192.168.1.216",), "aiseg_user": ("aiseg2",), "aiseg_password": ("pw-test",), "night_heat_pct": (60,),
+    "hot_store_tomorrow": (False,), "hot_auto": (True,), "hot_margin_l": (120,), "prep_hour": (18,), "night_start_hour": (22,),
+    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,),
+    "tank_loss_w_per_k": (1.2,), "night_late_tol_yen": (2.0,), "hot_temp_learn": (False,), "el_rescue": (False,), "el_rescue_min": (5,),
+    "el_rescue_ips": (["192.168.1.30"],), "el_known_ips": (["192.168.1.12"],), "ha_token": ("token-test",),
+    "climate_enabled": (True,), "climate_rules": ([{"entity": "climate.x", "enabled": True, "min": 20, "max": 26, "source": "sensor.t"}],),
+    "tariff_plan": ("custom",), "tariff_contract": (40,), "tariff_fuel": (-1.5,), "tariff_sell": (8.5,),
+    "tariff_custom": ({"basic": 1000, "day_rate": 30, "night_rate": 25, "night_start": 23, "night_end": 7},), "tariff_discounts": (["d1"],),
+    "power_devices": ([{"name": "x", "ip": "192.168.1.20", "eoj": "028801", "type": "meter"}],), "pv_kw": (5.5,), "pv_tilt": (20,),
+    "pv_azimuth": (10,), "solar_need_kwh": (6,), "away_until": (1999999999,), "away_reheat_hours": (4,), "demand_target": ("use",),
+    "demand_limit_kw": (5,), "demand_margin_kw": (0.3,), "demand_notify": (["notify.mobile_app_x"],), "demand_enabled": (True,),
+    "ss_show": (True,), "ss_target_pct": (70, 70.0), "ss_notify": (True,), "ss_notify_kw": (2.0,), "ss_notify_min": (20, 20.0),
+    "ss_notify_from": (10, 10.0), "ss_notify_to": (16, 16.0), "ss_aircon": (True,), "ss_aircon_entities": (["climate.living"],),
+    "ss_aircon_kw": (1.5,), "ss_aircon_offset": (2.0,), "ss_aircon_from": (11, 11.0), "ss_aircon_to": (17, 17.0), "ss_loads": (True,),
+    "ss_loads_min": (5, 5.0), "ss_loads_from": (8, 8.0), "ss_loads_to": (14, 14.0), "ss_partial": (True,),
+    "ss_loads_items": ([{"entity": "switch.ev", "name": "EV", "on_kw": 3, "off_kw": 0.3}],
+                       [{"entity": "switch.ev", "name": "EV", "on_kw": 3.0, "off_kw": 0.3}]),
+    "el_devices": ([{"id": "climate.el_192_168_1_12_013001", "name": "寝室", "room": "寝室"}],),
+    "hot_extra": ([{"date": date.today().isoformat(), "liters": 100, "part": "evening", "note": "来客"}],),
+    "groups": ([{"id": "g1", "name": "おやすみ", "icon": "🌙", "action": "off", "entities": ["light.a"]}],),
+}
+# サーバーの設定で、画面からは変えないもの（理由）
+CONFIG_NOT_FROM_SCREEN = {
+    "ha_url": "サーバーの起動時に Home Assistant のアドレスが決まっているときは、画面からは変えない（鍵をほかへ送らせないため）",
+}
+
+
+class TestConfigSave(unittest.TestCase):
+    """実際に HTTP で /config に送って、保存・読み直し・ファイルへの書き込みを確かめる"""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.dir = tempfile.mkdtemp()
+        cls.m = load("homepanel-solar.py", {"SOLAR_DIR": cls.dir, "HOMEPANEL_HA_URL": "http://ha.test:8123"})
+        m = cls.m
+        # 外への通信はしない
+        m["outdoor_temps"] = lambda: {}
+        m["forecast_mean"] = lambda d: None
+        m["rate_at"] = lambda dt: None
+        cls.token = m["local_token"]()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), m["Api"])
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def req(self, method, path, body=None):
+        import urllib.request
+        data = json.dumps(body).encode() if body is not None else None
+        r = urllib.request.Request(self.url + path, data=data, method=method,
+                                   headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(r, timeout=30) as res:
+                return res.status, json.loads(res.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    def test_every_key_has_a_sample(self):
+        missing = set(self.m["DEFAULT_CONF"]) - set(CONFIG_SAMPLES) - set(CONFIG_NOT_FROM_SCREEN)
+        self.assertEqual(missing, set(), "新しい設定の項目は、CONFIG_SAMPLES に保存のテストを足してください")
+
+    def test_each_key_saves_and_persists(self):
+        m = self.m
+        secret = m["SECRET_CONF"]
+        failed = []
+        for k, v in CONFIG_SAMPLES.items():
+            send, want = v[0], (v[1] if len(v) > 1 else v[0])
+            code, res = self.req("POST", "/config", {k: send})
+            if code != 200 or "error" in res:
+                failed.append(f"{k}: {code} {res.get('error')}")
+                continue
+            if k in (res.get("ignored") or []):
+                failed.append(f"{k}: 受け付けられませんでした")
+                continue
+            # 画面に返る設定（秘密の項目は「登録済み」だけ）
+            code, st = self.req("GET", "/status")
+            c = st.get("config") or {}
+            if k in secret:
+                if not c.get(k + "_set") or k in c:
+                    failed.append(f"{k}: 秘密の項目の扱いが違います")
+            elif c.get(k) != want:
+                failed.append(f"{k}: 読み直すと {c.get(k)!r}（送ったのは {send!r}）")
+            # ファイルにも書かれている（再起動しても残る）
+            with open(m["CONF_PATH"], encoding="utf-8") as f:
+                saved = json.load(f)
+            if saved.get(k) != want:
+                failed.append(f"{k}: ファイルには {saved.get(k)!r}")
+        self.assertEqual(failed, [])
+
+    def test_rejected_values_report_errors(self):
+        for k, bad in (("ss_aircon_entities", ["light.x"]), ("el_rescue_ips", ["8.8.8.8"]), ("demand_notify", ["mail.x"]),
+                       ("ss_loads_items", [{"entity": "climate.x"}]), ("hot_extra", [{"date": "tomorrow"}]), ("ss_target_pct", "abc")):
+            code, res = self.req("POST", "/config", {k: bad})
+            self.assertEqual(code, 400, k)
+            self.assertIn("error", res, k)
+
+    def test_unknown_key_is_reported(self):
+        code, res = self.req("POST", "/config", {"no_such_setting": 1})
+        self.assertEqual(code, 200)
+        self.assertEqual(res.get("ignored"), ["no_such_setting"])
+
+    def test_apps_send_only_known_keys(self):
+        """Android 版・iPad 版が /config に送る項目が、すべてサーバーで受け付ける項目であること（打ち間違いで黙って捨てられないように）"""
+        import glob
+        import re
+        root = os.path.dirname(SERVER)
+        sent = {}
+        for f in glob.glob(os.path.join(root, "app/src/main/java/jp/home/panel/*.kt")):
+            with open(f, encoding="utf-8") as fh:
+                src = fh.read()
+            for rx in (r'setServerConf\(\s*"([a-z0-9_]+)"', r'\bsave\(\s*"([a-z0-9_]+)"\s+to', r',\s*"(tariff_[a-z0-9_]+)"\s+to',
+                       r'(?:serverPost|serverCall)\("/config",\s*JSONObject\(\)\.put\("([a-z0-9_]+)"'):
+                for k in re.findall(rx, src):
+                    sent.setdefault(k, os.path.basename(f))
+        with open(os.path.join(root, "web/app.js"), encoding="utf-8") as fh:
+            web = fh.read()
+        # iPad 版：loadSolar("/config", { 項目: … }) の最初の項目（中の { … } は機器の中身なので数えない）
+        for k in re.findall(r'(?:loadSolar|solarApi)\("/config",\s*\{\s*([a-z][a-z0-9_]*)\s*:', web):
+            sent.setdefault(k, "app.js")
+        for k in re.findall(r'data-set="ss(?:Bool|Num)" data-id="([a-z0-9_]+)"', web) + re.findall(r'ssChips\("([a-z0-9_]+)"', web) + \
+                re.findall(r'ssOption\("([a-z0-9_]+)"', web):
+            sent.setdefault(k, "app.js")
+        for k in re.findall(r'ssHours\(c, "([a-z0-9_]+)"', web):
+            sent.setdefault(k + "_from", "app.js")
+            sent.setdefault(k + "_to", "app.js")
+        # 本文を組み立てて送る項目（自動温度調整・Home Assistant の鍵・AiSEG2・発電の設定など）
+        for k in ("climate_enabled", "climate_rules", "ha_token", "aiseg_url", "aiseg_password", "power_devices", "lat", "lon",
+                  "demand_enabled", "demand_limit_kw", "demand_margin_kw", "demand_notify", "demand_target", "start_hour", "end_hour",
+                  "plan_hour", "shift", "threshold_w", "enabled"):
+            sent.setdefault(k, "MainViewModel.kt")
+        self.assertGreater(len(sent), 40)
+        unknown = {k: f for k, f in sent.items() if k not in self.m["DEFAULT_CONF"] and k not in CONFIG_NOT_FROM_SCREEN}
+        self.assertEqual(unknown, {}, "アプリが送っているのに、サーバーが受け付けない設定の項目")
+
+
+class TestWebParseNum(unittest.TestCase):
+    """iPad 版で入れた数字の読み取り（全角・単位つき）。node が無ければ飛ばす"""
+
+    def test_parse_num(self):
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node がありません")
+        with open(os.path.join(os.path.dirname(SERVER), "web/app.js"), encoding="utf-8") as fh:
+            src = fh.read()
+        m = re.search(r"  function parseNum\(t\) \{.*?\n  \}\n", src, re.S)
+        self.assertIsNotNone(m, "app.js に parseNum がありません")
+        cases = {"８．５": 8.5, "16円/kWh": 16, "1,200円": 1200, "2,5": 2.5, "－１．５": -1.5, " 25℃ ": 25, "abc": None, "": None}
+        js = m.group(0) + "console.log(JSON.stringify(" + json.dumps(list(cases)) + ".map(parseNum)));"
+        out = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30).stdout)
+        self.assertEqual(out, list(cases.values()))
+
+
+class TestCameraConfigSave(unittest.TestCase):
+    """カメラの設定：保存して読み直せること、保存できないカメラはエラーで知らせること"""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.dir = tempfile.mkdtemp()
+        cls.m = load("homepanel-camera.py", {"CAMERA_DIR": cls.dir, "HOMEPANEL_HA_URL": "http://ha.test:8123"})
+        cls.m["ensure_workers"] = lambda: None  # 記録は始めない
+        cls.token = cls.m["local_token"]()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), cls.m["Api"])
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    req = TestConfigSave.req
+
+    def test_save_cameras_and_threshold(self):
+        cams = [{"id": "c1", "name": "玄関", "kind": "ha", "entity": "camera.genkan"},
+                {"id": "c2", "name": "庭", "kind": "rtsp", "url": "rtsp://192.168.1.60/stream"}]
+        code, res = self.req("POST", "/config", {"cameras": cams, "threshold": 3.0, "ha_token": "t"})
+        self.assertEqual(code, 200, res)
+        with open(self.m["CONF_PATH"], encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual([c["id"] for c in saved["cameras"]], ["c1", "c2"])
+        self.assertEqual(saved["threshold"], 3.0)
+        self.assertEqual(saved["ha_token"], "t")
+        # url を送らなければ、前の url のまま
+        code, res = self.req("POST", "/config", {"cameras": [{"id": "c2", "name": "庭", "kind": "rtsp"}]})
+        self.assertEqual(code, 200, res)
+        with open(self.m["CONF_PATH"], encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["cameras"][0]["url"], "rtsp://192.168.1.60/stream")
+
+    def test_bad_camera_is_reported_not_dropped(self):
+        before = [dict(c) for c in self.m["conf"]["cameras"]]
+        code, res = self.req("POST", "/config", {"cameras": [{"id": "x", "name": "裏", "kind": "rtsp", "url": "http://evil/"}]})
+        self.assertEqual(code, 400)
+        self.assertIn("裏", res.get("error", ""))
+        self.assertEqual(self.m["conf"]["cameras"], before)
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

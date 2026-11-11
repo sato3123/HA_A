@@ -2083,8 +2083,18 @@
     return `<span class="numin"><button class="tb" data-set="${set}" ${extra} data-d="-1">−</button><input type="number" inputmode="decimal" step="0.5" data-set="${set}" ${extra} data-d="in" value="${esc(String(value))}"><span class="u">${unit}</span><button class="tb" data-set="${set}" ${extra} data-d="1">＋</button></span>`;
   }
   /** −／＋ なら step だけ足し、入力欄なら書かれた値にする（範囲に入れる） */
+  /** 入れた文字を数字として読む（全角の数字・小数点・マイナス、3桁のカンマ、「円」「L」「℃」などの単位が混ざっていても）。読めなければ null */
+  function parseNum(t) {
+    let x = String(t == null ? "" : t).replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+      .replace(/[．。]/g, ".").replace(/[－−ー‐―]/g, "-").replace(/，/g, ",").trim()
+      .replace(/(\d),(?=\d{3}(\D|$))/g, "$1").replace(",", ".").replace(/\s|円|／?\/?kWh|kW|L|℃|%|％|時/g, "");
+    if (x === "") return null;
+    const v = Number(x);
+    return isFinite(v) ? v : null;
+  }
   function numFrom(el, cur, step, min, max) {
-    let v = el.dataset.d === "in" ? Number(String(el.value).replace(",", ".")) : Number(cur) + Number(el.dataset.d) * step;
+    let v = el.dataset.d === "in" ? parseNum(el.value) : Number(cur) + Number(el.dataset.d) * step;
+    if (v === null) v = NaN;
     if (isNaN(v)) v = Number(cur);
     if (el.dataset.d !== "in") v = Math.round(v / step) * step;
     return Math.round(Math.max(min, Math.min(max, v)) * 10) / 10;

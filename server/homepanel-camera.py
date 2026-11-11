@@ -423,17 +423,24 @@ class Api(BaseHTTPRequestHandler):
                     # 送られてきた一覧で置き換える（url を送らなかったカメラは前の url を使う）
                     old = {c["id"]: c for c in conf["cameras"]}
                     new = []
+                    bad = []
                     for c in b["cameras"]:
-                        if not c.get("id"):
+                        if not isinstance(c, dict) or not c.get("id"):
+                            bad.append("（名前の無いカメラ）")
                             continue
                         # 読む先は RTSP のカメラか、Home Assistant のカメラだけ（ほかのファイルやサーバーを読ませない）
                         if c.get("kind") == "rtsp" and c.get("url") and not re.match(r"rtsps?://", str(c["url"])):
+                            bad.append(f"{c.get('name') or c['id']}（アドレスは rtsp:// で始めてください）")
                             continue
                         if c.get("kind") != "rtsp" and not re.fullmatch(r"camera\.[a-z0-9_]+", str(c.get("entity", ""))):
+                            bad.append(f"{c.get('name') or c['id']}（Home Assistant のカメラ camera.〇〇 を選んでください）")
                             continue
                         if c.get("kind") == "rtsp" and not c.get("url") and c["id"] in old:
                             c["url"] = old[c["id"]].get("url", "")
                         new.append(c)
+                    if bad:
+                        # 黙って捨てずに、保存できなかったカメラを知らせる（何も変えない）
+                        return self._send(400, {"error": "保存できないカメラがあります：" + "、".join(bad)})
                     conf["cameras"] = new
                 save_json(CONF_PATH, conf)
             ensure_workers()

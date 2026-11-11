@@ -25,6 +25,27 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * 入れた文字を数字として読む。日本語の入力で入りやすい全角の数字・小数点（．。）・マイナス（－ − ー）、
+ * 3桁ごとのカンマ、「円」「/kWh」「L」「℃」などの単位が混ざっていても読む。空なら empty、読めなければ null
+ */
+fun parseNum(t: String, empty: Double? = null): Double? {
+    val half = buildString {
+        for (c in t) append(
+            when (c) {
+                in '０'..'９' -> '0' + (c - '０')
+                '．', '。', '，' -> if (c == '，') ',' else '.'
+                '－', '−', 'ー', '‐', '―' -> '-'
+                '＋' -> '+'
+                else -> c
+            }
+        )
+    }.trim().replace(Regex("""(?<=\d),(?=\d{3}(\D|$))"""), "").replace(',', '.')
+        .replace(Regex("""\s|円|／?/?kWh|kW|ｋＷｈ|Ｌ|L|℃|%|％|時"""), "")
+    if (half.isBlank()) return empty
+    return half.toDoubleOrNull()
+}
+
 private fun numStr(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else String.format("%.1f", v)
 
 /**
@@ -45,7 +66,7 @@ fun NumField(
     var focused by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     LaunchedEffect(value) {
-        if (!focused || text.replace(',', '.').toDoubleOrNull() != value) text = numStr(value)
+        if (!focused || parseNum(text) != value) text = numStr(value)
     }
     fun snap(v: Double) = (Math.round(v / step) * step).coerceIn(min, max).let { Math.round(it * 10) / 10.0 }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -55,7 +76,7 @@ fun NumField(
             onValueChange = { s ->
                 val t = s.filter { it.isDigit() || it == '.' || it == ',' }.take(5)
                 text = t
-                t.replace(',', '.').toDoubleOrNull()?.let { v -> if (v in min..max) onChange(Math.round(v * 10) / 10.0) }
+                parseNum(t)?.let { v -> if (v in min..max) onChange(Math.round(v * 10) / 10.0) }
             },
             singleLine = true,
             suffix = { Text(unit) },
@@ -65,7 +86,7 @@ fun NumField(
             modifier = Modifier.width(if (big) 120.dp else 104.dp).onFocusChanged { f ->
                 if (focused && !f.isFocused) {
                     // 入力を終えたら、刻みにそろえて範囲に入れる
-                    val v = text.replace(',', '.').toDoubleOrNull()?.let(::snap) ?: value
+                    val v = parseNum(text)?.let(::snap) ?: value
                     if (v != value) onChange(v)
                     text = numStr(v)
                 }

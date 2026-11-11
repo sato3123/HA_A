@@ -93,6 +93,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // 設定を保存できなかったときなど、どの画面にいても分かるように短く知らせる
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.toastRequest.collect { msg -> Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show() }
+            }
+        }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 vm.launchRequest.collect { intent ->

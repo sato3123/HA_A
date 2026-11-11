@@ -162,13 +162,19 @@ fun TariffSettings(vm: MainViewModel) {
         // 燃料費調整額・売電単価
         var fuel by remember(sc["tariff_fuel"]) { mutableStateOf((sc["tariff_fuel"] as? Number)?.toDouble()?.let { fmtNum(it) } ?: "0") }
         var sell by remember(sc["tariff_sell"]) { mutableStateOf((sc["tariff_sell"] as? Number)?.toDouble()?.let { fmtNum(it) } ?: "0") }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(fuel, { fuel = it }, label = { Text("燃料費調整額（公表値が無い月・円/kWh）") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.widthIn(max = 220.dp))
-            OutlinedTextField(sell, { sell = it }, label = { Text("売電の単価（円/kWh）") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.widthIn(max = 220.dp))
-            Button(onClick = { save("tariff_fuel" to (fuel.toDoubleOrNull() ?: 0.0), "tariff_sell" to (sell.toDoubleOrNull() ?: 0.0)) }) { Text("保存") }
-        }
+        // 狭い画面でも「保存」が隠れないように、縦に並べる。全角の数字・「円」などが入っても読めるようにする
+        val fuelV = parseYen(fuel)
+        val sellV = parseYen(sell)
+        OutlinedTextField(fuel, { fuel = it }, label = { Text("燃料費調整額（公表値が無い月・円/kWh）") }, singleLine = true,
+            isError = fuelV == null, supportingText = if (fuelV == null) ({ Text("数字で入れてください（例：-1.5）") }) else null,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp))
+        OutlinedTextField(sell, { sell = it }, label = { Text("売電の単価（円/kWh）") }, singleLine = true,
+            isError = sellV == null || sellV < 0, supportingText = if (sellV == null || sellV < 0) ({ Text("0 以上の数字で入れてください（例：8.5）") }) else null,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp))
+        Button(
+            enabled = fuelV != null && sellV != null && sellV >= 0,
+            onClick = { save("tariff_fuel" to fuelV!!, "tariff_sell" to sellV!!) },
+        ) { Text("燃料費調整額と売電の単価を保存") }
         Text(
             "燃料費調整額は毎月変わります。単価表に電力会社の公表値がある月はそれを自動で使い、無い月（まだ公表されていない月など）はここに入れた値を使います（検針票の「燃料費調整単価」。マイナスのこともあります）。売電の単価は、太陽光の買取の契約の単価です。\n" +
                 "※ 単価は各社の公式の料金表をもとにしていますが、実際の請求額と少しずれることがあります（ポイント・割引・端数の扱いなど）。料金表が変わったときは単価表を更新します。",
@@ -179,6 +185,8 @@ fun TariffSettings(vm: MainViewModel) {
 }
 
 private fun seasonName(k: String) = when (k) { "summer" -> "夏"; "springautumn" -> "春秋"; "other" -> "その他の季節"; else -> k }
+
+private fun parseYen(t: String): Double? = parseNum(t, empty = 0.0)
 
 private fun fmtNum(d: Double) = if (d % 1.0 == 0.0) d.toInt().toString() else d.toString()
 
@@ -204,9 +212,9 @@ private fun CustomTariff(sc: Map<String, Any?>, onSave: (JSONObject) -> Unit) {
             OutlinedTextField(ne, { ne = it }, label = { Text("夜の終わり（時）") }, singleLine = true, keyboardOptions = num, modifier = Modifier.widthIn(max = 140.dp))
         }
         Button(onClick = {
-            onSave(JSONObject().put("basic", basic.toDoubleOrNull() ?: 0.0).put("day_rate", day.toDoubleOrNull() ?: 0.0)
-                .put("night_rate", night.toDoubleOrNull() ?: JSONObject.NULL)
-                .put("night_start", ns.toIntOrNull() ?: 23).put("night_end", ne.toIntOrNull() ?: 7))
-        }, enabled = day.toDoubleOrNull() != null) { Text("この単価で計算する") }
+            onSave(JSONObject().put("basic", parseNum(basic, 0.0) ?: 0.0).put("day_rate", parseNum(day) ?: 0.0)
+                .put("night_rate", parseNum(night) ?: JSONObject.NULL)
+                .put("night_start", parseNum(ns)?.toInt() ?: 23).put("night_end", parseNum(ne)?.toInt() ?: 7))
+        }, enabled = parseNum(day) != null && parseNum(basic, 0.0) != null) { Text("この単価で計算する") }
     }
 }
