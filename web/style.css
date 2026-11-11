@@ -265,8 +265,11 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 /* ---- スマートフォン（幅の狭い画面） ---- */
 @media (max-width: 600px) {
   .wrap { padding: 8px 10px 40px; }
-  .top .tl { display: none; }
-  .top .ti { font-size: 20px; }
+  /* UI-001：狭い画面でもアイコンだけにせず、短い名前を下に出す（折り返して収める） */
+  .top { flex-wrap: wrap; row-gap: 4px; }
+  .top .tbtn { display: inline-flex; flex-direction: column; align-items: center; gap: 0; padding: 4px 6px; min-width: 52px; }
+  .top .tl { display: block; font-size: 12px; line-height: 1.2; white-space: nowrap; }
+  .top .ti { font-size: 20px; line-height: 1.2; }
   .time { font-size: 40px; }
   .hero { gap: 6px 14px; }
   .hero .vbox { margin-left: 0; width: 100%; justify-content: space-between; }
@@ -291,7 +294,8 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 #energy:empty + #solar .card.solar { margin-top: 0; }
 .conn { display: inline-flex; align-items: center; gap: 6px; border-radius: 16px; padding: 3px 10px; font-size: 14px; font-weight: 600; }
 .conn .ci { font-size: 20px; }
-@media (max-width: 600px) { .conn .cl { display: none; } }
+/* UI-019：狭い画面でも状態の文字を消さない（小さくして残す） */
+@media (max-width: 600px) { .conn .cl { font-size: 12px; } .conn { padding: 3px 8px; } }
 
 /* ---- エコキュートの日ごとのお湯 ---- */
 .hwrow { display: flex; align-items: center; gap: 8px; font-size: 14px; }
@@ -358,3 +362,22 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 /* いま自動で動いていること・自給率 */
 .estrip .auto { color: var(--primary); font-size: 14px; flex-basis: 100%; }
 .estrip .ssrate { flex-basis: 100%; }
+
+
+/* ==== UI-002：押しやすい大きさ（見た目は変えず、押せる範囲を 44px 以上に） ==== */
+.ibtn { width: 44px; height: 44px; border-radius: 50%; }
+.cstep .tb { width: 44px; height: 44px; min-width: 44px; }
+.tbtn { min-height: 44px; }
+.chip { min-height: 40px; }
+.chip.sm { min-height: 36px; }
+.btn { min-height: 44px; }
+/* スイッチは見た目の外側まで押せるようにする（UI-002・UI-003） */
+.sw::after { content: ""; position: absolute; inset: -8px -6px; }
+/* UI-003：タイルの「名前（詳細・実行）」「ⓘ（情報）」「スイッチ（入／切）」の境目を見えるように */
+.head .ibtn { background: var(--surface2); opacity: 1; font-size: 17px; }
+.head .sw { margin-left: 6px; }
+.head .ibtn + .sw { box-shadow: -7px 0 0 -6px var(--outline); }
+/* ==== UI-008：削除などの危険な操作は色と位置で分ける ==== */
+.tbtn.danger { color: var(--error); }
+.btn.danger { background: none; color: var(--error); border: 1px solid var(--error); }
+.brow .push { margin-left: auto; }

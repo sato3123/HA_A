@@ -50,6 +50,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -396,8 +398,17 @@ private fun RoomFilterRow(rooms: List<Room>, selected: String?, onSelect: (Strin
 @Composable
 private fun TopButton(icon: String, label: String, compact: Boolean, onClick: () -> Unit) {
     if (compact) {
-        TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 6.dp), modifier = Modifier.size(width = 44.dp, height = 44.dp)) {
-            Text(icon, fontSize = 20.sp)
+        // 狭い画面でも、アイコンだけにせず短い名前を下に出す（UI-001）。押せる大きさは 48dp 以上（UI-002）
+        TextButton(
+            onClick = onClick,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+            modifier = Modifier.heightIn(min = 52.dp).widthIn(min = 52.dp)
+                .then(Modifier.semantics { contentDescription = label }),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(icon, fontSize = 20.sp, lineHeight = 22.sp)
+                Text(label, fontSize = 12.sp, lineHeight = 14.sp, maxLines = 1)
+            }
         }
     } else {
         TextButton(onClick = onClick) { Text("$icon $label") }

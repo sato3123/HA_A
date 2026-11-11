@@ -2169,7 +2169,7 @@
         if (op[2] === "mode_temp" && !["fan_only", "dry"].includes(a.data.hvac_mode)) param += `<div class="brow" style="align-items:center"><span class="sl">設定温度</span>${numInputHTML("actTemp", a.data.temperature ?? 25, "℃", `data-id="${i}"`)}</div>`;
       }
       return `<div class="act"><div class="head"><div class="ht"><div class="dom">${esc(DOMAIN_LABEL2[d] || d)}${isElId(a.entity) ? "・ECHONET Lite（サーバーが操作）" : ""}</div><div class="name">${esc(entName(a.entity))}</div></div>
-        <button class="tbtn" data-set="actDel" data-id="${i}">削除</button></div>
+        <button class="tbtn danger" data-set="actDel" data-id="${i}">削除</button></div>
         <div class="chips">${ops.map((o, j) => `<button class="chip${j === oi ? " sel" : ""}" data-set="actOp" data-id="${i}" data-j="${j}">${esc(o[1])}</button>`).join("")}</div>${param}</div>`;
     }).join("");
     return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="editCancel">← キャンセル</button>
@@ -2188,7 +2188,7 @@
       <div class="summary" id="ruleSummary">内容：${esc(ruleSummary(r))}</div>
       ${S.editError ? `<div class="warn">${esc(S.editError)}</div>` : ""}
       <div class="brow" style="margin:12px 0 40px"><button class="btn" data-set="ruleSave" ${S.saving ? "disabled" : ""}>${S.saving ? "保存しています…" : "保存"}</button>
-        ${r.isNew ? "" : `<button class="btn outline" data-set="ruleDelete">削除</button>`}</div></div>`;
+        ${r.isNew ? "" : `<button class="btn danger push" data-set="ruleDelete">この自動化を削除</button>`}</div></div>`;
   }
 
   function renderAuto() {
@@ -2694,7 +2694,7 @@
       <div class="chips" style="margin:8px 0">${list.map((p) => `<button class="chip${p.id === cur.id ? " sel" : ""}" data-set="profile" data-id="${esc(p.id)}">👤 ${esc(p.name)}</button>`).join("")}
         <button class="tbtn" data-set="profileAdd">＋ 追加</button></div>
       <div class="card" style="margin-bottom:8px"><div class="brow" style="align-items:center"><b style="flex:1">「${esc(cur.name)}」のホーム画面</b>
-        <button class="tbtn" data-set="profileRename">名前を変える</button>${list.length > 1 ? `<button class="tbtn" data-set="profileDel">削除</button>` : ""}</div>
+        <button class="tbtn" data-set="profileRename">名前を変える</button>${list.length > 1 ? `<button class="tbtn danger" data-set="profileDel">削除</button>` : ""}</div>
         ${cur.sections.map((s, i) => {
           const label = (SECTIONS.find(([k]) => k === s.key) || [])[1] || s.key;
           return `<div class="row" style="cursor:default"><button class="tbtn" data-set="secUp" data-id="${i}" ${i === 0 ? "disabled" : ""}>▲</button>
@@ -3226,7 +3226,7 @@
     const until = j.away_until ? j.away_until * 1000 : 0;
     if (until > Date.now()) {
       return `<div class="brow" style="align-items:center"><span class="fl" style="flex:1">🧳 留守：${jstTime(until)} に帰る予定（${j.away === "reheat" ? "帰る前なので沸かしています" : "沸き上げを止めています"}）</span>
-        <button class="tbtn" data-set="awayOpen">変更</button><button class="tbtn" data-set="awayCancel">取り消す</button></div>${S.awayOpen ? awayFormHTML(j) : ""}`;
+        <button class="tbtn" data-set="awayOpen">変更</button><button class="tbtn danger" data-set="awayCancel">取り消す</button></div>${S.awayOpen ? awayFormHTML(j) : ""}`;
     }
     return S.awayOpen ? awayFormHTML(j) : `<div class="brow"><button class="btn outline" data-set="awayOpen">🧳 留守にする（沸き上げを止める）</button></div>`;
   }
@@ -4087,7 +4087,7 @@
           <div class="note">▲▼ で、ホーム画面に並べる部屋の順番を変えられます。</div>
           ${rs.map((r, i) => `<div class="row" style="cursor:default"><button class="tbtn" data-set="roomUp" data-id="${esc(r.key)}" ${i === 0 ? "disabled" : ""}>▲</button><button class="tbtn" data-set="roomDown" data-id="${esc(r.key)}" ${i === rs.length - 1 ? "disabled" : ""}>▼</button>
             <span class="rt">${esc(r.name)}<div class="sub">${r.ha ? "Home Assistant のエリア" : "アプリで追加した部屋"}</div></span>
-            ${r.ha ? "" : `<button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn" data-set="roomDel" data-id="${esc(r.key)}">削除</button>`}</div>`).join("")}
+            ${r.ha ? "" : `<button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn danger" data-set="roomDel" data-id="${esc(r.key)}">削除</button>`}</div>`).join("")}
           <div class="brow" style="align-items:center;margin-top:6px"><input class="search" id="newRoom" type="text" placeholder="部屋を追加（例：子ども部屋）" style="max-width:320px;margin:0">
             <button class="tbtn" data-set="roomAdd">追加</button></div>
           <div class="sec" id="selTitle"></div>
@@ -4267,7 +4267,7 @@
   function buildMain() {
     $("#app").innerHTML = `<div class="ptr" id="ptr"></div><div class="wrap">
       <div class="top"><span class="badge" id="badge"></span><span class="profbar" id="profileBar"></span><span class="sp"></span>
-        <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
+        <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp" aria-label="使い方"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers" aria-label="タイマー"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto" aria-label="自動化"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings" aria-label="設定"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
       <div class="msg hidden" id="msg"></div>
       <div id="guide"></div>

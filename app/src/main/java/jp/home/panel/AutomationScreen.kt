@@ -385,7 +385,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
             Text("内容：" + ruleSummary(rule, nameOf), modifier = Modifier.padding(12.dp))
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
                     error = validate(rule)
@@ -399,7 +399,14 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                 },
                 enabled = !saving,
             ) { Text(if (saving) "保存しています…" else "保存") }
-            if (!isNew) OutlinedButton(onClick = { confirmDelete = true }) { Text("削除") }
+            if (!isNew) {
+                // 保存と離して、危険な色で（UI-008）。確認のダイアログはこれまでどおり
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = { confirmDelete = true },
+                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("この自動化を削除") }
+            }
         }
         Spacer(Modifier.size(32.dp))
     }
@@ -475,7 +482,7 @@ private fun ActionCard(act: Act, entity: Entity?, name: String, onChange: (Act) 
                     Text(domainLabel(domain) + if (isEchonetEntity(act.entityId)) "・ECHONET Lite（ホームパネルのサーバーが操作）" else "", style = MaterialTheme.typography.labelSmall)
                     Text(name, style = MaterialTheme.typography.titleMedium)
                 }
-                TextButton(onClick = onRemove) { Text("削除") }
+                TextButton(onClick = onRemove, colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("削除") }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 opsFor(domain).forEach { op ->

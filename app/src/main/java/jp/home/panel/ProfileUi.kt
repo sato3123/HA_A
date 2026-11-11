@@ -120,7 +120,7 @@ fun ProfileSettings(vm: MainViewModel) {
                         modifier = Modifier.weight(1f).then(Modifier),
                     )
                     TextButton(onClick = { rename = current }) { Text("名前を変える") }
-                    if (profiles.size > 1) TextButton(onClick = { confirmDelete = current }) { Text("削除") }
+                    if (profiles.size > 1) TextButton(onClick = { confirmDelete = current }, colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("削除") }
                 }
                 current.sections.forEachIndexed { i, sp ->
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

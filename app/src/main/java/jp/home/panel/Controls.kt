@@ -34,6 +34,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -120,7 +122,7 @@ fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
         androidx.compose.material3.TextButton(
             onClick = { vm.showInfo(e.entityId) },
             contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-            modifier = Modifier.size(36.dp),
+            modifier = Modifier.size(48.dp).semantics { contentDescription = "${e.name} の詳細" },
         ) { Text("ⓘ", fontSize = 18.sp) }
     }
     val names: @Composable (Modifier) -> Unit = { m ->
@@ -382,11 +384,11 @@ private fun CompactStepper(value: Double, min: Double, max: Double, step: Double
     fun snap(v: Double) = (Math.round(v / step) * step).coerceIn(min, max)
     val pad = androidx.compose.foundation.layout.PaddingValues(0.dp)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min, contentPadding = pad, modifier = Modifier.size(40.dp)) {
+        FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min, contentPadding = pad, modifier = Modifier.size(48.dp)) {
             Text("−", fontSize = 20.sp)
         }
         Text("${fmt(shown)}℃", fontSize = 22.sp, modifier = Modifier.padding(horizontal = 8.dp))
-        FilledTonalButton(onClick = { pending = snap(shown + step) }, enabled = shown < max, contentPadding = pad, modifier = Modifier.size(40.dp)) {
+        FilledTonalButton(onClick = { pending = snap(shown + step) }, enabled = shown < max, contentPadding = pad, modifier = Modifier.size(48.dp)) {
             Text("＋", fontSize = 20.sp)
         }
     }
@@ -401,7 +403,7 @@ private fun MenuButton(title: String, selected: String, options: List<String>, l
         androidx.compose.material3.OutlinedButton(
             onClick = { open = true },
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-            modifier = Modifier.heightIn(min = 40.dp),
+            modifier = Modifier.heightIn(min = 48.dp),
         ) {
             Text("$title：" + (selected.takeIf { it.isNotBlank() && it != "null" }?.let(label) ?: "－") + " ▾", maxLines = 1)
         }

@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -163,15 +166,19 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             }
             itemsIndexed(rooms, key = { _, r -> "r_" + r.key }) { i, r ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    TextButton(onClick = { vm.moveRoom(r.key, -1) }, enabled = i > 0) { Text("▲") }
-                    TextButton(onClick = { vm.moveRoom(r.key, 1) }, enabled = i < rooms.size - 1) { Text("▼") }
+                    TextButton(onClick = { vm.moveRoom(r.key, -1) }, enabled = i > 0,
+                        modifier = Modifier.semantics { contentDescription = "${r.name}を上へ" }) { Text("▲") }
+                    TextButton(onClick = { vm.moveRoom(r.key, 1) }, enabled = i < rooms.size - 1,
+                        modifier = Modifier.semantics { contentDescription = "${r.name}を下へ" }) { Text("▼") }
                     Column(Modifier.weight(1f)) {
                         Text(r.name, style = MaterialTheme.typography.bodyLarge)
                         Text(if (r.fromHa) "Home Assistant のエリア" else "アプリで追加した部屋", style = MaterialTheme.typography.bodySmall)
                     }
                     if (!r.fromHa) {
                         TextButton(onClick = { renameRoom = r }) { Text("名前を変える") }
-                        TextButton(onClick = { vm.deleteRoom(r.key) }) { Text("削除") }
+                        // 削除は危険な操作なので、色を変えて少し離す（UI-008）
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { vm.deleteRoom(r.key) }, colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("削除") }
                     }
                 }
             }
@@ -340,7 +347,7 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
                     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Button(onClick = { remoteError = vm.saveRemoteUrl(remoteInput) }) { Text("保存") }
                         if (remote.isNotEmpty()) {
-                            TextButton(onClick = { remoteInput = ""; vm.saveRemoteUrl("") }) { Text("削除") }
+                            TextButton(onClick = { remoteInput = ""; vm.saveRemoteUrl("") }, colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("削除") }
                         }
                     }
                     Text(
