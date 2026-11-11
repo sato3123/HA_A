@@ -117,6 +117,8 @@ DEFAULT_CONF = {
     "ss_loads": False, "ss_loads_items": [], "ss_loads_min": 10, "ss_loads_from": 9, "ss_loads_to": 16,
     # くもりの日も、昼に沸かせる見込みの分だけ夜の沸き上げを減らす（「夜は止める」方式のとき）
     "ss_partial": False,
+    # つけっぱなしのお知らせ：[{entity, name, hours}]。決めた時間より長く続けて動いていたら、スマートフォンに知らせる（知らせる先は電力の見張りと同じ）
+    "run_alerts": [],
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -1834,6 +1836,67 @@ def el_rescue_tick(now=None, sender=None):
             pass
     el_rescue_state["sent"] = sent
     return sent
+
+
+# ---- つけっぱなしのお知らせ ----
+RUN_ALERT_DOMAINS = ("climate", "switch", "light", "fan", "humidifier", "media_player", "input_boolean", "water_heater")
+run_alert_state = {"sent": {}, "last": {}}
+
+
+def _is_running(st):
+    s_ = (st or {}).get("state")
+    return bool(s_) and s_ not in ("off", "unavailable", "unknown", "idle", "standby", "paused", "closed")
+
+
+def _parse_ha_time(v):
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def run_alert_tick(now=None):
+    """決めた時間より長く続けて動いている機器を、1回だけ知らせる（止まったら、次に動いたときにまた知らせる）。
+    続けて動いている時間は、Home Assistant の「状態が変わった時刻」から数えるので、サーバーを再起動しても数え直さない"""
+    items = [x for x in conf.get("run_alerts") or [] if isinstance(x, dict) and x.get("entity")]
+    if not items or not conf.get("ha_token"):
+        return []
+    now = now or time.time()
+    sent = []
+    for it in items:
+        eid = it["entity"]
+        try:
+            st = ha_state(eid)
+        except Exception as e:
+            run_alert_state["last"][eid] = {"error": str(e)[:80]}
+            continue
+        if not _is_running(st):
+            run_alert_state["sent"].pop(eid, None)
+            run_alert_state["last"][eid] = {"running": False}
+            continue
+        since = _parse_ha_time(st.get("last_changed")) or now
+        hours = max(0.25, min(48.0, float(it.get("hours") or 2)))
+        run_h = (now - since) / 3600
+        run_alert_state["last"][eid] = {"running": True, "since": since, "hours": round(run_h, 2)}
+        if run_h >= hours and run_alert_state["sent"].get(eid) != since:
+            run_alert_state["sent"][eid] = since
+            name = it.get("name") or (st.get("attributes") or {}).get("friendly_name") or eid
+            mode = {"cool": "冷房", "heat": "暖房", "dry": "除湿", "fan_only": "送風", "heat_cool": "自動", "auto": "自動"}.get(st.get("state"), "")
+            msg = (f"{name}{'（' + mode + '）' if mode else ''}が {datetime.fromtimestamp(since).strftime('%H:%M')} から "
+                   f"{run_h:.1f}時間 続けて動いています（お知らせの目安 {hours:g}時間）。消し忘れていないか確かめてください。")
+            log("つけっぱなし：" + msg)
+            ss_notify_send(f"⏰ {name}がつけっぱなしです", msg)
+            sent.append(eid)
+    return sent
+
+
+def run_alert_loop():
+    while True:
+        try:
+            run_alert_tick()
+        except Exception as e:
+            print("つけっぱなしのお知らせでエラー:", e, flush=True)
+        time.sleep(60)
 
 
 def el_rescue_loop():
@@ -3581,6 +3644,7 @@ def public_state():
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "hot_plan": hot_plan_safe(), "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
+                "run_alert_now": {k: v for k, v in run_alert_state["last"].items()},
                 "el_rescue": {"on": bool(conf.get("el_rescue", True)), "targets": el_rescue_targets(), "sent": el_rescue_state["sent"],
                               "every_min": float(conf.get("el_rescue_min") or 3),
                               "at": el_rescue_state["last"] or None, "error": el_rescue_state["error"]},
@@ -3840,6 +3904,14 @@ class Api(BaseHTTPRequestHandler):
                     v = b[k_]
                     if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"(192\.168|10\.\d{1,3})\.\d{1,3}\.\d{1,3}", str(x)) for x in v):
                         return self._ok({"error": "IP アドレスは家の中のもの（192.168.〇.〇 など）を入れてください"}, 400)
+                if "run_alerts" in b:
+                    v = b["run_alerts"]
+                    if not isinstance(v, list) or len(v) > 30 or not all(
+                            isinstance(x, dict) and re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", str(x.get("entity", ""))) and str(x["entity"]).split(".")[0] in RUN_ALERT_DOMAINS
+                            for x in v):
+                        return self._ok({"error": "つけっぱなしのお知らせの機器が正しくありません"}, 400)
+                    b["run_alerts"] = [{"entity": x["entity"], "name": str(x.get("name") or "")[:30],
+                                        "hours": max(0.25, min(48.0, float(x.get("hours") or 2)))} for x in v]
                 if "ss_aircon_entities" in b:
                     v = b["ss_aircon_entities"]
                     if not isinstance(v, list) or len(v) > 20 or not all(re.fullmatch(r"climate\.[a-z0-9_]+", str(x)) for x in v):
@@ -4054,6 +4126,7 @@ def main():
     threading.Thread(target=device_timer_loop, daemon=True).start()
     threading.Thread(target=ha_ws_loop, daemon=True).start()
     threading.Thread(target=el_rescue_loop, daemon=True).start()
+    threading.Thread(target=run_alert_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

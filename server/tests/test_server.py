@@ -592,6 +592,8 @@ CONFIG_SAMPLES = {
     "el_devices": ([{"id": "climate.el_192_168_1_12_013001", "name": "寝室", "room": "寝室"}],),
     "hot_extra": ([{"date": date.today().isoformat(), "liters": 100, "part": "evening", "note": "来客"}],),
     "groups": ([{"id": "g1", "name": "おやすみ", "icon": "🌙", "action": "off", "entities": ["light.a"]}],),
+    "run_alerts": ([{"entity": "climate.living", "name": "リビング エアコン", "hours": 3}],
+                   [{"entity": "climate.living", "name": "リビング エアコン", "hours": 3.0}]),
 }
 # サーバーの設定で、画面からは変えないもの（理由）
 CONFIG_NOT_FROM_SCREEN = {
@@ -667,7 +669,7 @@ class TestConfigSave(unittest.TestCase):
 
     def test_rejected_values_report_errors(self):
         for k, bad in (("ss_aircon_entities", ["light.x"]), ("el_rescue_ips", ["8.8.8.8"]), ("demand_notify", ["mail.x"]),
-                       ("ss_loads_items", [{"entity": "climate.x"}]), ("hot_extra", [{"date": "tomorrow"}]), ("ss_target_pct", "abc")):
+                       ("ss_loads_items", [{"entity": "climate.x"}]), ("hot_extra", [{"date": "tomorrow"}]), ("ss_target_pct", "abc"), ("run_alerts", [{"entity": "lock.front", "hours": 2}])):
             code, res = self.req("POST", "/config", {k: bad})
             self.assertEqual(code, 400, k)
             self.assertIn("error", res, k)
@@ -774,6 +776,37 @@ class TestCameraConfigSave(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("裏", res.get("error", ""))
         self.assertEqual(self.m["conf"]["cameras"], before)
+
+
+class TestRunAlert(SolarTestBase):
+    def test_alert_once_per_run(self):
+        m = self.m
+        keep = {k: m["conf"].get(k) for k in ("run_alerts", "ha_token", "demand_notify")}
+        g = {k: m[k] for k in ("ha_state", "ha_call")}
+        calls = []
+        now = time.time()
+        st = {"climate.living": {"state": "heat", "last_changed": datetime.fromtimestamp(now - 4 * 3600).astimezone().isoformat(),
+                                 "attributes": {"friendly_name": "リビング"}},
+              "light.hall": {"state": "off", "last_changed": datetime.fromtimestamp(now - 9 * 3600).astimezone().isoformat()}}
+        try:
+            m["ha_state"] = lambda e: st[e]
+            m["ha_call"] = lambda d, sv, data: calls.append((d, sv, data))
+            m["conf"].update(ha_token="x", demand_notify=["notify.mobile_app_x"],
+                             run_alerts=[{"entity": "climate.living", "name": "", "hours": 3}, {"entity": "light.hall", "name": "廊下", "hours": 1}])
+            m["run_alert_state"]["sent"].clear()
+            self.assertEqual(m["run_alert_tick"](now), ["climate.living"])
+            self.assertEqual(len(calls), 1)
+            self.assertIn("つけっぱなし", calls[0][2]["title"])
+            self.assertIn("暖房", calls[0][2]["message"])
+            self.assertEqual(m["run_alert_tick"](now + 60), [])  # 同じ運転では1回だけ
+            st["climate.living"]["state"] = "off"
+            m["run_alert_tick"](now + 120)
+            st["climate.living"].update(state="cool", last_changed=datetime.fromtimestamp(now + 180).astimezone().isoformat())
+            self.assertEqual(m["run_alert_tick"](now + 3600), [])  # まだ1時間
+            self.assertEqual(m["run_alert_tick"](now + 180 + 3 * 3600 + 1), ["climate.living"])  # 次の運転でまた知らせる
+        finally:
+            m.update(g)
+            m["conf"].update(keep)
 
 
 class TestCamera(unittest.TestCase):

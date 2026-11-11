@@ -2612,6 +2612,7 @@
     ["thermo", "🌡", "温度計", "表示する温度計、名前"],
     ["voice", "🎤", "音声と自宅の位置", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"],
     ["selfsuff", "🌱", "電気の自給率を上げる", "余った電気のお知らせ・エアコン・充電など（使うものを選ぶ）"],
+    ["runalert", "⏰", "つけっぱなしのお知らせ", "エアコンなどが決めた時間より長く動いていたら、スマートフォンに知らせる"],
     ["calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"],
     ["climate", "❄", "エアコンの自動温度調整", "サーバーでの調整の様子、全体のオン/オフ"],
     ["system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"],
@@ -2621,7 +2622,7 @@
     ["oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか", true],
     ["connection", "🌐", "接続", "このアプリのアドレス", true],
     ["account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト", true],
-  ].filter((m) => m[0] !== "selfsuff" || SERVER_MODE);
+  ].filter((m) => !["selfsuff", "runalert"].includes(m[0]) || SERVER_MODE);
 
   // ================= 表示のユーザー（家族ごとのホーム画面） =================
   const SECTIONS = [
@@ -3012,6 +3013,8 @@
     renderGroups();
     const sb = $("#ssBox");
     if (sb) sb.innerHTML = selfSuffHTML();
+    const rb = $("#raBox");
+    if (rb) rb.innerHTML = runAlertHTML();
   }
 
   // ================= 電気の自給率を上げる（どれもオプション。家のサーバーが見張って動かす） =================
@@ -3027,6 +3030,30 @@
     return `<div class="card" style="padding:12px;margin:8px 0"><label class="row" style="padding:0"><span class="rt"><b>${title}</b><div class="sub">${desc}</div></span>
       <input type="checkbox" data-set="ssBool" data-id="${key}" ${on ? "checked" : ""}></label>${on ? `<div style="margin-top:6px">${body}</div>` : ""}</div>`;
   }
+  // ================= つけっぱなしのお知らせ（家のサーバーが見張る） =================
+  const RUN_ALERT_DOMAINS = ["climate", "switch", "light", "fan", "humidifier", "media_player", "input_boolean", "water_heater"];
+  function runAlertHTML() {
+    const j = S.solar;
+    if (!j || !j.config) return `<div class="note">家のサーバーから設定を読んでいます…</div>`;
+    const c = j.config, now = j.run_alert_now || {};
+    const items = c.run_alerts || [];
+    const targets = c.demand_notify || [];
+    const states = S.ha ? Object.values(S.ha.states) : [];
+    const cands = states.filter((e) => RUN_ALERT_DOMAINS.includes(dom(e)) && !isElId(e.entity_id))
+      .sort((a, b) => (items.some((x) => x.entity === b.entity_id) - items.some((x) => x.entity === a.entity_id)) || (dom(a) !== "climate") - (dom(b) !== "climate") || entName(a.entity_id).localeCompare(entName(b.entity_id), "ja"));
+    return `<div class="note">選んだ機器が、決めた時間より長く続けて動いていたら、スマートフォンに知らせます（1回の運転につき1回）。家のサーバーが1分ごとに見張るので、この画面を閉じていても働きます。</div>
+      ${c.ha_token_set ? "" : `<div class="warn">サーバーに Home Assistant の鍵の登録が必要です（Android 版の「エアコンの自動温度調整」から登録できます）。</div>`}
+      <div class="${targets.length ? "note" : "warn"}">${targets.length ? "知らせる先：" + esc(targets.map((t) => t.replace("notify.mobile_app_", "")).join("、")) : "知らせる先がまだありません。Android 版の「お湯（エコキュート）と太陽光」→「知らせる先」で、スマートフォンを選んでください。"}</div>
+      ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
+      ${cands.slice(0, 60).map((e) => {
+        const it = items.find((x) => x.entity === e.entity_id);
+        const r = now[e.entity_id];
+        return `<label class="row"><input type="checkbox" data-set="raToggle" data-id="${esc(e.entity_id)}" ${it ? "checked" : ""}>
+            <span class="rt">${esc(entName(e.entity_id))}${r && r.running ? `<div class="sub" style="color:var(--primary)">いま ${Number(r.hours).toFixed(1)}時間 続けて動いています</div>` : ""}</span></label>
+          ${it ? `<div style="margin-left:36px"><div class="note">この時間より長く動いていたら知らせる</div><div class="chips">${[1, 2, 3, 4, 6, 8, 12].map((v) => `<button class="chip${Number(it.hours) === v ? " sel" : ""}" data-set="raHours" data-id="${esc(e.entity_id)}" data-v="${v}">${v}時間</button>`).join("")}</div></div>` : ""}`;
+      }).join("") || `<div class="note">機器が見つかりません</div>`}`;
+  }
+
   function selfSuffHTML() {
     const j = S.solar;
     if (!j || !j.config) return `<div class="note">家のサーバーから設定を読んでいます…</div>`;
@@ -3554,7 +3581,7 @@
   }
   function afterSettingsOpen() {
     const p = S.page === "settings" && S.settingsPage;
-    if (p === "selfsuff") loadSolar();
+    if (p === "selfsuff" || p === "runalert") loadSolar();
     if (p === "climate") loadClimate();
     else if (p === "camrec") loadCamRec();
     else if (p === "oplog") loadOpLog();
@@ -3584,6 +3611,17 @@
       case "hotAuto": loadSolar("/config", { hot_auto: el.checked }); return true;
       case "heatGuard": loadSolar("/config", { heat_guard: el.checked }); return true;
       case "ssBool": loadSolar("/config", { [id]: el.checked }); return true;
+      case "raToggle": {
+        const cur = (S.solar && S.solar.config && S.solar.config.run_alerts) || [];
+        const e = S.ha && S.ha.states[id];
+        loadSolar("/config", { run_alerts: el.checked ? [...cur.filter((x) => x.entity !== id), { entity: id, name: entName(id), hours: e && dom(e) === "climate" ? 4 : 2 }] : cur.filter((x) => x.entity !== id) });
+        return true;
+      }
+      case "raHours": {
+        const cur = (S.solar && S.solar.config && S.solar.config.run_alerts) || [];
+        loadSolar("/config", { run_alerts: cur.map((x) => (x.entity === id ? Object.assign({}, x, { hours: Number(el.dataset.v) }) : x)) });
+        return true;
+      }
       case "ssNum": loadSolar("/config", { [id]: Number(el.dataset.v) }); return true;
       case "ssAc": {
         const cur = (S.solar && S.solar.config && S.solar.config.ss_aircon_entities) || [];
@@ -4059,6 +4097,7 @@
       }
       case "thermo": return `<div class="sec">温度・湿度（SwitchBot などの温度計）</div>${thermoSettingsHTML()}`;
       case "selfsuff": return `<div class="sec">電気の自給率を上げる（オプション）</div><div id="ssBox">${selfSuffHTML()}</div>`;
+      case "runalert": return `<div class="sec">つけっぱなしのお知らせ</div><div id="raBox">${runAlertHTML()}</div>`;
       case "voice": {
         const pid = S.pipelineId || S.preferred;
         return `<div class="sec">音声</div>

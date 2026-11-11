@@ -3006,6 +3006,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 家のサーバーがエアコンに「名乗って」と頼んでいる様子（Home Assistant へのつなぎ直し） */
     val elRescue = MutableStateFlow<JSONObject?>(null)
+
+    /** つけっぱなしのお知らせの対象が、いま動いているか・何時間続いているか（機器 → {running, since, hours}） */
+    val runAlertNow = MutableStateFlow<JSONObject?>(null)
     val nightStop = MutableStateFlow(false)
     /** 夜を減らす日に、目標の量まで夜に沸かしている途中 */
     val nightPending = MutableStateFlow(false)
@@ -3143,6 +3146,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         hotPlan.value = j.optJSONObject("hot_plan")
         serverSetup.value = j.optJSONObject("server_setup")
         elRescue.value = j.optJSONObject("el_rescue")
+        runAlertNow.value = j.optJSONObject("run_alert_now")
         serverForecast.value = j.optJSONObject("forecast")
         hotHourly.value = j.optJSONObject("hot_hourly")?.let { h ->
             fun arr(k: String) = h.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } } ?: emptyList()

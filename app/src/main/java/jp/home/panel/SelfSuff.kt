@@ -364,3 +364,69 @@ fun ElRescueCard(vm: MainViewModel) {
         }
     }
 }
+
+// ======================= つけっぱなしのお知らせ =======================
+
+private val RUN_ALERT_DOMAINS = setOf("climate", "switch", "light", "fan", "humidifier", "media_player", "input_boolean", "water_heater")
+
+/** エアコンなどが決めた時間より長く続けて動いていたら、家のサーバーがスマートフォンに知らせる（1回の運転につき1回） */
+@Composable
+fun RunAlertSettings(vm: MainViewModel) {
+    val server by vm.shServer.collectAsState()
+    val conf by vm.serverConf.collectAsState()
+    val all by vm.allEntities.collectAsState()
+    val now by vm.runAlertNow.collectAsState()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "選んだ機器が、決めた時間より長く続けて動いていたら、スマートフォンに知らせます（1回の運転につき1回）。" +
+                "家のサーバーが1分ごとに見張るので、このアプリを閉じていても働きます。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (server.isBlank()) {
+            Text("家のサーバーが登録されていません（「お湯（エコキュート）と太陽光」で登録できます）", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            return@Column
+        }
+        if (conf["ha_token_set"] != true) {
+            Text("サーバーに Home Assistant の鍵の登録が必要です（「エアコンの自動温度調整」の設定から登録できます）。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        val targets = conf.strList("demand_notify")
+        Text(
+            if (targets.isEmpty()) "知らせる先がまだありません。「お湯（エコキュート）と太陽光」→「30分ごとの電気の上限」の「知らせる先」で、スマートフォンを選んでください（同じ先に知らせます）。"
+            else "知らせる先：" + targets.joinToString("、") { it.removePrefix("notify.mobile_app_") },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (targets.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val items = conf.objList("run_alerts")
+        val byId = items.associateBy { it.optString("entity") }
+        fun save(list: List<JSONObject>) = vm.setServerConf("run_alerts", JSONArray(list))
+        val cands = all.filter { it.domain in RUN_ALERT_DOMAINS && !isEchonetEntity(it.entityId) }
+            .sortedWith(compareBy({ it.entityId !in byId }, { it.domain != "climate" }, { vm.roomNameOf(it.entityId) ?: "" }, { it.name }))
+        if (cands.isEmpty()) Text("機器が見つかりません", style = MaterialTheme.typography.bodySmall)
+        cands.take(60).forEach { e ->
+            val it0 = byId[e.entityId]
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = it0 != null, onCheckedChange = { c ->
+                            val name = withRoom(vm.roomNameOf(e.entityId), e.name)
+                            save(if (c) items + JSONObject().put("entity", e.entityId).put("name", name).put("hours", if (e.domain == "climate") 4 else 2)
+                            else items.filter { x -> x.optString("entity") != e.entityId })
+                        })
+                        Column(Modifier.weight(1f)) {
+                            Text(withRoom(vm.roomNameOf(e.entityId), e.name), style = MaterialTheme.typography.bodyMedium)
+                            now?.optJSONObject(e.entityId)?.takeIf { it.optBoolean("running") }?.let { r ->
+                                Text("いま ${String.format("%.1f", r.optDouble("hours"))}時間 続けて動いています", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                    if (it0 != null) {
+                        ChoiceRow("この時間より長く動いていたら知らせる", listOf(1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0), it0.optDouble("hours", 2.0), { "${it.toInt()}時間" }) { v ->
+                            save(items.map { x -> if (x.optString("entity") == e.entityId) JSONObject(x.toString()).put("hours", v) else x })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

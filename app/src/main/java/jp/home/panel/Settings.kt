@@ -282,6 +282,11 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
             item { ClimateAutoSettings(vm) }
         }
 
+        if (page == "runalert") {
+            item { SectionTitle("つけっぱなしのお知らせ") }
+            item { RunAlertSettings(vm) }
+        }
+
         if (page == "selfsuff") {
             item { SectionTitle("電気の自給率を上げる（オプション）") }
             item { SelfSuffSettings(vm) }
@@ -628,6 +633,7 @@ val SETTINGS_MENU = listOf(
     MenuItem("thermo", "🌡", "温度計", "表示する温度計、名前"),
     MenuItem("voice", "🎤", "音声と自宅の位置", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"),
     MenuItem("selfsuff", "🌱", "電気の自給率を上げる", "余った電気のお知らせ・エアコン・充電など（使うものを選ぶ）"),
+    MenuItem("runalert", "⏰", "つけっぱなしのお知らせ", "エアコンなどが決めた時間より長く動いていたら、スマートフォンに知らせる"),
     MenuItem("solar","☀","お湯（エコキュート）と太陽光","余った電気でお湯を沸かす、30分ごとの電気の上限"),
     MenuItem("tariff","💴","電気料金","電力会社とプラン、時間帯・季節ごとの単価"),
     MenuItem("climate","❄","エアコンの自動温度調整","温度の範囲を決めて、自動で冷房・暖房"),
