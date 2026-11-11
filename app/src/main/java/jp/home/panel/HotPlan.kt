@@ -167,7 +167,7 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("昼に電気が余ったら、翌日分も先に沸かす", style = MaterialTheme.typography.bodyMedium)
-                Text("今夜の分＋翌日1日分の予想まで、余った電気で沸かしておきます。その分、夜の沸き上げ（買う電気）が減ります。オフにすると満タン近くまで沸かします。",
+                Text("翌日分を昼に沸かすほうが電気代が安いとき（売れたはずの電気＋冷める分 ＜ 夜に買う電気）だけ、今夜の分＋翌日1日分の予想まで余った電気で沸かします。その分、夜の沸き上げが減ります。オフにすると満タン近くまで沸かします。",
                     style = MaterialTheme.typography.bodySmall)
             }
             Switch(checked = conf["hot_store_tomorrow"] != false, onCheckedChange = { vm.setServerConf("hot_store_tomorrow", it) })

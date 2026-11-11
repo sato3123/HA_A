@@ -3127,6 +3127,40 @@ def eco_auto(reason):
         state["by_us"] = False
 
 
+def store_ahead_cost(now=None):
+    """翌日分のお湯を、いま（昼の余った電気）で沸かすのと、今夜（安い時間）に買った電気で沸かすのとで、どちらが安いか。
+    昼：売れたはずの電気（売電の単価）＋ 夜まで余分に冷める分。夜：その時刻の単価 ÷ その時刻の外気温での効率（COP）。
+    戻り値：{"day": 100L あたりの円, "night": 同, "cheaper": 昼のほうが安いか, "how": 説明}"""
+    now = now or datetime.now()
+    tank = float((state.get("eco") or {}).get("tank") or 460)
+    t_tank = float(conf.get("tank_temp") or 65)
+    w0, w1 = night_window(now if now.hour >= 12 else now + timedelta(hours=12))
+    t_in = SUPPLY_TEMP[(w1.month - 1) % 12]
+    q = 100 * 4.186 * max(10.0, t_tank - t_in) / 3600                      # 100L を沸かす熱（kWh）
+    temps = outdoor_temps()
+    t_day = temp_at(now, temps)
+    night_at = w1 - timedelta(hours=2)                                       # 夜はできるだけ遅く（朝の前）に沸かす
+    t_night = temp_at(night_at, temps)
+    # 夜まで余分に置いておくあいだに冷める分（タンクの冷め方を、増やした量の割合で）
+    k = float(conf.get("tank_loss_w_per_k") or 1.0) / 1000
+    hold_h = max(0.0, (night_at - now).total_seconds() / 3600)
+    t_avg = (t_day if t_day is not None else 10) - 3
+    loss_q = k * max(0.0, t_tank - t_avg) * hold_h * (100 / max(100.0, tank))
+    sell = float(conf.get("tariff_sell") or 0)
+    rate = rate_at(night_at)
+    day = (q + loss_q) / cop_at(t_day if t_day is not None else 15) * sell
+    if rate is None:
+        return {"day": round(day), "night": None, "cheaper": True,
+                "how": "電気料金のプランが無いので比べられません（ふつうは売電より夜の電気が高いので、昼に沸かします）"}
+    night = q / cop_at(t_night if t_night is not None else 5) * rate
+    cheaper = day < night
+    how = (f"100L あたり 昼 約{day:.0f}円（売電 {sell:g}円/kWh・冷める分 込み）／夜 約{night:.0f}円（{night_at:%H}時 {rate:.1f}円/kWh）"
+           + ("なので昼が安い" if cheaper else "なので夜が安い"))
+    if sell <= 0:
+        how += "。売電の単価が入っていないので 0円 として比べています（⚙ 電気料金 で入れられます）"
+    return {"day": round(day), "night": round(night), "cheaper": cheaper, "how": how}
+
+
 def day_store_target(now=None):
     """昼に余った電気で沸かす目標（L）：今夜の沸き上げまでに使う予想＋余裕 ＋ 翌日1日分の予想 ＋ 冷めて減る分。
     翌日分を先に沸かしておけば、夜の沸き上げ（買う電気）がその分減る。予想が無ければ満タン近く（95%）。
@@ -3142,6 +3176,14 @@ def day_store_target(now=None):
     p = predict_hot(tom, 0, 24)
     if not ev.get("need") or p is None:
         return full, "満タン近くまで（使う量の記録がまだ少ないため）"
+    # 電気代で決める：翌日分を昼に沸かすほうが、夜に沸かすより安いときだけ
+    try:
+        ec = store_ahead_cost(now)
+    except Exception as e:
+        print("昼と夜の比べでエラー:", e, flush=True)
+        ec = {"cheaper": True, "how": ""}
+    if not ec["cheaper"]:
+        return min(full, int(ev["need"])), f"今夜の分 {ev['need']}L（翌日分は夜に沸かすほうが安い：{ec['how']}）"
     r = learn_draw_ratio()["r"]
     ex = sum(hot_extra_for(tom, part)[0] for part in ("morning", "evening"))
     tom_l = round((max(p["liters"], p.get("p75") or 0) + ex) * r)
@@ -3150,7 +3192,7 @@ def day_store_target(now=None):
         # いまから翌日の夕方まで冷める分の半分（使うにつれて減るため）
         loss = round(loss_liters(now, datetime.combine(tom, datetime.min.time()) + timedelta(hours=ph)) * 0.5)
     t = int(ev["need"] + tom_l + loss)
-    return min(full, t), f"今夜の分 {ev['need']}L ＋ 翌日分 {tom_l}L" + (f" ＋ 冷める分 {loss}L" if loss else "")
+    return min(full, t), f"今夜の分 {ev['need']}L ＋ 翌日分 {tom_l}L" + (f" ＋ 冷める分 {loss}L" if loss else "") + (f"（{ec['how']}）" if ec.get("how") else "")
 
 
 def eco_start(surplus):

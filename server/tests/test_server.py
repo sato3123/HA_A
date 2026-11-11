@@ -544,6 +544,28 @@ class TestDrawRatio(SolarTestBase):
             m["learn_loss"] = g
 
 
+class TestStoreAheadCost(SolarTestBase):
+    def test_day_vs_night(self):
+        m = self.m
+        g = {k: m[k] for k in ("outdoor_temps", "rate_at")}
+        keep = m["conf"].get("tariff_sell")
+        try:
+            m["outdoor_temps"] = lambda: {}
+            m["rate_at"] = lambda dt: 28.0
+            now = datetime.combine(date.today(), datetime.min.time()).replace(hour=11)
+            m["conf"]["tariff_sell"] = 8.0
+            r = m["store_ahead_cost"](now)
+            self.assertTrue(r["cheaper"], r)
+            self.assertLess(r["day"], r["night"])
+            m["conf"]["tariff_sell"] = 40.0  # 売電が高い（昔の固定価格買取など）なら夜に沸かす
+            self.assertFalse(m["store_ahead_cost"](now)["cheaper"])
+            m["rate_at"] = lambda dt: None
+            self.assertTrue(m["store_ahead_cost"](now)["cheaper"])
+        finally:
+            m.update(g)
+            m["conf"]["tariff_sell"] = keep
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
