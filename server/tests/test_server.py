@@ -508,6 +508,31 @@ class TestEveningPrep(SolarTestBase):
             m["guard"]["active"] = False
 
 
+class TestDrawRatio(SolarTestBase):
+    def test_ratio_learned_from_remaining_drop(self):
+        m = self.m
+        days = m["energy"].setdefault("days", {})
+        saved = dict(days)
+        g = m["learn_loss"]
+        try:
+            days.clear()
+            m["learn_loss"] = lambda: {"k": 0.0, "n": 0, "how": ""}
+            self.assertEqual(m["learn_draw_ratio"]()["r"], 1.0)  # 記録なし
+            for i in range(1, 8):
+                rh, uh = [None] * 24, [0.0] * 24
+                rem = 400.0
+                for h in range(24):
+                    rh[h] = rem
+                    if 18 <= h <= 21:
+                        uh[h] = 50.0
+                        rem -= 30.0  # 使った 50L で、残りは 30L 減る
+                days[(date.today() - timedelta(days=i)).isoformat()] = {"remain_h": rh, "heat_h": [False] * 24, "hot_h": uh, "t_h": [10.0] * 24}
+            self.assertAlmostEqual(m["learn_draw_ratio"]()["r"], 0.6, places=2)
+        finally:
+            days.clear(); days.update(saved)
+            m["learn_loss"] = g
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -2408,6 +2408,30 @@ def learn_loss():
     return {"k": round(k, 4), "n": len(samples), "how": f"記録 {len(samples)} 時間分から"}
 
 
+def learn_draw_ratio():
+    """使ったお湯（AiSEG2 の使用量・蛇口で混ぜた後の量）1L で、タンクの残りのお湯（エコキュートが知らせる量）が何L減るかを学ぶ。
+    エコキュートの残湯量は、タンクの熱いお湯の量で知らせる機種が多く、蛇口のお湯（約40℃）より少なく減る。
+    沸き上げの無い1時間で、20L 以上使った時間の「残りの減り − 冷めて減る分」÷「使った量」の中央値（直近30日）。記録が少なければ 1"""
+    days = energy.get("days") or {}
+    k = learn_loss()["k"]
+    t_tank = float(conf.get("tank_temp") or 65)
+    samples = []
+    for i in range(1, 31):
+        rec = days.get((date.today() - timedelta(days=i)).isoformat()) or {}
+        rh, hh, uh, th = rec.get("remain_h"), rec.get("heat_h"), rec.get("hot_h"), rec.get("t_h") or [None] * 24
+        if not (rh and hh and uh):
+            continue
+        for h in range(23):
+            if rh[h] is None or rh[h + 1] is None or hh[h] or hh[h + 1] or (uh[h] or 0) < 20:
+                continue
+            loss = k * max(0.0, t_tank - (th[h] if th[h] is not None else 15))
+            samples.append(max(0.0, rh[h] - rh[h + 1] - loss) / uh[h])
+    if len(samples) < 10:
+        return {"r": 1.0, "n": len(samples), "how": "記録がたまるまでは 1:1"}
+    r = max(0.3, min(1.5, _quantile(samples, 0.5)))
+    return {"r": round(r, 2), "n": len(samples), "how": f"記録 {len(samples)} 時間分から"}
+
+
 def learn_usage_temp(typ):
     """1日に使うお湯（L）と、その日の平均気温の関係を学ぶ（直近60日の同じ種類の日。最小二乗法）。
     戻り値：{a, b, n, t_avg}（使う量 ≒ a + b × 平均気温）。日数が少ない・気温の幅が小さいときは None"""
@@ -2521,8 +2545,14 @@ def evening_need(d=None, h_from=None):
     how = f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "")
     if use > p["liters"]:
         how += f"より多めの日寄り（平均 {p['liters']}L → {use}L）"
-    return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": use, "avg": p["liters"], "max": p["max"], "margin": margin, "extra": extra,
-            "note": note, "need": use + margin + extra + loss, "how": how + temp_note(p), "loss": loss, "temp": p.get("temp")}
+    dr = learn_draw_ratio()
+    tank_use = round(use * dr["r"])
+    tank_extra = round(extra * dr["r"])
+    if abs(dr["r"] - 1) >= 0.05:
+        how += f"・使った 1L でタンクの残りは {dr['r']}L 減る（{dr['how']}）ので {use}L → {tank_use}L"
+    return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": tank_use, "tap": use, "avg": p["liters"], "max": p["max"], "margin": margin,
+            "extra": tank_extra, "note": note, "need": tank_use + margin + tank_extra + loss, "how": how + temp_note(p), "loss": loss,
+            "temp": p.get("temp"), "ratio": dr["r"]}
 
 
 def temp_note(p):
@@ -2545,9 +2575,13 @@ def night_need(d):
     if p is None:
         return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": None, "margin": margin, "extra": extra, "note": note, "need": None,
                 "how": "記録がまだありません"}
-    return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": p["liters"], "max": p["max"], "margin": margin, "extra": extra, "note": note,
-            "need": p["liters"] + margin + extra + loss, "how": f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "") + temp_note(p),
-            "loss": loss, "temp": p.get("temp")}
+    dr = learn_draw_ratio()
+    tank_use, tank_extra = round(p["liters"] * dr["r"]), round(extra * dr["r"])
+    how = f"直近の{p['type']} {p['days']}日の平均" + (f"（0L や極端な {p['removed']}日を除く）" if p.get("removed") else "") + temp_note(p)
+    if abs(dr["r"] - 1) >= 0.05:
+        how += f"・タンクの残りに直すと ×{dr['r']}"
+    return {"date": d.isoformat(), "from": 0, "to": h1, "predicted": tank_use, "tap": p["liters"], "max": p["max"], "margin": margin, "extra": tank_extra,
+            "note": note, "need": tank_use + margin + tank_extra + loss, "how": how, "loss": loss, "temp": p.get("temp"), "ratio": dr["r"]}
 
 
 def night_target_pct(d=None):
