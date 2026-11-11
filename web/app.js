@@ -479,7 +479,8 @@
     if (e.state !== "off" && single !== null) {
       const pk = e.entity_id + "|temperature";
       const v = pendingTemp.has(pk) ? pendingTemp.get(pk).value : single;
-      h += `<span class="cstep"><button class="tb" data-act="temp" data-key="temperature" data-delta="-1">−</button><span class="tv" data-tv="${esc(pk)}">${fmt(v)}℃</span><button class="tb" data-act="temp" data-key="temperature" data-delta="1">＋</button></span>`;
+      const mn = num(a, "min_temp") ?? 16, mx = num(a, "max_temp") ?? 32;
+      h += `<span class="cgroup"><span class="cgl">設定温度${v <= mn ? "（最低）" : v >= mx ? "（最高）" : ""}</span><span class="cstep"><button class="tb${v <= mn ? " atlimit" : ""}" data-act="temp" data-key="temperature" data-delta="-1" aria-label="設定温度を下げる">−</button><span class="tv" data-tv="${esc(pk)}" aria-live="polite">${fmt(v)}℃</span><button class="tb${v >= mx ? " atlimit" : ""}" data-act="temp" data-key="temperature" data-delta="1" aria-label="設定温度を上げる">＋</button></span></span>`;
     }
     h += sel("運転", a.hvac_modes, e.state, "set_hvac_mode", "hvac_mode", hvacLabel);
     if (e.state !== "off") h += sel("風量", a.fan_modes, a.fan_mode, "set_fan_mode", "fan_mode", fanLabel);
@@ -1384,7 +1385,7 @@
     return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>設定</h2></div>
       <div class="sec">よく使う設定</div>
       ${SETTINGS_MENU.filter((m) => !m[4]).map(row).join("")}
-      <button class="tbtn" data-set="advToggle" style="margin:10px 0">${S.showAdv ? "▲ 詳しい設定を閉じる" : "▼ 詳しい設定（カメラ・接続・アカウント・記録など）"}</button>
+      <button class="advtoggle" data-set="advToggle" aria-expanded="${S.showAdv ? "true" : "false"}"><span>詳しい設定</span><span class="sub">カメラ・接続・アカウント・記録など</span><span class="chev">${S.showAdv ? "▲ 閉じる" : "▼ 開く"}</span></button>
       ${S.showAdv ? SETTINGS_MENU.filter((m) => m[4]).map(row).join("") : ""}
       <div style="height:40px"></div></div>`;
   }
@@ -1733,8 +1734,11 @@
     const present = groupedByRoom(shownEntitiesAll()).map(([r]) => r);
     if (present.length <= 1) { bar.innerHTML = ""; return; }
     const f = present.some((r) => r.key === S.roomFilter) ? S.roomFilter : null;
-    bar.innerHTML = `<button class="chip${f === null ? " sel" : ""}" data-set="roomFilter" data-id="">すべて</button>` +
-      present.map((r) => `<button class="chip${f === r.key ? " sel" : ""}" data-set="roomFilter" data-id="${esc(r.key)}">${esc(r.name)}</button>`).join("");
+    bar.innerHTML = `<button class="chip${f === null ? " sel" : ""}" data-set="roomFilter" data-id="">${f === null ? "✓ " : ""}すべて</button>` +
+      present.map((r) => `<button class="chip${f === r.key ? " sel" : ""}" data-set="roomFilter" data-id="${esc(r.key)}">${f === r.key ? "✓ " : ""}${esc(r.name)}</button>`).join("");
+    // UI-012：選んでいる部屋が見えるところまで、横にスクロールする
+    const selb = bar.querySelector(".chip.sel");
+    if (selb && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, selb.offsetLeft - 16);
   }
 
   // ================= アカウント（普段使い／管理者） =================
@@ -2123,10 +2127,10 @@
         const id = a.attributes.id, rule = S.rules[id];
         const sum = rule ? ruleSummary(rule) : isAppRule(id) ? "（内容を読み込み中、または読み込めません）" : "Home Assistant で作成";
         const last = a.attributes.last_triggered ? "最後に実行：" + (isoLocal(String(a.attributes.last_triggered)) || String(a.attributes.last_triggered)) : "";
-        return `<div class="auto" data-set="editRule" data-id="${esc(a.entity_id)}"><div class="at"><div class="an">${esc(nameOf(a))}</div>
+        return `<div class="auto" data-set="editRule" data-id="${esc(a.entity_id)}" aria-label="${esc(nameOf(a))}を編集"><div class="at"><div class="an">${esc(nameOf(a))}${isAppRule(id) && canEditRules() ? ' <span class="edhint">✎ 編集</span>' : ""}</div>
           <div class="as">${esc(sum)}</div>${last ? `<div class="as">${esc(last)}</div>` : ""}</div>
-          <button class="tbtn" data-set="runAuto" data-id="${esc(a.entity_id)}">今すぐ実行</button>
-          <label class="sw"><input type="checkbox" data-set="autoOn" data-id="${esc(a.entity_id)}" ${a.state === "on" ? "checked" : ""}><span></span></label></div>`;
+          <span class="autoops"><button class="btn outline sm" data-set="runAuto" data-id="${esc(a.entity_id)}">今すぐ実行</button>
+          <span class="swl"><label class="sw"><input type="checkbox" data-set="autoOn" data-id="${esc(a.entity_id)}" ${a.state === "on" ? "checked" : ""} aria-label="${esc(nameOf(a))}を有効にする"><span></span></label><span class="swt">${a.state === "on" ? "オン" : "オフ"}</span></span></span></div>`;
       }).join("")}</div>`;
   }
 
@@ -2809,13 +2813,13 @@
     return `<div class="note">家族それぞれで、ホーム画面に出す項目と並び順を変えられます。上部の名前のボタンで切り替えます（この端末の中だけの設定です）。</div>
       <div class="chips" style="margin:8px 0">${list.map((p) => `<button class="chip${p.id === cur.id ? " sel" : ""}" data-set="profile" data-id="${esc(p.id)}">👤 ${esc(p.name)}</button>`).join("")}
         <button class="tbtn" data-set="profileAdd">＋ 追加</button></div>
-      <div class="card" style="margin-bottom:8px"><div class="brow" style="align-items:center"><b style="flex:1">「${esc(cur.name)}」のホーム画面</b>
+      <div class="card" style="margin-bottom:8px"><div class="brow profhead" style="align-items:center"><b style="flex:1">✎ 編集中：「${esc(cur.name)}」のホーム画面</b>
         <button class="tbtn" data-set="profileRename">名前を変える</button>${list.length > 1 ? `<button class="tbtn danger" data-set="profileDel">削除</button>` : ""}</div>
         ${cur.sections.map((s, i) => {
           const label = (SECTIONS.find(([k]) => k === s.key) || [])[1] || s.key;
-          return `<div class="row" style="cursor:default"><button class="tbtn" data-set="secUp" data-id="${i}" ${i === 0 ? "disabled" : ""}>▲</button>
-            <button class="tbtn" data-set="secDown" data-id="${i}" ${i === cur.sections.length - 1 ? "disabled" : ""}>▼</button>
-            <span class="rt">${esc(label)}</span><input type="checkbox" data-set="secVis" data-id="${i}" ${s.visible ? "checked" : ""}></div>`;
+          return `<div class="row editrow" style="cursor:default"><span class="ord"><button class="tbtn" data-set="secUp" data-id="${i}" ${i === 0 ? "disabled" : ""} aria-label="${esc(label)}を上へ">▲</button>
+            <button class="tbtn" data-set="secDown" data-id="${i}" ${i === cur.sections.length - 1 ? "disabled" : ""} aria-label="${esc(label)}を下へ">▼</button></span>
+            <span class="rt">${esc(label)}</span><label class="vis"><input type="checkbox" data-set="secVis" data-id="${i}" ${s.visible ? "checked" : ""}> 表示する</label></div>`;
         }).join("")}
         <div class="note">配色を選ぶと、このユーザーの配色として覚えます。</div></div>`;
   }
@@ -4201,9 +4205,9 @@
           <label class="row"><span class="rt">部屋ごとに分けて表示する<div class="sub">Home Assistant のエリアを部屋として使います。アプリで部屋を追加したり、機器の部屋を変えたりもできます（下の「表示する機器」で機器ごとに選べます）。</div></span>
             <input type="checkbox" data-set="groupRooms" ${S.groupRooms ? "checked" : ""}></label>
           <div class="note">▲▼ で、ホーム画面に並べる部屋の順番を変えられます。</div>
-          ${rs.map((r, i) => `<div class="row" style="cursor:default"><button class="tbtn" data-set="roomUp" data-id="${esc(r.key)}" ${i === 0 ? "disabled" : ""}>▲</button><button class="tbtn" data-set="roomDown" data-id="${esc(r.key)}" ${i === rs.length - 1 ? "disabled" : ""}>▼</button>
+          ${rs.map((r, i) => `<div class="row editrow" style="cursor:default"><span class="ord"><button class="tbtn" data-set="roomUp" data-id="${esc(r.key)}" ${i === 0 ? "disabled" : ""} aria-label="${esc(r.name)}を上へ">▲</button><button class="tbtn" data-set="roomDown" data-id="${esc(r.key)}" ${i === rs.length - 1 ? "disabled" : ""} aria-label="${esc(r.name)}を下へ">▼</button></span>
             <span class="rt">${esc(r.name)}<div class="sub">${r.ha ? "Home Assistant のエリア" : "アプリで追加した部屋"}</div></span>
-            ${r.ha ? "" : `<button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn danger" data-set="roomDel" data-id="${esc(r.key)}">削除</button>`}</div>`).join("")}
+            ${r.ha ? "" : `<span class="ops"><button class="tbtn" data-set="roomRename" data-id="${esc(r.key)}">名前を変える</button><button class="tbtn danger" data-set="roomDel" data-id="${esc(r.key)}">削除</button></span>`}</div>`).join("")}
           <div class="brow" style="align-items:center;margin-top:6px"><input class="search" id="newRoom" type="text" placeholder="部屋を追加（例：子ども部屋）" style="max-width:320px;margin:0">
             <button class="tbtn" data-set="roomAdd">追加</button></div>
           <div class="sec" id="selTitle"></div>

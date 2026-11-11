@@ -384,11 +384,18 @@ private fun CompactStepper(value: Double, min: Double, max: Double, step: Double
     fun snap(v: Double) = (Math.round(v / step) * step).coerceIn(min, max)
     val pad = androidx.compose.foundation.layout.PaddingValues(0.dp)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min, contentPadding = pad, modifier = Modifier.size(48.dp)) {
+        FilledTonalButton(onClick = { pending = snap(shown - step) }, enabled = shown > min, contentPadding = pad,
+            modifier = Modifier.size(48.dp).semantics { contentDescription = "設定温度を下げる" }) {
             Text("−", fontSize = 20.sp)
         }
-        Text("${fmt(shown)}℃", fontSize = 22.sp, modifier = Modifier.padding(horizontal = 8.dp))
-        FilledTonalButton(onClick = { pending = snap(shown + step) }, enabled = shown < max, contentPadding = pad, modifier = Modifier.size(48.dp)) {
+        // UI-011：数字が何の値かを、数字のすぐ上に書く（下限・上限では「最低」「最高」と出す）
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 8.dp)) {
+            Text(if (shown <= min) "設定温度（最低）" else if (shown >= max) "設定温度（最高）" else "設定温度", fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${fmt(shown)}℃", fontSize = 22.sp, style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"))
+        }
+        FilledTonalButton(onClick = { pending = snap(shown + step) }, enabled = shown < max, contentPadding = pad,
+            modifier = Modifier.size(48.dp).semantics { contentDescription = "設定温度を上げる" }) {
             Text("＋", fontSize = 20.sp)
         }
     }

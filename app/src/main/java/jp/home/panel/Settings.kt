@@ -165,12 +165,13 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
                 Text("▲▼ で、ホーム画面に並べる部屋の順番を変えられます。", style = MaterialTheme.typography.bodySmall)
             }
             itemsIndexed(rooms, key = { _, r -> "r_" + r.key }) { i, r ->
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                // UI-014：狭い画面では、名前と操作を2段に折り返す
+                androidx.compose.foundation.layout.FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     TextButton(onClick = { vm.moveRoom(r.key, -1) }, enabled = i > 0,
                         modifier = Modifier.semantics { contentDescription = "${r.name}を上へ" }) { Text("▲") }
                     TextButton(onClick = { vm.moveRoom(r.key, 1) }, enabled = i < rooms.size - 1,
                         modifier = Modifier.semantics { contentDescription = "${r.name}を下へ" }) { Text("▼") }
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.widthIn(min = 160.dp).weight(1f).align(Alignment.CenterVertically)) {
                         Text(r.name, style = MaterialTheme.typography.bodyLarge)
                         Text(if (r.fromHa) "Home Assistant のエリア" else "アプリで追加した部屋", style = MaterialTheme.typography.bodySmall)
                     }

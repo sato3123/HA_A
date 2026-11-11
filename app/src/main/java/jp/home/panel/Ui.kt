@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
@@ -387,10 +388,14 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RoomFilterRow(rooms: List<Room>, selected: String?, onSelect: (String?) -> Unit) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        FilterChip(selected = selected == null, onClick = { onSelect(null) }, label = { Text("すべて") })
+    // UI-012：部屋が多くても何行にも増えないよう、横にスクロールする1行にする。選んでいる部屋は ✓ と色で示す
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+    ) {
+        FilterChip(selected = selected == null, onClick = { onSelect(null) }, label = { Text(if (selected == null) "✓ すべて" else "すべて") })
         rooms.forEach { r ->
-            FilterChip(selected = selected == r.key, onClick = { onSelect(r.key) }, label = { Text(r.name) })
+            FilterChip(selected = selected == r.key, onClick = { onSelect(r.key) }, label = { Text(if (selected == r.key) "✓ ${r.name}" else r.name) })
         }
     }
 }

@@ -11,6 +11,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -155,7 +159,7 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(a.name, style = MaterialTheme.typography.titleMedium)
+                            Text(a.name + if (app && canEdit) "　✎" else "", style = MaterialTheme.typography.titleMedium)
                             Text(
                                 when {
                                     rule != null -> ruleSummary(rule, nameOf)
@@ -170,8 +174,18 @@ fun AutomationScreen(vm: MainViewModel, onClose: () -> Unit) {
                                 Text("最後に実行：" + agoText(it), style = MaterialTheme.typography.labelSmall)
                             }
                         }
-                        TextButton(onClick = { vm.runAutomation(a); notice = "「${a.name}」を実行しました" }) { Text("今すぐ実行") }
-                        Switch(checked = a.state == "on", onCheckedChange = { vm.setAutomationEnabled(a, it) })
+                        // UI-024：「編集（行）」と「実行・オン/オフ」の境目を線で分け、実行は枠付きのボタンにする
+                        androidx.compose.material3.VerticalDivider(Modifier.height(48.dp).padding(horizontal = 8.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            OutlinedButton(onClick = { vm.runAutomation(a); notice = "「${a.name}」を実行しました" },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("今すぐ実行") }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Switch(checked = a.state == "on", onCheckedChange = { vm.setAutomationEnabled(a, it) },
+                                modifier = Modifier.semantics { contentDescription = "${a.name}を" + if (a.state == "on") "オフにする" else "オンにする" })
+                            Text(if (a.state == "on") "オン" else "オフ", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
             }
