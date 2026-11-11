@@ -2,6 +2,8 @@
 
 package jp.home.panel
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -258,7 +260,7 @@ private fun FlowChart(slots: List<Slot>, onlyUse: Boolean = false) {
     val measurer = rememberTextMeasurer()
     val style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
     val grid = MaterialTheme.colorScheme.outlineVariant
-    Canvas(Modifier.fillMaxWidth().height(170.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "電気の使用量と発電・買電・売電のグラフ" })) {
+    Canvas(Modifier.fillMaxWidth().height(170.dp).then(Modifier.semantics { contentDescription = "電気の使用量と発電・買電・売電のグラフ" })) {
         val left = 44.dp.toPx(); val bottom = size.height - 18.dp.toPx(); val top = 6.dp.toPx()
         val max = (slots.maxOfOrNull { maxOf(it.use, it.gen) } ?: 0.0).coerceAtLeast(100.0)
         val w = (size.width - left) / slots.size.coerceAtLeast(1)
@@ -361,7 +363,7 @@ private fun CompareChart(labels: List<String>, series: List<List<Double>>, unit:
     val measurer = rememberTextMeasurer()
     val style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
     val grid = MaterialTheme.colorScheme.outlineVariant
-    Canvas(Modifier.fillMaxWidth().height(200.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "回路ごとの比較グラフ" })) {
+    Canvas(Modifier.fillMaxWidth().height(200.dp).then(Modifier.semantics { contentDescription = "回路ごとの比較グラフ" })) {
         val left = 44.dp.toPx(); val bottom = size.height - 18.dp.toPx(); val top = 6.dp.toPx()
         val max = (series.flatten().maxOrNull() ?: 0.0).coerceAtLeast(50.0)
         val n = labels.size.coerceAtLeast(1)

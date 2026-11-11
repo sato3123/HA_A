@@ -2,6 +2,8 @@
 
 package jp.home.panel
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.width
@@ -465,7 +467,7 @@ private fun SurplusChart(pts: List<Pair<Long, Double>>, modifier: Modifier) {
             Text("■ 売電（余っている）", style = MaterialTheme.typography.labelSmall, color = green)
             Text("■ 買電（買っている）", style = MaterialTheme.typography.labelSmall, color = red)
         }
-        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(96.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "直近1時間の電気の流れのグラフ" })) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(96.dp).then(Modifier.semantics { contentDescription = "直近1時間の電気の流れのグラフ" })) {
             val end = System.currentTimeMillis()
             val start = end - 3_600_000L
             val maxKw = kotlin.math.ceil((pts.maxOf { kotlin.math.abs(it.second) } / 1000).coerceAtLeast(1.0))
@@ -613,7 +615,7 @@ private fun HotWaterChart(pts: List<Pair<Long, Int>>, tankL: Int?, modifier: Mod
             Text("━ 残り", style = MaterialTheme.typography.labelSmall, color = line)
             Text("■ 使った量（1時間ごと）", style = MaterialTheme.typography.labelSmall, color = bar)
         }
-        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(110.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "24時間のお湯の残りと使った量のグラフ" })) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(110.dp).then(Modifier.semantics { contentDescription = "24時間のお湯の残りと使った量のグラフ" })) {
             val left = 44.dp.toPx(); val bottom = size.height - 16.dp.toPx(); val top = 4.dp.toPx()
             val maxL = (tankL ?: pts.maxOfOrNull { it.second } ?: 1).coerceAtLeast(1).toFloat()
             val maxUse = used.maxOrNull()?.coerceAtLeast(10.0) ?: 10.0

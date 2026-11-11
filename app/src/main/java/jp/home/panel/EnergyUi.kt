@@ -1,5 +1,7 @@
 package jp.home.panel
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -141,7 +143,7 @@ fun EnergyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 val max = (bars.maxOrNull() ?: 0.0).coerceAtLeast(0.01)
                 val color = MaterialTheme.colorScheme.primary
                 val now = java.time.LocalTime.now().hour
-                Canvas(Modifier.fillMaxWidth().height(110.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "今日の時間ごとの使用量のグラフ" })) {
+                Canvas(Modifier.fillMaxWidth().height(110.dp).then(Modifier.semantics { contentDescription = "今日の時間ごとの使用量のグラフ" })) {
                     val bw = size.width / 24f
                     bars.forEachIndexed { i, v ->
                         val h = (v / max).toFloat() * (size.height - 4f)
