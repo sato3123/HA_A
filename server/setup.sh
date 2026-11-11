@@ -16,7 +16,7 @@ set -euo pipefail
 
 # セットアップの版。Caddy・サービス・コマンドなど、セットアップで入れるものを変えたら1つ上げる。
 # 自動更新（homepanel-update）が、新しい版の setup.sh を見つけると、自分でこのセットアップを実行し直す
-SETUP_VERSION=5
+SETUP_VERSION=6
 # セットアップが2つ同時に動かないようにする（自動の更新も、セットアップの最中はやり直しを始めない）
 exec 8>/run/homepanel-setup.lock
 flock -w 1800 8 || { echo "ほかのセットアップが終わりません"; exit 1; }
@@ -39,7 +39,7 @@ export DEBIAN_FRONTEND=noninteractive
 # ソフトを入れたあとに、ほかのサービスを勝手に再起動させない（needrestart は一覧だけにする）
 export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 # もう全部入っていれば、入れ直さない（自動でセットアップし直すときに速く終わるように）
-if command -v caddy curl jq unzip rsync python3 ffmpeg flock >/dev/null 2>&1 && dpkg -s python3-venv tzdata ca-certificates >/dev/null 2>&1 \
+if command -v caddy curl jq unzip rsync python3 ffmpeg flock pdftotext >/dev/null 2>&1 && dpkg -s python3-venv tzdata ca-certificates >/dev/null 2>&1 \
    && [ -x /opt/timetree/bin/timetree-exporter ]; then
   echo "（必要なソフトはもう入っています）"
 else
@@ -47,6 +47,8 @@ else
   apt-get install -y -qq caddy curl jq unzip rsync ca-certificates python3 tzdata util-linux >/dev/null
   # カメラの記録・動きの分析に使う（入らなくても、ほかの機能は動く）
   apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null || echo "注意：ffmpeg を入れられませんでした（カメラの記録は使えません）"
+  # 電力会社の燃料費調整単価のお知らせ（PDF）を読む（入らなくても、ほかの機能は動く）
+  apt-get install -y -qq --no-install-recommends poppler-utils >/dev/null || echo "注意：pdftotext を入れられませんでした（燃料費調整額は手で入れてください）"
   # TimeTree の予定を取り出す道具（非公式の timetree-exporter）
   apt-get install -y -qq python3-venv >/dev/null
   [ -x /opt/timetree/bin/python ] || python3 -m venv /opt/timetree

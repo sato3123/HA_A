@@ -809,6 +809,52 @@ class TestRunAlert(SolarTestBase):
             m["conf"].update(keep)
 
 
+class TestFuelAuto(SolarTestBase):
+    SAMPLE = """燃料費調整単価のお知らせ
+  ２．電気供給条件（低圧）
+                    最初の15kWhまで（1契約）   15kWh超過分（1kWh）
+     10月分          12円84銭                 0円86銭           0円86銭      53,500
+     11月分         ▲18円90銭                ▲1円26銭          ▲1円26銭      51,000
+  ３．電気特定小売供給約款
+     11月分         ▲30円00銭                ▲2円00銭
+"""
+
+    def test_parse(self):
+        p = self.m["parse_kepco_fuel"]
+        self.assertEqual(p(self.SAMPLE, 10), 0.86)
+        self.assertEqual(p(self.SAMPLE, 11), -1.26)  # 特定小売供給約款の行ではなく、電気供給条件（低圧）の行
+        self.assertIsNone(p(self.SAMPLE, 12))
+        self.assertIsNone(p("関係のない文書", 10))
+
+    def test_tick_learns_new_months_and_is_used(self):
+        m = self.m
+        keep = m["conf"].get("tariff_plan")
+        try:
+            pr = next(x for x in m["tariffs"]()["providers"] if x["id"] == "kepco")
+            m["conf"]["tariff_plan"] = pr["plans"][0]["id"]
+            m["fuel_data"].clear()
+            asked = []
+
+            def fetch(url):
+                asked.append(url)
+                return self.SAMPLE if url.endswith(("202610.ashx", "202611.ashx")) else None
+            now = datetime(2026, 10, 5, 12, 0)
+            new = m["fuel_auto_tick"](now, fetch)
+            # 10月分（9月に使った分）は単価表に入っているので読まない。11月分 → 10月に使った分
+            self.assertEqual(new, {"2026-10": -1.26})
+            self.assertTrue(all("kepco.jp" in u for u in asked))
+            _, fuel, auto = m["adders_of"](pr, datetime(2026, 10, 20))
+            self.assertEqual((fuel, auto), (-1.26, True))
+            # 分かっている月（10月分 = 9月に使った分 0.86 円）が合わなければ、新しい値も使わない
+            m["fuel_data"].clear()
+            wrong = self.SAMPLE.replace("0円86銭", "9円99銭")
+            self.assertEqual(m["fuel_auto_tick"](now, lambda u: wrong if u.endswith(("202610.ashx", "202611.ashx")) else None), {})
+            self.assertIn("合わない", m["fuel_data"]["kepco"]["error"])
+        finally:
+            m["conf"]["tariff_plan"] = keep
+            m["fuel_data"].clear()
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

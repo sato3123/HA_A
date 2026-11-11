@@ -134,6 +134,20 @@ fun TariffSettings(vm: MainViewModel) {
                     if (cur.optBoolean("fuel_auto")) "（${cur.optString("fuel_source")}・自動）" else "（下の欄に入れた値）",
                 style = MaterialTheme.typography.bodySmall,
             )
+            cur.optJSONObject("fuel_fetch")?.takeIf { it.optBoolean("supported") }?.let { ff ->
+                val ms = ff.optJSONObject("months")
+                val list = ms?.keys()?.asSequence()?.toList()?.sorted()?.joinToString("、") { k ->
+                    "${k.substring(5).toInt()}月に使った分 ${ms.optDouble(k)}円"
+                } ?: ""
+                Text(
+                    "　燃料費調整額は、電力会社の毎月のお知らせを家のサーバーが1日1回確かめて、自動で入れます" +
+                        (if (list.isNotBlank()) "（$list）" else "") + "。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                ff.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let {
+                    Text("　自動で読めなかったもの：$it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
             // 割引（例：電化割引）
             val ds = cur.optJSONArray("discounts")
             for (i in 0 until (ds?.length() ?: 0)) {

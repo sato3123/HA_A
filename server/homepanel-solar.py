@@ -1397,11 +1397,137 @@ def subsidy_of(d):
     return next((float(x["yen"]) for x in tariffs().get("subsidy") or [] if x.get("month") == ym), 0.0)
 
 
+# ---- 燃料費調整単価の自動取得（電力会社の公表資料を、家のサーバーが毎日確かめる） ----
+# 関西電力：毎月の「燃料費調整単価のお知らせ」（PDF）の「電気供給条件（低圧）」（はぴｅタイムR などの自由料金のプラン。国の補助を差し引いた後）。
+# 請求の「○月分」は前の月に使った分なので、1か月前の「使った月」の値として持つ。電力会社のサイトは GitHub などのサーバーからは読めないため、家から読む
+FUEL_SOURCES = {"kepco": "https://kepco.jp/~/media/Files/KepcoJp/Customer/pdf/seido/{ym}.ashx"}
+FUEL_AUTO_PATH = os.path.join(DIR, "fuel_auto.json")
+fuel_data = load_json(FUEL_AUTO_PATH, {})   # {会社: {"by_usage_month": {...}, "checked": 時刻, "log": [...]}}
+_FUEL_AMOUNT = r"[▲△\-−－]?\s*\d+\s*円\s*\d+\s*銭"
+
+
+def _add_month(y, m, n):
+    m += n
+    while m > 12:
+        y, m = y + 1, m - 12
+    while m < 1:
+        y, m = y - 1, m + 12
+    return y, m
+
+
+def _yen_text(txt):
+    """「▲1円26銭」「0円86銭」→ 数字（円）"""
+    t = re.sub(r"\s", "", txt)
+    neg = t[:1] in ("▲", "△", "-", "−", "－")
+    m = re.fullmatch(r"[▲△\-−－]?(\d+)円(\d+)銭", t)
+    if not m:
+        return None
+    v = int(m.group(1)) + int(m.group(2)) / 100
+    return round(-v if neg else v, 2)
+
+
+def parse_kepco_fuel(text, bill_month):
+    """お知らせの文字から「電気供給条件（低圧）」の bill_month 月分の 1kWh あたりの単価を読む。
+    行の形：「10月分  12円84銭  0円86銭  0円86銭  53,500」（最初の15kWh までの1契約あたり・1kWh あたり・…）"""
+    flat = text.replace("\u3000", " ")
+    start = flat.find("電気供給条件")
+    if start < 0:
+        return None
+    rest = flat[start:]
+    ends = [i for i in (rest.find("特定小売供給約款", 10), rest.find("選択約款", 10)) if i > 0]
+    sect = rest[: min(ends)] if ends else rest[:4000]
+    for line in sect.splitlines():
+        if re.search(rf"(^|\D){bill_month}\s*月分", line):
+            nums = re.findall(_FUEL_AMOUNT, line)
+            if nums:
+                return _yen_text(nums[1] if len(nums) >= 2 else nums[0])
+    return None
+
+
+def _fetch_pdf_text(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) homepanel", "Accept": "application/pdf,*/*"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = r.read(5_000_000)
+    if not data.startswith(b"%PDF"):
+        return None
+    import shutil
+    import subprocess
+    if not shutil.which("pdftotext"):
+        raise RuntimeError("pdftotext がありません（セットアップの新しい版で入ります）")
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+        f.write(data)
+        f.flush()
+        p = subprocess.run(["pdftotext", "-layout", f.name, "-"], capture_output=True, timeout=60)
+    return p.stdout.decode("utf-8", "replace")
+
+
+def fuel_auto_tick(now=None, fetch=None):
+    """1日1回、使っている電力会社のお知らせを読み、新しい月の燃料費調整単価を覚える。戻り値：新しく覚えた {使った月: 円}"""
+    pr, _ = find_plan(conf.get("tariff_plan") or "")
+    pid = (pr or {}).get("id")
+    if pid not in FUEL_SOURCES:
+        return {}
+    now = now or datetime.now()
+    rec = fuel_data.setdefault(pid, {"by_usage_month": {}})
+    if time.time() - float(rec.get("checked") or 0) < 20 * 3600 and fetch is None:
+        return {}
+    rec["checked"] = time.time()
+    fetch = fetch or _fetch_pdf_text
+    known = dict(((pr.get("fuel") or {}).get("by_usage_month") or {}), **rec["by_usage_month"])
+    new = {}
+    errs = []
+    # 今月分〜3か月先の分（お知らせは2か月ほど前に出る）
+    for n in range(0, 4):
+        y, m = _add_month(now.year, now.month, n)
+        uy, um = _add_month(y, m, -1)
+        key = f"{uy}-{um:02d}"
+        try:
+            text = fetch(FUEL_SOURCES[pid].format(ym=f"{y}{m:02d}"))
+        except Exception as e:
+            if key not in known:
+                errs.append(f"{y}年{m}月分：{e}")
+            continue
+        if not text:
+            continue  # まだ公表されていない
+        v = parse_kepco_fuel(text, m)
+        if key in known:
+            # もう分かっている月で、読み方が合っているか確かめる（合わなければ、新しい月の値も使わない）
+            if v is None or abs(v - float(known[key])) > 0.005:
+                checked_bad = f"{y}年{m}月分を読むと {v} 円で、公表値の {known[key]} 円と合わないため、自動で読んだ値は使いません（お知らせの形が変わったようです）"
+                errs.append(checked_bad)
+                new = {}
+                break
+            continue
+        if v is None or not -30 <= v <= 30:
+            errs.append(f"{y}年{m}月分：お知らせの形が変わったようで、読めませんでした")
+            continue
+        new[key] = v
+    if new:
+        rec["by_usage_month"].update(new)
+        log("燃料費調整単価を電力会社のお知らせから読みました：" + "、".join(f"{k[:4]}年{int(k[5:])}月に使った分 {v}円/kWh" for k, v in sorted(new.items())))
+    rec["error"] = "；".join(errs) or None
+    save_json(FUEL_AUTO_PATH, fuel_data)
+    return new
+
+
+def fuel_auto_loop():
+    time.sleep(120)
+    while True:
+        try:
+            fuel_auto_tick()
+        except Exception as e:
+            print("燃料費調整単価の自動取得でエラー:", e, flush=True)
+        time.sleep(3600)
+
+
 def adders_of(pr, dt):
     """1kWh あたりに足す額（再エネ賦課金＋燃料費調整−国の補助）と、燃料費調整が電力会社の公表値か"""
     ym = dt.strftime("%Y-%m")
     f = ((pr or {}).get("fuel") or {})
     auto = (f.get("by_usage_month") or {}).get(ym)
+    if auto is None and (pr or {}).get("id") in fuel_data:
+        auto = ((fuel_data[pr["id"]] or {}).get("by_usage_month") or {}).get(ym)
     if auto is not None:
         sub = 0.0 if f.get("includes_subsidy") else subsidy_of(dt)
         return surcharge_of(dt) + float(auto) - sub, float(auto), True
@@ -1534,6 +1660,11 @@ def tariff_list():
         on = set(conf.get("tariff_discounts") or [])
         detail = {"bands": detail, "basic_yen": round(basic_of(pl, ver)), "from": ver.get("from"), "contract": pl.get("contract", "none"),
                   "note": pl.get("note"), "fuel": fuel_now, "fuel_auto": fuel_auto, "fuel_source": ((pr or {}).get("fuel") or {}).get("source"),
+                  "fuel_fetch": {"supported": (pr or {}).get("id") in FUEL_SOURCES,
+                                 "checked": (fuel_data.get((pr or {}).get("id")) or {}).get("checked"),
+                                 "error": (fuel_data.get((pr or {}).get("id")) or {}).get("error"),
+                                 "months": dict(sorted(dict(((pr or {}).get("fuel") or {}).get("by_usage_month") or {},
+                                                            **((fuel_data.get((pr or {}).get("id")) or {}).get("by_usage_month") or {})).items())[-4:])},
                   "discounts": [dict(d, on=d.get("id") in on) for d in pl.get("discounts") or []]}
     return {"providers": out, "note": t.get("note"), "updated": t.get("updated"), "current": detail,
             "surcharge": surcharge_of(date.today()), "subsidy": subsidy_of(date.today())}
@@ -4127,6 +4258,7 @@ def main():
     threading.Thread(target=ha_ws_loop, daemon=True).start()
     threading.Thread(target=el_rescue_loop, daemon=True).start()
     threading.Thread(target=run_alert_loop, daemon=True).start()
+    threading.Thread(target=fuel_auto_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 
