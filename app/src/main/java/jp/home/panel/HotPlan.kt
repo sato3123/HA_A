@@ -84,6 +84,9 @@ fun HotPlanSummary(vm: MainViewModel) {
     p.optJSONObject("evening")?.let { e ->
         Text("🛁 ${dayText(e.optString("date"))}の夕方（${e.optInt("from")}時）に残しておく（今夜の沸き上げ ${e.optInt("to").let { if (it > 24) "翌${it - 24}" else "$it" }}時まで使う分）：" + needText(e), style = MaterialTheme.typography.bodySmall)
     }
+    p.optJSONObject("day_store")?.takeIf { it.optBoolean("on") && !it.isNull("target") }?.let { d ->
+        Text("☀ 昼に余った電気では ${d.optInt("target")}L まで沸かします（${d.optString("how")}）", style = MaterialTheme.typography.bodySmall)
+    }
     p.optJSONObject("prep")?.let { st ->
         when {
             st.optBoolean("heating") -> Text("♨ 夕方の準備のために沸かしています", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -161,6 +164,14 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         }
         // 一覧に無い量は数字で入れる（10L ずつ・最大 500L）
         NumField(margin.toDouble(), { vm.setServerConf("hot_margin_l", it.toInt()) }, unit = "L", step = 10.0, min = 0.0, max = 500.0)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("昼に電気が余ったら、翌日分も先に沸かす", style = MaterialTheme.typography.bodyMedium)
+                Text("今夜の分＋翌日1日分の予想まで、余った電気で沸かしておきます。その分、夜の沸き上げ（買う電気）が減ります。オフにすると満タン近くまで沸かします。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = conf["hot_store_tomorrow"] != false, onCheckedChange = { vm.setServerConf("hot_store_tomorrow", it) })
+        }
         val ph = (conf["prep_hour"] as? Number)?.toInt() ?: 17
         Text("何時までに用意するか（夕方・お風呂の前）：${ph}時", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

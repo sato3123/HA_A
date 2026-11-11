@@ -62,6 +62,8 @@ DEFAULT_CONF = {
     "night_heat_pct": 50,                   # 「夜は止める」：夜はこの残量（%）まで沸かしたら止める（hot_auto のときは自動で決める）
     # お湯の量を過去の使用量から自動で決める：夕方 prep_hour 時までに「夜（prep_hour〜night_start_hour 時）に使う予想＋余裕」を用意し、
     # 「夜は止める」の夜に沸かす量も「翌朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕」にする
+    # 昼に電気が余っていれば、今夜の分だけでなく翌日1日分まで先に沸かしておく（その分、夜の沸き上げが減る）
+    "hot_store_tomorrow": True,
     "hot_auto": False, "hot_margin_l": 50, "prep_hour": 17, "night_start_hour": 23,
     "heat_rate_lph": 0,                     # 沸き上げの速さ（L/時）。0 なら記録から求める
     # 多めにお湯が必要な日：[{date: "YYYY-MM-DD", liters, part: evening（夕方〜夜）/ morning（朝）, note}]
@@ -2847,7 +2849,13 @@ def hot_plan_public():
              "loss_day_l": round(lo["k"] * max(0.0, float(conf.get("tank_temp") or 65) - (forecast_mean(tomorrow) or 10)) * 24),
              "usage_per_deg": round(-lr["b"], 1) if lr else None, "usage_days": lr["n"] if lr else 0,
              "tomorrow_t": forecast_mean(tomorrow), "tomorrow_factor": f, "enabled": bool(conf.get("hot_temp_learn", True))}
+    try:
+        dt_, dh_ = day_store_target(now)
+        day_store = {"target": dt_, "how": dh_, "on": bool(conf.get("hot_store_tomorrow", True))}
+    except Exception:
+        day_store = None
     return {"evening": ev, "night": ng, "rate_lph": round(rate), "rate_how": how, "prep": state.get("prep"), "night_heat": state.get("night_heat"), "learn": learn,
+            "day_store": day_store,
             "extra": [x for x in conf.get("hot_extra") or [] if x.get("date", "") >= date.today().isoformat()]}
 
 
@@ -3119,6 +3127,32 @@ def eco_auto(reason):
         state["by_us"] = False
 
 
+def day_store_target(now=None):
+    """昼に余った電気で沸かす目標（L）：今夜の沸き上げまでに使う予想＋余裕 ＋ 翌日1日分の予想 ＋ 冷めて減る分。
+    翌日分を先に沸かしておけば、夜の沸き上げ（買う電気）がその分減る。予想が無ければ満タン近く（95%）。
+    戻り値：(目標 L, 説明)"""
+    now = now or datetime.now()
+    tank = (state.get("eco") or {}).get("tank") or 0
+    full = int(tank * 0.95) if tank else None
+    if not conf.get("hot_store_tomorrow", True) or not tank:
+        return full, "満タン近くまで"
+    ph = int(conf.get("prep_hour", 17))
+    ev = evening_need(now.date(), now.hour if now.hour >= ph else None)
+    tom = now.date() + timedelta(days=1)
+    p = predict_hot(tom, 0, 24)
+    if not ev.get("need") or p is None:
+        return full, "満タン近くまで（使う量の記録がまだ少ないため）"
+    r = learn_draw_ratio()["r"]
+    ex = sum(hot_extra_for(tom, part)[0] for part in ("morning", "evening"))
+    tom_l = round((max(p["liters"], p.get("p75") or 0) + ex) * r)
+    loss = 0
+    if conf.get("hot_temp_learn", True):
+        # いまから翌日の夕方まで冷める分の半分（使うにつれて減るため）
+        loss = round(loss_liters(now, datetime.combine(tom, datetime.min.time()) + timedelta(hours=ph)) * 0.5)
+    t = int(ev["need"] + tom_l + loss)
+    return min(full, t), f"今夜の分 {ev['need']}L ＋ 翌日分 {tom_l}L" + (f" ＋ 冷める分 {loss}L" if loss else "")
+
+
 def eco_start(surplus):
     s = eco_caps["set"]
     if s is None or 0xC0 in s:
@@ -3337,7 +3371,14 @@ def tick():
     if surplus is None:
         state["status"] = state.get("aiseg_error") or f"スマートメーター（{conf['meter_ip']}）から返事がありません"
         return
-    full = eco and eco.get("remain") and eco.get("tank") and eco["remain"] * 100 // eco["tank"] >= 95
+    # 昼に沸かす目標：今夜の分＋翌日分（翌日分を先に沸かしておく）。目標に届いたら止める
+    try:
+        day_t, day_how = day_store_target(now)
+    except Exception as e:
+        print("昼の沸き上げの目標でエラー:", e, flush=True)
+        day_t, day_how = (int(eco["tank"] * 0.95) if eco and eco.get("tank") else None), "満タン近くまで"
+    state["day_store"] = {"target": day_t, "how": day_how}
+    full = bool(eco and eco.get("remain") is not None and day_t and eco["remain"] >= day_t)
     th = conf["threshold_w"]
     if not state["by_us"]:
         counters["over"] = counters["over"] + 15 if surplus >= th else 0
@@ -3350,8 +3391,13 @@ def tick():
         state["status"] = "余った電気で沸き増し中（" + (f"売電 {surplus / 1000:.1f}kW" if surplus >= 0 else f"買電 {-surplus / 1000:.1f}kW") + "）"
         stop = eco_pause if state.get("night_stop") else eco_auto
         if full:
-            stop("お湯がいっぱいになったため")
+            stop(f"今夜の分と翌日分（{day_t}L：{day_how}）まで沸いたため" if conf.get("hot_store_tomorrow", True) else "お湯がいっぱいになったため")
             state["ensure"] = False
+        elif eco and not eco.get("heating") and surplus >= 0 and eco.get("can_manual", True) and time.time() - state.get("day_resent", 0) > 600:
+            # エコキュートが自分の決めた量で沸き増しを終えたが、まだ目標に届かず電気も余っている：もう一度沸き増し
+            state["day_resent"] = time.time()
+            if not el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42"):
+                log(f"まだ電気が余っているので、沸き増しを続けます（いま {eco.get('remain')}L・目標 {day_t}L：{day_how}）")
         elif counters["buy"] >= 180 and not state.get("ensure"):
             stop("電気を買い始めたため")
 

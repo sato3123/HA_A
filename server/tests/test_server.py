@@ -499,12 +499,23 @@ class TestEveningPrep(SolarTestBase):
             self.assertTrue(m["state"]["prep"]["heating"])
             rest = m["evening_need"](today, 20)
             self.assertLess(rest["need"], need["need"])
+            # 昼に余った電気で沸かす目標：今夜の分＋翌日分（タンクの95%まで）
+            m["state"]["eco"] = {"tank": 460}
+            m["conf"]["hot_store_tomorrow"] = True
+            t, how = m["day_store_target"](datetime.combine(today, datetime.min.time()).replace(hour=11))
+            self.assertIn("翌日分", how)
+            self.assertLessEqual(t, int(460 * 0.95))
+            self.assertGreater(t, need["need"] - 1)
+            m["conf"]["hot_store_tomorrow"] = False
+            self.assertEqual(m["day_store_target"]()[0], int(460 * 0.95))
         finally:
             days.clear(); days.update(saved_days)
             m["conf"].update(keep_conf)
             m.update(stubs)
             m["state"]["night_heat"] = None
             m["state"]["prep"] = None
+            m["state"]["eco"] = None
+            m["conf"]["hot_store_tomorrow"] = True
             m["guard"]["active"] = False
 
 

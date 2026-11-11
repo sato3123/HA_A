@@ -3329,6 +3329,7 @@
       <div class="fl">何時までに用意するか：${ph}時</div><div class="chips">${[15, 16, 17, 18, 19, 20].map((v) => chip(v === ph, "prepHour", v, v + "時")).join("")}</div>`;
     const e = p.evening, n = p.night, st = p.prep || {};
     if (e) h += `<div class="note" style="color:var(--primary)">🛁 ${hotDay(e.date)}の${e.from}時に残しておく（今夜の沸き上げ ${e.to > 24 ? "翌" + (e.to - 24) : e.to}時まで使う分）：${hotNeedText(e)}${e.max != null ? `（多い日は ${e.max}L・${esc(e.how)}）` : ""}</div>`;
+    if (p.day_store && p.day_store.on && p.day_store.target != null) h += `<div class="note">☀ 昼に余った電気では ${p.day_store.target}L まで沸かします（${esc(p.day_store.how)}）</div>`;
     if (st.heating) h += `<div class="fl">♨ 夕方の準備のために沸かしています</div>`;
     else if (st.short > 0 && st.start_at && !st.done) h += `<div class="note">今のままだと ${st.short}L 足りないので、${st.start_at} ごろから沸かします（昼に余った電気で沸けば不要）</div>`;
     if (n) h += `<div class="note">${hotDay(n.date)}の朝（0時〜${n.to}時）：${hotNeedText(n)}${n.pct != null ? ` → 夜を減らす日は ${n.pct}% まで沸かします` : ""}</div>`;
