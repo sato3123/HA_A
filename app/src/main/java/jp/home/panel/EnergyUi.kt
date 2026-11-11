@@ -141,7 +141,7 @@ fun EnergyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 val max = (bars.maxOrNull() ?: 0.0).coerceAtLeast(0.01)
                 val color = MaterialTheme.colorScheme.primary
                 val now = java.time.LocalTime.now().hour
-                Canvas(Modifier.fillMaxWidth().height(110.dp)) {
+                Canvas(Modifier.fillMaxWidth().height(110.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "今日の時間ごとの使用量のグラフ" })) {
                     val bw = size.width / 24f
                     bars.forEachIndexed { i, v ->
                         val h = (v / max).toFloat() * (size.height - 4f)
@@ -171,7 +171,7 @@ fun EnergyDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                         }
                     }
                 }
-                Text("※ Home Assistant の「エネルギー」の設定と記録をもとに計算しています（数分おきに更新）。", style = MaterialTheme.typography.labelSmall, fontSize = 11.sp)
+                Text("※ Home Assistant の「エネルギー」の設定と記録をもとに計算しています（数分おきに更新）。", style = MaterialTheme.typography.labelSmall)
                 androidx.compose.material3.OutlinedButton(onClick = { analysis = true }) { Text("📊 回路別・時間別に分析（AiSEG2）") }
             }
         },

@@ -2124,7 +2124,7 @@
       <div class="note">設定は Home Assistant に保存されるので、この iPad を閉じていても実行されます。</div>
       ${S.haTz && S.haTz !== "Asia/Tokyo" ? `<div class="warn">Home Assistant の時間帯が「${esc(S.haTz)}」になっています。スケジュールの時刻がずれるので、Home Assistant の「設定 → システム → 一般」で時間帯を「Asia/Tokyo」にしてください。</div>` : ""}
       ${can ? "" : `<div class="info-box">作成・編集には管理者の権限が必要です。⚙ 設定 → アカウント で「管理者ログインを追加」してください。オン/オフと今すぐ実行は、このままでも使えます。</div>`}
-      ${S.autoMsg ? `<div class="info-box">${esc(S.autoMsg)}</div>` : ""}
+      ${S.autoMsg ? `<div class="info-box ${/しました$/.test(S.autoMsg) ? "ok-box" : /できません|ません|失敗|エラー/.test(S.autoMsg) ? "err-box" : ""}" role="status" aria-live="polite">${esc(S.autoMsg)}</div>` : ""}
       <div style="margin:12px 0"><button class="btn" data-set="newRule" ${can ? "" : "disabled"}>${tab === 0 ? "＋ 新しいスケジュール" : "＋ 新しいオートメーション"}</button></div>
       ${list.length ? "" : `<div class="note" style="padding:16px">${tab === 0 ? "スケジュール" : "オートメーション"}はまだありません。</div>`}
       ${list.map((a) => {
@@ -2954,7 +2954,7 @@
     renderThermoDialog();
   }
   function chartSVG(pts, hours, color, unit) {
-    const W = 640, H = 200, L = 44, B = 22, T = 8;
+    const W = 640, H = 210, L = 62, B = 26, T = 18;
     const end = Date.now(), start = end - hours * 3600000;
     let lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v));
     if (hi - lo < 2) { const c = (hi + lo) / 2; lo = c - 1; hi = c + 1; }
@@ -2977,7 +2977,12 @@
     let d = "";
     s.forEach((p, i) => { d += i === 0 ? `M${x(p.t)} ${y(p.v)}` : `H${x(p.t)} V${y(p.v)}`; });
     d += `H${W}`;
-    return `<svg viewBox="0 0 ${W} ${H}" class="chart">${g}<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5"/></svg>`;
+    // 最新の値に印と数値を付ける（表示だけ。データは変えない）
+    const last = s[s.length - 1], lv = Math.round(last.v * 10) / 10;
+    const ly = y(last.v), lx = Math.min(W - 4, x(last.t));
+    const mark = `<circle cx="${lx}" cy="${ly}" r="5" fill="${color}" stroke="var(--bg)" stroke-width="2"/><text x="${W - 8}" y="${ly < T + 20 ? ly + 22 : ly - 10}" class="lbl now" text-anchor="end">いま ${lv}${unit}</text>`;
+    const aria = `${hours <= 24 ? "24時間" : hours <= 72 ? "3日間" : "7日間"}のグラフ。最新 ${lv}${unit}、範囲 ${lo}〜${hi}${unit}`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${esc(aria)}">${g}<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5"/>${mark}</svg>`;
   }
   function summaryHTML(pts, unit) {
     const lo = pts.reduce((a, b) => (b.v < a.v ? b : a)), hi = pts.reduce((a, b) => (b.v > a.v ? b : a));
@@ -3232,7 +3237,7 @@
   function hotChartHTML(hist, tank, hourly) {
     hist = hist || [];
     if (hist.length < 2 && !hourly) return "";
-    const W = 640, H = 120, L = 44, B = 18, end = Date.now(), start = end - 86400000;
+    const W = 640, H = 130, L = 62, B = 26, end = Date.now(), start = end - 86400000;
     const used = new Array(24).fill(0);
     for (let i = 1; i < hist.length; i++) {
       const [t1, r1] = hist[i], r0 = hist[i - 1][1];
@@ -3259,7 +3264,7 @@
     const d = hist.filter((p) => p[0] * 1000 >= start - 600000).map((p, i) => `${i ? "L" : "M"}${x(p[0] * 1000)} ${y(p[1])}`).join(" ");
     const total = Math.round(used.reduce((a, b) => a + b, 0));
     return `<div class="note">24時間のお湯（この24時間で約${total}L 使用）　<span style="color:var(--primary)">━ 残り</span>　<span style="color:#42a5f5">■ 使った量（1時間ごと）</span></div>
-      <svg viewBox="0 0 ${W} ${H}" class="chart hot">${g}<path d="${d}" fill="none" stroke="var(--primary)" stroke-width="2.5"/></svg>`;
+      <svg viewBox="0 0 ${W} ${H}" class="chart hot" role="img" aria-label="${esc(`24時間のお湯のグラフ。約${total}L 使用`)}">${g}<path d="${d}" fill="none" stroke="var(--primary)" stroke-width="2.5"/></svg>`;
   }
   function renderSolar() {
     const box = $("#solar");
@@ -3547,7 +3552,7 @@
   }
   const camIdOf = (eid) => eid.split(".").slice(1).join(".").replace(/[^A-Za-z0-9_]/g, "_");
   function motionSVG(m, th, sel) {
-    const W = 640, H = 150, B = 18, end = Date.now(), start = end - 48 * 3600000, bin = 600000, n = 48 * 6;
+    const W = 640, H = 156, B = 26, end = Date.now(), start = end - 48 * 3600000, bin = 600000, n = 48 * 6;
     const bins = new Array(n).fill(-1);
     m.forEach(([t, v]) => { const i = Math.floor((t * 1000 - start) / bin); if (i >= 0 && i < n) bins[i] = Math.max(bins[i], v); });
     const top = Math.max(1, Math.min(th * 6, Math.max(th * 3, ...bins)));
@@ -3563,14 +3568,17 @@
     bins.forEach((v, i) => {
       if (v < 0) return;
       const h = Math.max(0.02, Math.min(1, v / top)) * (H - B);
-      g += `<rect x="${i * bw}" y="${H - B - h}" width="${Math.max(1, bw * 0.85)}" height="${h}" class="${v >= th ? "mv" : "mv weak"}" data-set="motionPick" data-id="${Math.round((start + i * bin + bin / 2) / 1000)}"/>`;
+      const id = Math.round((start + i * bin + bin / 2) / 1000);
+      g += `<rect x="${i * bw}" y="${H - B - h}" width="${Math.max(1, bw * 0.85)}" height="${h}" class="${v >= th ? "mv" : "mv weak"}" data-set="motionPick" data-id="${id}"/>`;
+      // 細い棒でも押しやすいように、上下いっぱいの透明な押せる範囲を重ねる（同じ操作）
+      g += `<rect x="${i * bw}" y="0" width="${bw}" height="${H - B}" class="mvhit" data-set="motionPick" data-id="${id}"/>`;
     });
     const yt = H - B - (th / top) * (H - B);
     g += `<line x1="0" x2="${W}" y1="${yt}" y2="${yt}" class="grid"/>`;
     const tk = new Date(start); tk.setMinutes(0, 0, 0); tk.setHours(tk.getHours() + (6 - (tk.getHours() % 6)));
     for (; tk.getTime() < end; tk.setHours(tk.getHours() + 6)) g += `<text x="${x(tk.getTime())}" y="${H - 4}" class="lbl" text-anchor="middle">${tk.getHours() === 0 ? `${tk.getMonth() + 1}/${tk.getDate()}` : tk.getHours() + "時"}</text>`;
     if (sel) g += `<line x1="${x(sel * 1000)}" x2="${x(sel * 1000)}" y1="0" y2="${H - B}" stroke="var(--error)" stroke-width="2"/>`;
-    return `<svg viewBox="0 0 ${W} ${H}" class="chart motion">${g}</svg>`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="chart motion" role="img" aria-label="48時間の動きのグラフ。棒を押すとその時刻の録画を表示">${g}</svg>`;
   }
   function camRecHTML() {
     if (!SERVER_MODE) return `<div class="note">ホームパネルのサーバーから開いたときだけ使えます。</div>`;
@@ -4235,7 +4243,7 @@
           <div class="note">「近くのスーパーの営業時間は？」のような場所に関わる質問のときだけ、ここに入れた場所を AI に伝えて、そこを基準に答えさせます。機器の操作には使いません。</div>
           <input type="text" class="search" id="homeLoc" value="${esc(store.get("homeLocation", ""))}" placeholder="例：東京都世田谷区三軒茶屋（町名くらいまでで十分です）">
           <div class="brow"><button class="btn" data-set="homeLocSave">保存</button><button class="btn outline" data-set="homeLocHa">Home Assistant の自宅の位置を使う</button></div>
-          <div class="note" id="homeLocMsg"></div>`;
+          <div class="note ok-msg" id="homeLocMsg" role="status" aria-live="polite"></div>`;
       }
       case "screensaver": return `<div class="sec">スクリーンセーバー</div>${screensaverSettingsHTML()}`;
       case "calendar": return `<div class="sec">カレンダー（TimeTree）</div>${calendarSettingsHTML()}`;
@@ -4414,7 +4422,7 @@
         <div data-sec="timers"><div class="timerstrip hidden" id="timerStrip"></div></div>
         <div data-sec="energy"><div id="live"></div><div id="energy"></div><div id="solar"></div></div>
         <div data-sec="automations"><div id="quick"></div></div>
-        <div data-sec="devices"><div class="roombar" id="roombar"></div><main class="grid" id="grid"></main>
+        <div data-sec="devices"><h2 class="sechead">🏠 機器の操作</h2><div class="roombar" id="roombar"></div><main class="grid" id="grid"></main>
           <div class="note" id="empty" style="text-align:center;padding:32px"></div></div>
       </div>
     </div>

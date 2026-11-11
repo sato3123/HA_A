@@ -11,6 +11,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -102,13 +106,22 @@ fun TimerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     }
                 }
                 Text("時間を指定", style = MaterialTheme.typography.labelLarge)
-                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { minutes = (minutes - 1).coerceAtLeast(0) }) { Text("−") }
-                    Text("${minutes}分", fontSize = 22.sp)
-                    TextButton(onClick = { minutes += 1 }) { Text("＋") }
-                    TextButton(onClick = { seconds = (seconds - 10 + 60) % 60 }) { Text("−") }
-                    Text("${seconds}秒", fontSize = 22.sp)
-                    TextButton(onClick = { seconds = (seconds + 10) % 60 }) { Text("＋") }
+                // UI-022：分と秒をそれぞれ「見出し・−・数字・＋」のまとまりにする（押せる大きさ 48dp）
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { minutes = (minutes - 1).coerceAtLeast(0) }, modifier = Modifier.size(48.dp)
+                            .semantics { contentDescription = "分を減らす" }) { Text("−", fontSize = 20.sp) }
+                        Text("${minutes}分", fontSize = 22.sp, modifier = Modifier.widthIn(min = 64.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        TextButton(onClick = { minutes += 1 }, modifier = Modifier.size(48.dp)
+                            .semantics { contentDescription = "分を増やす" }) { Text("＋", fontSize = 20.sp) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { seconds = (seconds - 10 + 60) % 60 }, modifier = Modifier.size(48.dp)
+                            .semantics { contentDescription = "秒を減らす" }) { Text("−", fontSize = 20.sp) }
+                        Text("${seconds}秒", fontSize = 22.sp, modifier = Modifier.widthIn(min = 64.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        TextButton(onClick = { seconds = (seconds + 10) % 60 }, modifier = Modifier.size(48.dp)
+                            .semantics { contentDescription = "秒を増やす" }) { Text("＋", fontSize = 20.sp) }
+                    }
                 }
                 OutlinedTextField(label, { label = it }, singleLine = true, label = { Text("名前（例：パスタ）※なくてもOK") })
                 Button(
@@ -117,17 +130,24 @@ fun TimerDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 ) { Text("スタート") }
                 if (timers.isNotEmpty()) {
                     Text("動いているタイマー", style = MaterialTheme.typography.labelLarge)
+                    // UI-022：名前・残り時間・状態と、操作（一時停止／再開・取消）を分けて並べる
                     timers.forEach { t ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(formatRemaining(t.remaining(now)), fontSize = 24.sp, fontWeight = FontWeight.Medium)
+                        androidx.compose.material3.HorizontalDivider()
+                        androidx.compose.foundation.layout.FlowRow(verticalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.weight(1f).widthIn(min = 150.dp)) {
                                 Text(
-                                    (t.label.ifBlank { "タイマー" }) + "（" + speakRemaining(t.totalMs) + "）",
-                                    style = MaterialTheme.typography.bodySmall,
+                                    (t.label.ifBlank { "タイマー" }) + "（" + speakRemaining(t.totalMs) + "）" + if (t.running) "" else "・一時停止中",
+                                    style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium,
                                 )
+                                Text(formatRemaining(t.remaining(now)), fontSize = 24.sp, fontWeight = FontWeight.Medium,
+                                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"))
                             }
-                            TextButton(onClick = { vm.pauseResumeTimer(t.id) }) { Text(if (t.running) "一時停止" else "再開") }
-                            TextButton(onClick = { vm.cancelTimer(t.id) }) { Text("取消") }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(onClick = { vm.pauseResumeTimer(t.id) }) { Text(if (t.running) "一時停止" else "再開") }
+                                Spacer(Modifier.size(8.dp))
+                                TextButton(onClick = { vm.cancelTimer(t.id) },
+                                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("取消") }
+                            }
                         }
                     }
                 }

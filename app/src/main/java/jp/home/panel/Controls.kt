@@ -141,7 +141,7 @@ fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(stateLabel(e), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(stateLabel(e), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             TimerBadge(e, vm)
         }
     }

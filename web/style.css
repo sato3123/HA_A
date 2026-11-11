@@ -446,7 +446,7 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 div.warn::before { content: "⚠ "; }
 .msg::before { content: "⚠ "; }
 .ok-msg { color: var(--primary); }
-.ok-msg::before { content: "✓ "; }
+.ok-msg:not(:empty)::before { content: "✓ "; }
 /* ==== UI-016：選んでいるものは、色だけでなく ✓ でも示す（一つを選ぶ・いくつも選ぶ、どちらも） ==== */
 .chip.sel::before { content: "✓ "; }
 .chip.timer::before, .chip.sel.timer::before { content: none; }
@@ -475,3 +475,23 @@ div.warn::before { content: "⚠ "; }
 .card, .tile, .auto, .menurow { border-radius: var(--radius); }
 /* UI-036：時計などの数字が変わっても横に揺れない（幅をそろえる・上の UI-027）。マイクの点滅は控えめに */
 .mic.listen { animation-duration: 1.8s; }
+
+.info-box.ok-box::before { content: "✓ "; font-weight: 700; }
+.info-box.err-box { background: color-mix(in srgb, var(--error) 18%, var(--surface)); color: var(--on); }
+.info-box.err-box::before { content: "⚠ "; }
+/* UI-009：ホーム画面の「機器の操作」を見出しで分ける。ほかの欄とのあいだにも少し間をあける */
+.sechead { font-size: 20px; font-weight: 700; margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--outline); }
+#home > div[data-sec] + div[data-sec] { margin-top: 10px; }
+/* UI-009：ホーム画面の「機器の操作」を見出しで分ける。ほかの欄とのあいだにも少し間をあける */
+.sechead { font-size: 20px; font-weight: 700; margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--outline); }
+#home > div[data-sec] + div[data-sec] { margin-top: 10px; }
+
+/* UI-029 グラフの読みやすさ（表示だけ） */
+.chart .lbl.now { fill: var(--on); font-weight: 700; font-size: 15px; }
+.chart.motion .mvhit { fill: transparent; cursor: pointer; }
+.chart.motion .mvhit:hover { fill: currentColor; opacity: 0.06; }
+@media (max-width: 600px) {
+  /* スマホ幅では図が縮むので、目盛りの文字を大きめに描く */
+  .chart .lbl { font-size: 22px; }
+  .chart .lbl.now { font-size: 24px; }
+}

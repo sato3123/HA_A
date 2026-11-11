@@ -383,7 +383,7 @@ fun DemandView(vm: MainViewModel) {
         val top = listOfNotNull(dayMax, limit.takeIf { !it.isNaN() }).maxOrNull()!!.coerceAtLeast(0.5) * 1.1
         val measurer = androidx.compose.ui.text.rememberTextMeasurer()
         val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-        Canvas(Modifier.fillMaxWidth().height(200.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(200.dp).then(Modifier.androidx.compose.ui.semantics.semantics { androidx.compose.ui.semantics.contentDescription = "30分ごとの電力のグラフ" })) {
             val left = 34f
             val bottom = size.height - 18f
             val w = (size.width - left) / 48f

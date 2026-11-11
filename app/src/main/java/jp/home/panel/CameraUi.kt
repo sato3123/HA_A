@@ -31,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import org.webrtc.EglBase
@@ -327,8 +328,11 @@ fun CameraViewer(vm: MainViewModel) {
                 ) { Text("🔍 ${String.format("%.1f", zoom.scale)}倍　元に戻す", color = Color.White) }
             }
             Column(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("📷 $name", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                // UI-021：名前と操作を分ける。狭い画面では名前を1段目、操作を2段目に折り返す
+                FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text("📷 $name", color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).widthIn(min = 180.dp).align(Alignment.CenterVertically))
                     play?.let { p ->
                         TextButton(onClick = { showModes = !showModes }) {
                             Text("画質：" + (if (direct != null) DIRECT_MODES.first { it.first == mode }.second else label(p.first)) + " ▾", color = Color.White)

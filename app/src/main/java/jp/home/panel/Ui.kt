@@ -310,6 +310,13 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
                     }
                 }
                 HomeSection.DEVICES -> {
+                    // UI-009：いちばんよく使う「機器の操作」を見出しで分かるように（並び順・中身は今までどおり）
+                    item(span = { full(this) }, key = "dev_head") {
+                        Column(Modifier.padding(top = 10.dp)) {
+                            androidx.compose.material3.HorizontalDivider()
+                            Text("🏠 機器の操作", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
+                        }
+                    }
                     if (entities.isEmpty()) {
                         item(span = { full(this) }) {
                             Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -380,6 +387,10 @@ private fun HomeScreen(vm: MainViewModel, onMic: () -> Unit, onEnableWake: () ->
             onDismissRequest = { detailId = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
+            // UI-020：「閉じる」は上に固定し、内容だけをスクロールする
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { detailId = null }, modifier = Modifier.heightIn(min = 48.dp)) { Text("✕ 閉じる") }
+            }
             EntityDetail(detail, vm)
         }
     }
