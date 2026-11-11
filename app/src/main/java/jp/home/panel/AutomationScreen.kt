@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -201,17 +202,20 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
             ?: states[id]?.name?.let { withRoom(vm.roomNameOf(id), it) } ?: id
     }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    // UI-005：見出し（キャンセル）と、保存・削除の欄は画面に固定し、内容だけをスクロールする
+    Column(Modifier.fillMaxSize().imePadding()) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp)) {
             TextButton(onClick = onDone) { Text("← キャンセル") }
             Text(
                 (if (isNew) "新しい" else "") + (if (rule.schedule) "スケジュール" else "オートメーション"),
                 style = MaterialTheme.typography.titleLarge,
             )
         }
+        androidx.compose.material3.HorizontalDivider()
+    Column(
+        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
         OutlinedTextField(
             rule.name, { rule = rule.copy(name = it) },
             modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(),
@@ -384,6 +388,10 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
             Text("内容：" + ruleSummary(rule, nameOf), modifier = Modifier.padding(12.dp))
         }
+        Spacer(Modifier.size(8.dp))
+    }
+        androidx.compose.material3.HorizontalDivider()
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
@@ -408,7 +416,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                 ) { Text("この自動化を削除") }
             }
         }
-        Spacer(Modifier.size(32.dp))
+        }
     }
 
     pick?.let { p ->

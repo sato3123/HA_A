@@ -266,8 +266,8 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 @media (max-width: 600px) {
   .wrap { padding: 8px 10px 40px; }
   /* UI-001：狭い画面でもアイコンだけにせず、短い名前を下に出す（折り返して収める） */
-  .top { flex-wrap: wrap; row-gap: 4px; }
-  .top .tbtn { display: inline-flex; flex-direction: column; align-items: center; gap: 0; padding: 4px 6px; min-width: 52px; }
+  .top { flex-wrap: wrap; row-gap: 4px; gap: 2px; justify-content: flex-end; }
+  .top .tbtn { display: inline-flex; flex-direction: column; align-items: center; gap: 0; padding: 4px 3px; min-width: 46px; }
   .top .tl { display: block; font-size: 12px; line-height: 1.2; white-space: nowrap; }
   .top .ti { font-size: 20px; line-height: 1.2; }
   .time { font-size: 40px; }
@@ -381,3 +381,14 @@ select { font: inherit; font-size: 15px; background: var(--surface2); color: var
 .tbtn.danger { color: var(--error); }
 .btn.danger { background: none; color: var(--error); border: 1px solid var(--error); }
 .brow .push { margin-left: auto; }
+
+/* ==== UI-007・UI-032：キーボードで操作しているときに、いまの場所が見えるように（全部の配色で） ==== */
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; border-radius: 6px; }
+.sw input:focus-visible + span { outline: 3px solid var(--primary); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+/* ==== UI-005・UI-023：ページの見出し（戻る）と、自動化の「保存」欄を画面に固定 ==== */
+.page .pagebar { position: sticky; top: 0; z-index: 3; background: var(--bg); padding-top: 6px; padding-bottom: 6px; }
+.rulefoot { position: sticky; bottom: 0; z-index: 3; background: var(--bg); margin: 12px 0 0; padding: 10px 0 calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--outline); }
+/* ==== UI-022：タイマー ==== */
+.numlab { display: inline-flex; align-items: center; gap: 6px; }
+.timerrow { gap: 8px; }

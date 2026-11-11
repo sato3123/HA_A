@@ -721,6 +721,79 @@
     }
   }
 
+  // ================= キーボード・読み上げ（UI-007・UI-020） =================
+  // ボタンでない押せる要素（data-set / data-act の div など）に、タブで届き Enter・Space で押せるようにする。
+  // 押したときの処理は、これまでのクリックの処理をそのまま使う（呼び出しは増えない）
+  const A11Y_SEL = "[data-set]:not(button):not(input):not(select):not(textarea):not(label):not(option):not(.dlg-bg):not(.sheet-bg), .head[data-act]";
+  function a11yMark(root) {
+    if (!root || !root.querySelectorAll) return;
+    const list = root.matches && root.matches(A11Y_SEL) ? [root, ...root.querySelectorAll(A11Y_SEL)] : root.querySelectorAll(A11Y_SEL);
+    for (const el of list) {
+      if (el.dataset.act === "none") continue;
+      if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+      if (!el.hasAttribute("role")) el.setAttribute("role", "button");
+    }
+    for (const c of root.querySelectorAll ? root.querySelectorAll(".chip, .tab") : []) c.setAttribute("aria-pressed", c.classList.contains("sel") ? "true" : "false");
+    for (const inp of root.querySelectorAll ? root.querySelectorAll('label.sw input[type="checkbox"]:not([aria-label])') : []) {
+      const tile = inp.closest(".tile, .auto, .row");
+      const nm = tile && (tile.querySelector(".name, .an, .rt") || {}).textContent;
+      if (nm) inp.setAttribute("aria-label", nm.trim().split("\n")[0].slice(0, 40) + "（入／切）");
+    }
+  }
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) a11yMark(n); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  const MODALS = ["#sheet", "#info", "#thermoDlg", "#camBox", "#vpop", "#page", "#alarm"];
+
+  const modalFocus = new Map();
+  function openModal() {
+    for (const sel of ["#alarm", "#camBox", "#info", "#thermoDlg", "#vpop", "#sheet", "#page"]) {
+      const m = $(sel);
+      if (m && !m.classList.contains("hidden")) return m;
+    }
+    return null;
+  }
+  function focusables(m) {
+    return [...m.querySelectorAll('button, [href], input, select, textarea, [tabindex="0"]')].filter((x) => !x.disabled && x.offsetParent !== null);
+  }
+  // モーダルを開いたら中へ、閉じたら開く前の場所へフォーカスを移す
+  new MutationObserver((ms) => {
+    for (const m of ms) {
+      const el = m.target;
+      if (!el.id || !MODALS.includes("#" + el.id)) continue;
+      const shown = !el.classList.contains("hidden");
+      if (shown && !modalFocus.has(el)) {
+        modalFocus.set(el, document.activeElement);
+        setTimeout(() => { const f = focusables(el)[0]; if (f && !el.contains(document.activeElement)) try { f.focus({ preventScroll: true }); } catch (e) { /* なにもしない */ } }, 30);
+      } else if (!shown && modalFocus.has(el)) {
+        const back = modalFocus.get(el);
+        modalFocus.delete(el);
+        if (back && document.contains(back)) try { back.focus({ preventScroll: true }); } catch (e) { /* なにもしない */ }
+      }
+    }
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"], subtree: true, attributeOldValue: false });
+  document.addEventListener("keydown", (ev) => {
+    const t = ev.target;
+    if ((ev.key === "Enter" || ev.key === " ") && t && t.getAttribute && t.getAttribute("role") === "button" && !/^(BUTTON|INPUT|SELECT|TEXTAREA|LABEL|A)$/.test(t.tagName)) {
+      ev.preventDefault();
+      t.click();
+      return;
+    }
+    const m = openModal();
+    if (!m) return;
+    if (ev.key === "Escape") {
+      // それぞれの「閉じる」と同じ操作だけをする
+      const close = m.querySelector('#sheetClose, [data-set="popClose"], [data-set="camClose"], [data-set="close"], [data-set="infoClose"], [data-set="thermoClose"], .dlg-x');
+      if (close && !(m.id === "page" && S.edit)) { ev.preventDefault(); close.click(); }
+      return;
+    }
+    if (ev.key === "Tab" && m.id !== "page") {
+      const f = focusables(m);
+      if (!f.length) return;
+      if (ev.shiftKey && document.activeElement === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); }
+      else if (!ev.shiftKey && document.activeElement === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
+    }
+  });
+
   function bindControls(root) {
     root.addEventListener("click", (ev) => {
       if (ev.target.closest("label.sw, input, select, label.msel")) return; // スイッチ・選択は change で処理
@@ -1492,12 +1565,12 @@
   function openPageKeep() {
     if (S.page !== "settings") return;
     const page = $("#page");
-    const y = page.scrollTop;
-    page.innerHTML = settingsHTML();
-    renderSelList();
-    fillExtra();
-    renderUpdate();
-    page.scrollTop = y;
+    withKeptFocus(page, () => {
+      page.innerHTML = settingsHTML();
+      renderSelList();
+      fillExtra();
+      renderUpdate();
+    });
   }
   function closePage() {
     if (S.page === "help") store.set("helpShown", true);
@@ -2187,16 +2260,43 @@
         <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(ACTION_DOMAINS, "", true)}</select></div>
       <div class="summary" id="ruleSummary">内容：${esc(ruleSummary(r))}</div>
       ${S.editError ? `<div class="warn">${esc(S.editError)}</div>` : ""}
-      <div class="brow" style="margin:12px 0 40px"><button class="btn" data-set="ruleSave" ${S.saving ? "disabled" : ""}>${S.saving ? "保存しています…" : "保存"}</button>
+      <div class="brow rulefoot"><button class="btn" data-set="ruleSave" ${S.saving ? "disabled" : ""}>${S.saving ? "保存しています…" : "保存"}</button>
         ${r.isNew ? "" : `<button class="btn danger push" data-set="ruleDelete">この自動化を削除</button>`}</div></div>`;
+  }
+
+  // ---- 描き直しても、入力中の欄・カーソルの位置・スクロールを保つ（UI-004・UI-023） ----
+  function focusKey(el) {
+    if (!el || el === document.body) return null;
+    if (el.id) return "#" + CSS.escape(el.id);
+    const parts = [el.tagName.toLowerCase()];
+    for (const a of ["data-set", "data-act", "data-id", "data-key", "data-f", "data-v", "data-i", "data-kind", "name"]) {
+      const v = el.getAttribute(a);
+      if (v !== null) parts.push(`[${a}="${CSS.escape(v)}"]`);
+    }
+    return parts.length > 1 ? parts.join("") : null;
+  }
+  function withKeptFocus(root, render) {
+    const a = document.activeElement;
+    const inside = a && root.contains(a);
+    const key = inside ? focusKey(a) : null;
+    let sel = null;
+    try { if (inside && typeof a.selectionStart === "number") sel = [a.selectionStart, a.selectionEnd]; } catch (e) { sel = null; }
+    const y = root.scrollTop;
+    render();
+    root.scrollTop = y;
+    if (!key) return;
+    const n = root.querySelector(key);
+    if (!n) return;
+    try {
+      n.focus({ preventScroll: true });
+      if (sel && typeof n.setSelectionRange === "function") n.setSelectionRange(sel[0], sel[1]);
+    } catch (e) { /* フォーカスを戻せない要素は何もしない */ }
   }
 
   function renderAuto() {
     if (S.page !== "auto") return;
     const page = $("#page");
-    const y = page.scrollTop;
-    page.innerHTML = S.edit ? editorHTML() : autoListHTML();
-    page.scrollTop = y;
+    withKeptFocus(page, () => { page.innerHTML = S.edit ? editorHTML() : autoListHTML(); });
   }
 
   async function onAutoSetting(el) {
@@ -2439,10 +2539,25 @@
     const list = $("#timerList");
     if (list) {
       const now = Date.now();
-      list.innerHTML = S.timers.length ? S.timers.map((t) => `<div class="row" style="cursor:default"><span class="rt"><span style="font-size:24px;font-variant-numeric:tabular-nums">${formatRemaining(timerRemaining(t, now))}</span>
-        <div class="sub">${esc(t.label || "タイマー")}（${speakRemaining(t.totalMs)}）</div></span>
-        <button class="tbtn" data-set="timerPause" data-id="${t.id}">${t.endAt ? "一時停止" : "再開"}</button>
-        <button class="tbtn" data-set="timerCancel" data-id="${t.id}">取消</button></div>`).join("") : `<div class="note">動いているタイマーはありません</div>`;
+      const sig = S.timers.map((t) => t.id).join(",");
+      if (list.dataset.sig !== sig || !S.timers.length) {
+        list.dataset.sig = sig;
+        list.innerHTML = S.timers.length ? S.timers.map((t) => `<div class="row timerrow" style="cursor:default" data-tid="${t.id}">
+          <span class="rt"><span class="tremain" style="font-size:24px;font-variant-numeric:tabular-nums" aria-live="off"></span>
+          <div class="sub"><b>${esc(t.label || "タイマー")}</b>（${speakRemaining(t.totalMs)}）<span class="tstate"></span></div></span>
+          <button class="tbtn tpause" data-set="timerPause" data-id="${t.id}"></button>
+          <button class="tbtn danger" data-set="timerCancel" data-id="${t.id}" aria-label="${esc(t.label || "タイマー")}を取り消す">取消</button></div>`).join("")
+          : `<div class="note">動いているタイマーはありません</div>`;
+      }
+      for (const t of S.timers) {
+        const row = list.querySelector(`[data-tid="${CSS.escape(String(t.id))}"]`);
+        if (!row) continue;
+        row.querySelector(".tremain").textContent = formatRemaining(timerRemaining(t, now));
+        row.querySelector(".tstate").textContent = t.endAt ? "" : "・一時停止中";
+        const b = row.querySelector(".tpause");
+        const lbl = t.endAt ? "一時停止" : "再開";
+        if (b.textContent !== lbl) b.textContent = lbl;
+      }
     }
     const ss = $("#ssTimers");
     if (ss) ss.innerHTML = S.timers.map((t) => `<div>⏱ ${esc(t.label ? t.label + " " : "")}${formatRemaining(timerRemaining(t))}</div>`).join("");
@@ -2453,9 +2568,10 @@
     return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="close">← 戻る</button><h2>⏱ タイマー</h2></div>
       <div class="field"><div class="fl">すぐ始める</div><div class="brow">${[1, 3, 5, 10, 15, 30, 60].map((m) => `<button class="tb" data-set="timerQuick" data-id="${m * 60}">${m >= 60 ? m / 60 + "時間" : m + "分"}</button>`).join("")}</div></div>
       <div class="field"><div class="fl">時間を指定</div>
-        <div class="brow" style="align-items:center"><input type="number" id="tMin" min="0" max="999" value="3" style="width:90px" class="search"> 分
-          <input type="number" id="tSec" min="0" max="59" value="0" style="width:90px" class="search"> 秒</div>
-        <input type="text" id="tLabel" class="search" placeholder="名前（例：パスタ）※なくてもOK" style="max-width:420px">
+        <div class="brow" style="align-items:center"><label class="numlab"><input type="number" id="tMin" min="0" max="999" value="3" style="width:90px" class="search" aria-label="分"> 分</label>
+          <label class="numlab"><input type="number" id="tSec" min="0" max="59" value="0" style="width:90px" class="search" aria-label="秒"> 秒</label></div>
+        <label class="fl" for="tLabel">名前（なくてもOK）</label>
+        <input type="text" id="tLabel" class="search" placeholder="例：パスタ" style="max-width:420px">
         <div><button class="btn" data-set="timerStart">スタート</button></div></div>
       <div class="field"><div class="fl">動いているタイマー</div><div id="timerList"></div></div>
       ${SERVER_MODE ? `<div class="field"><div class="fl">機器のタイマー</div><div id="devTimerList">${devTimerListHTML()}</div></div>` : ""}
@@ -4142,7 +4258,7 @@
   async function onNewSetting(el) {
     const id = el.dataset.id;
     switch (el.dataset.set) {
-      case "menu": S.settingsPage = id; openPage("settings"); return true;
+      case "menu": S.menuY = $("#page").scrollTop; S.settingsPage = id; openPage("settings"); return true;
       case "simpleTap": { const e = S.ha && S.ha.states[id]; if (e && !isUnav(e)) primary(e); return true; }
       case "advToggle": S.showAdv = !S.showAdv; openPage("settings"); return true;
       case "simpleMode": store.set("simpleMode", el.checked); applySimple(); return true;
@@ -4150,7 +4266,16 @@
       case "simpleOff": store.set("simpleMode", false); applySimple(); return true;
       case "guideOpen": S.settingsPage = id; openPage("settings"); return true;
       case "guideDone": store.set("guideDone", true); renderGuide(); return true;
-      case "menuBack": S.settingsPage = null; openPage("settings"); return true;
+      case "menuBack": {
+        const from = S.settingsPage;
+        S.settingsPage = null;
+        openPage("settings");
+        // 設定のメニューに戻ったら、さっきの位置と項目に戻す（UI-023）
+        $("#page").scrollTop = S.menuY || 0;
+        const b = $(`#page [data-set="menu"][data-id="${CSS.escape(from || "")}"]`);
+        if (b) try { b.focus({ preventScroll: true }); } catch (e) { /* なにもしない */ }
+        return true;
+      }
       case "profile": switchProfile(id); if (S.page === "settings") openPageKeep(); return true;
       case "profileAdd": {
         const n = prompt("ユーザーの名前（例：パパ、ママ、子ども）");
@@ -4269,7 +4394,7 @@
       <div class="top"><span class="badge" id="badge"></span><span class="profbar" id="profileBar"></span><span class="sp"></span>
         <button class="tbtn hidden" id="btnClimate"></button><button class="tbtn" id="btnHelp" aria-label="使い方"><span class="ti">？</span><span class="tl"> 使い方</span></button><button class="tbtn" id="btnTimers" aria-label="タイマー"><span class="ti">⏱</span><span class="tl"> タイマー</span></button><button class="tbtn" id="btnAuto" aria-label="自動化"><span class="ti">⏰</span><span class="tl"> 自動化</span></button><button class="tbtn" id="btnSettings" aria-label="設定"><span class="ti">⚙</span><span class="tl"> 設定</span></button></div>
       <div id="updateBanner"></div>
-      <div class="msg hidden" id="msg"></div>
+      <div class="msg hidden" id="msg" role="status" aria-live="polite"></div>
       <div id="guide"></div>
       <div id="groups"></div>
       <div id="simpleBox" class="hidden"></div>
@@ -4285,18 +4410,18 @@
           <div class="note" id="empty" style="text-align:center;padding:32px"></div></div>
       </div>
     </div>
-    <div class="vpop hidden" id="vpop"><div class="vpop-in"><button class="tbtn vpop-x" data-set="popClose">✕ 閉じる</button><div id="vpopBody"></div></div></div>
-    <div class="sheet hidden" id="sheet"><div class="sheet-bg" id="sheetBg"></div>
+    <div class="vpop hidden" id="vpop" role="dialog" aria-modal="true" aria-label="音声"><div class="vpop-in"><button class="tbtn vpop-x" data-set="popClose">✕ 閉じる</button><div id="vpopBody"></div></div></div>
+    <div class="sheet hidden" id="sheet" role="dialog" aria-modal="true" aria-label="機器の詳細"><div class="sheet-bg" id="sheetBg"></div>
       <div class="sheet-body"><button class="sheet-close" id="sheetClose" aria-label="閉じる">×</button><div id="sheetContent"></div></div></div>
-    <div class="dlgwrap hidden" id="info"></div>
-    <div class="dlgwrap hidden" id="thermoDlg"></div>
-    <div class="cambox hidden" id="camBox"><video id="camVideo" playsinline autoplay muted></video><img id="camImg" class="hidden" alt="">
+    <div class="dlgwrap hidden" id="info" role="dialog" aria-modal="true" aria-label="動作の詳細"></div>
+    <div class="dlgwrap hidden" id="thermoDlg" role="dialog" aria-modal="true" aria-label="温度計"></div>
+    <div class="cambox hidden" id="camBox" role="dialog" aria-modal="true" aria-label="カメラ"><video id="camVideo" playsinline autoplay muted></video><img id="camImg" class="hidden" alt="">
       <div class="cambar"><span id="camName" style="flex:1"></span><button class="tbtn" id="camSound" data-set="camSound">🔇 音</button><button class="tbtn" id="camMode" data-set="camMenu"></button><button class="tbtn" data-set="camClose">✕ 閉じる</button></div>
       <div class="chips cammodes hidden" id="camModes"></div><div class="camnote hidden" id="camNote"></div><button class="camzoom hidden" id="camZoom">🔍 元に戻す</button></div>
     <div class="page hidden" id="page"></div>
     <div class="saver hidden" id="saver"><img class="ssimg" alt=""><img class="ssimg" alt="">
       <div class="ssinfo"><div id="ssTime" class="sst"></div><div id="ssDate"></div><div id="ssWeather"></div><div id="ssTimers"></div></div></div>
-    <div class="alarm hidden" id="alarm"></div>`;
+    <div class="alarm hidden" id="alarm" role="alertdialog" aria-modal="true" aria-label="タイマー"></div>`;
 
     bindControls($("#grid"));
     bindControls($("#sheetContent"));
