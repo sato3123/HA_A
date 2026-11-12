@@ -10,10 +10,10 @@
   const UPDATE_SERVICE = { domain: "shell_command", service: "update_homepanel" };
   // Home Assistant の /local/ に置いた場合と、専用サーバー（Proxmox の LXC）から配信する場合がある
   const SERVER_MODE = !location.pathname.startsWith("/local/");
-  const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script", "camera"];
+  const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "humidifier", "lock", "vacuum", "input_boolean", "button", "scene", "script", "camera"];
   const ACTION_DOMAINS = SUPPORTED.filter((d) => d !== "camera");
-  const SIMPLE = ["switch", "input_boolean", "scene", "script"];
-  const TOGGLEABLE = ["light", "fan", "switch", "input_boolean"];
+  const SIMPLE = ["switch", "input_boolean", "scene", "script", "button"];
+  const TOGGLEABLE = ["light", "fan", "switch", "input_boolean", "humidifier"];
 
   // ================= 小道具 =================
   const $ = (s, el = document) => el.querySelector(s);
@@ -37,16 +37,16 @@
   const dom = (e) => e.entity_id.split(".")[0];
   const nameOf = (e) => (e.attributes && e.attributes.friendly_name) || e.entity_id;
   const isUnav = (e) => e.state === "unavailable" || e.state === "unknown";
-  const isOn = (e) => ["on", "open", "opening", "heat", "cool", "auto", "heat_cool", "dry", "fan_only"].includes(e.state);
+  const isOn = (e) => ["on", "open", "opening", "heat", "cool", "auto", "heat_cool", "dry", "fan_only", "cleaning", "unlocked"].includes(e.state);
   const colorModes = (e) => (e.attributes && e.attributes.supported_color_modes) || [];
   const dimmable = (e) => colorModes(e).some((m) => m !== "onoff");
   const hasPct = (e) => dom(e) === "fan" && e.attributes && "percentage" in e.attributes;
   const hasPos = (e) => dom(e) === "cover" && num(e.attributes, "current_position") !== null;
   const canStop = (e) => ((e.attributes && e.attributes.supported_features) & 8) !== 0;
-  const isWide = (e) => ({ climate: true, light: dimmable(e), fan: hasPct(e), cover: hasPos(e), camera: true }[dom(e)] || false);
+  const isWide = (e) => ({ climate: true, light: dimmable(e), fan: hasPct(e), cover: hasPos(e), camera: true, lock: true, vacuum: true }[dom(e)] || false);
 
   // ================= 表示名 =================
-  const DOMAIN_LABEL = { light: "照明", switch: "スイッチ", fan: "ファン", cover: "カーテン・シャッター", climate: "エアコン", input_boolean: "切り替え", scene: "シーン", script: "スクリプト", camera: "カメラ" };
+  const DOMAIN_LABEL = { light: "照明", switch: "スイッチ", fan: "ファン", cover: "カーテン・シャッター", climate: "エアコン", input_boolean: "切り替え", scene: "シーン", script: "スクリプト", camera: "カメラ", humidifier: "加湿器", lock: "鍵", vacuum: "ロボット掃除機", button: "ボタン" };
   const HVAC = { off: "停止", heat: "暖房", cool: "冷房", auto: "自動", heat_cool: "冷暖自動", dry: "除湿", fan_only: "送風" };
   const FANM = { auto: "自動", low: "弱", medium: "中", middle: "中", mid: "中", high: "強", quiet: "静音", silent: "静音", turbo: "パワフル", strong: "パワフル", powerful: "パワフル", on: "オン", off: "オフ" };
   const SWING = { off: "固定", on: "スイング", vertical: "上下", horizontal: "左右", both: "上下左右" };
@@ -67,6 +67,12 @@
     const a = e.attributes || {};
     switch (dom(e)) {
       case "scene": case "script": return "タップで実行";
+      case "button": return "タップで押す";
+      case "lock": return { locked: "施錠", unlocked: "解錠", locking: "施錠しています…", unlocking: "解錠しています…", jammed: "引っかかっています", open: "開いています" }[e.state] || e.state;
+      case "vacuum": return ({ cleaning: "掃除中", docked: "充電台", returning: "充電台へ戻っています", idle: "待機中", paused: "一時停止", error: "エラー" }[e.state] || e.state) +
+        (num(a, "battery_level") !== null ? `・電池 ${Math.round(num(a, "battery_level"))}%` : "");
+      case "humidifier": return (e.state === "on" ? "オン" : "オフ") + (num(a, "current_humidity") !== null ? `・湿度 ${Math.round(num(a, "current_humidity"))}%` : "") +
+        (e.state === "on" && num(a, "humidity") !== null ? `（設定 ${Math.round(num(a, "humidity"))}%）` : "");
       case "camera": return { idle: "待機中", streaming: "配信中", recording: "録画中" }[e.state] || e.state;
       case "cover": return { open: "開", closed: "閉", opening: "開いています…", closing: "閉じています…" }[e.state] || e.state;
       case "climate": {
@@ -386,6 +392,9 @@
   function primary(e) {
     const d = dom(e);
     if (d === "scene" || d === "script") call(e, "turn_on");
+    else if (d === "button") call(e, "press");
+    else if (d === "vacuum") call(e, e.state === "cleaning" ? "return_to_base" : "start");
+    else if (d === "lock") { if (e.state === "unlocked") call(e, "lock"); }
     else if (d === "cover") call(e, e.state === "open" || e.state === "opening" ? "close_cover" : "open_cover");
     else if (d === "climate") call(e, e.state === "off" ? "turn_on" : "turn_off");
     else call(e, "toggle");
@@ -400,7 +409,8 @@
   }
   function shownEntitiesAll() {
     const all = allEntities();
-    return S.selection ? all.filter((e) => S.selection.includes(e.entity_id)) : all;
+    // 「すべて表示」のときも、ボタン（button.〇〇）は選んだものだけ（機器の再起動などのボタンが並ばないように）
+    return S.selection ? all.filter((e) => S.selection.includes(e.entity_id)) : all.filter((e) => dom(e) !== "button");
   }
   function shownEntities() {
     const list = shownEntitiesAll();
@@ -408,7 +418,7 @@
     if (!S.roomFilter || !present.includes(S.roomFilter)) return list;
     return list.filter((e) => roomKey(e.entity_id) === S.roomFilter);
   }
-  function selectedSet() { return new Set(S.selection || allEntities().map((e) => e.entity_id)); }
+  function selectedSet() { return new Set(S.selection || allEntities().filter((e) => dom(e) !== "button").map((e) => e.entity_id)); }
   function saveSelection(set) { S.selection = [...set]; store.set("selection", S.selection); }
 
   // ---- 部品のHTML ----
@@ -429,7 +439,18 @@
     colortemp: (v) => `色温度 ${Math.round(v)}K（左：電球色 ⇔ 右：昼光色）`,
     fan: (v) => `風量 ${Math.round(v)}%`,
     position: (v) => `開き具合 ${Math.round(v)}%`,
+    humid: (v) => `湿度の設定 ${Math.round(v)}%`,
   };
+  // SwitchBot など（Home Assistant 経由）：鍵・ロボット掃除機
+  function lockHTML(e) {
+    return `<div class="brow"><button class="btn outline" data-act="svc" data-svc="lock" ${e.state === "locked" ? "disabled" : ""}>🔒 施錠</button>
+      <button class="btn outline" data-act="unlock" ${e.state === "unlocked" ? "disabled" : ""}>🔓 解錠</button></div>`;
+  }
+  function vacuumHTML(e, compact) {
+    return `<div class="brow">${e.state === "cleaning" ? `<button class="btn outline" data-act="svc" data-svc="pause">⏸ 止める</button>` : `<button class="btn outline" data-act="svc" data-svc="start">▶ 掃除</button>`}
+      <button class="btn outline" data-act="svc" data-svc="return_to_base" ${e.state === "docked" ? "disabled" : ""}>⌂ 戻す</button>
+      ${compact ? "" : `<button class="btn outline" data-act="svc" data-svc="locate">🔔 場所を知らせる</button>`}</div>`;
+  }
   function rangeHTML(kind, value, min, max, step) {
     return `<div class="rng"><div class="rl">${esc(RANGE_LABEL[kind](value))}</div>
       <input type="range" data-act="range" data-kind="${kind}" min="${min}" max="${max}" step="${step}" value="${value}"></div>`;
@@ -512,8 +533,10 @@
       else if (d === "fan" && hasPct(e)) body = fanHTML(e);
       else if (d === "cover") body = coverButtons(e) + (hasPos(e) ? positionHTML(e) : "");
       else if (d === "climate") body = climateTileHTML(e);
+      else if (d === "lock") body = lockHTML(e);
+      else if (d === "vacuum") body = vacuumHTML(e, true);
     }
-    const cls = ["tile", isWide(e) ? "wide" : "", isOn(e) && d !== "scene" && d !== "script" ? "on" : "", unav ? "unav" : "", SIMPLE.includes(d) ? "simple" : ""].join(" ");
+    const cls = ["tile", isWide(e) ? "wide" : "", isOn(e) && d !== "scene" && d !== "script" && d !== "button" ? "on" : "", unav ? "unav" : "", SIMPLE.includes(d) ? "simple" : ""].join(" ");
     return `<div class="${cls}" data-entity="${esc(e.entity_id)}">${headHTML(e, false)}${timerBadgeHTML(e)}${body}</div>`;
   }
 
@@ -542,6 +565,15 @@
       h += chipsHTML("風量", a.fan_modes, a.fan_mode, "set_fan_mode", "fan_mode", fanLabel);
       h += chipsHTML("風向き", a.swing_modes, a.swing_mode, "set_swing_mode", "swing_mode", swingLabel);
       h += chipsHTML("プリセット", a.preset_modes, a.preset_mode, "set_preset_mode", "preset_mode", presetLabel);
+    } else if (d === "lock") {
+      h += lockHTML(e) + (e.state === "jammed" ? `<div class="warn">鍵が引っかかっています。扉の様子を確かめてください。</div>` : "");
+    } else if (d === "vacuum") {
+      h += vacuumHTML(e, false);
+    } else if (d === "humidifier") {
+      if (num(a, "humidity") !== null) h += rangeHTML("humid", num(a, "humidity"), num(a, "min_humidity") ?? 30, num(a, "max_humidity") ?? 80, 1);
+      h += chipsHTML("モード", a.available_modes, a.mode, "set_mode", "mode", presetLabel);
+    } else if (d === "button") {
+      h += `<div class="brow"><button class="btn" data-act="primary">押す</button></div>`;
     } else {
       h += `<div class="brow"><button class="btn" data-act="primary">${d === "scene" || d === "script" ? "実行する" : "切り替える"}</button></div>`;
     }
@@ -701,6 +733,8 @@
     switch (el.dataset.act) {
       case "none": break;
       case "primary": primary(e); break;
+      // 解錠は確かめてから
+      case "unlock": if (confirm(`「${nameOf(e)}」を解錠しますか？（鍵が開きます）`)) call(e, "unlock"); break;
       case "detail": S.detail = e.entity_id; renderSheet(); break;
       case "toggle": call(e, el.checked ? "turn_on" : "turn_off"); break;
       case "osc": call(e, "oscillate", { oscillating: el.checked }); break;
@@ -724,6 +758,7 @@
       case "colortemp": call(e, "turn_on", { color_temp_kelvin: Math.round(v) }); break;
       case "fan": if (v < 1) call(e, "turn_off"); else call(e, "set_percentage", { percentage: Math.round(v) }); break;
       case "position": call(e, "set_cover_position", { position: Math.round(v) }); break;
+      case "humid": call(e, "set_humidity", { humidity: Math.round(v) }); break;
     }
   }
 
@@ -1866,6 +1901,10 @@
       case "climate": return [["set_temperature", "運転する（モードと温度）", "mode_temp"], ["set_hvac_mode", "運転モードだけ変える", "hvac_mode"], ["set_temperature", "温度だけ変える", "temperature"], ["set_fan_mode", "風量だけ変える", "fan_mode"], ["turn_off", "停止する"]];
       case "cover": return [["open_cover", "開ける"], ["close_cover", "閉める"], ["set_cover_position", "開き具合を指定する", "position"]];
       case "scene": case "script": return [["turn_on", "実行する"]];
+      case "button": return [["press", "押す"]];
+      case "lock": return [["lock", "施錠する"], ["unlock", "解錠する"]];
+      case "vacuum": return [["start", "掃除を始める"], ["pause", "一時停止"], ["return_to_base", "充電台に戻す"]];
+      case "humidifier": return [["turn_on", "オンにする"], ["turn_off", "オフにする"], ["toggle", "切り替える"]];
       default: return [["turn_on", "オンにする"], ["turn_off", "オフにする"]];
     }
   }
@@ -2749,6 +2788,10 @@
     input_boolean: '<rect x="2.5" y="7" width="19" height="10" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="12" r="3" fill="currentColor"/>',
     scene: '<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z" fill="currentColor"/>',
     script: '<path d="M8 5l11 7-11 7z" fill="currentColor"/>',
+    lock: '<rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5" fill="currentColor"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
+    humidifier: '<path d="M12 2.5C15.5 7.5 18.5 11 18.5 14.5a6.5 6.5 0 0 1-13 0C5.5 11 8.5 7.5 12 2.5z" fill="currentColor"/>',
+    vacuum: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7.5 8h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="13.5" r="2" fill="currentColor"/>',
+    button: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="5" fill="currentColor"/>',
     camera: '<rect x="2" y="7" width="20" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="8" y="3.5" width="8" height="4" rx="1.2" fill="currentColor"/><circle cx="12" cy="13.5" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>',
   };
   function iconHTML(e) {
@@ -2765,7 +2808,10 @@
     ["thermo", "🌡", "温度計", "表示する温度計、名前"],
     ["voice", "🎤", "音声と自宅の位置", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"],
     ["selfsuff", "🌱", "電気の自給率を上げる", "余った電気のお知らせ・エアコン・充電など（使うものを選ぶ）"],
+    ["notify", "🔔", "スマートフォンへのお知らせ", "知らせる先のスマートフォン、30分ごとの電気の上限"],
     ["runalert", "⏰", "つけっぱなしのお知らせ", "エアコンなどが決めた時間より長く動いていたら、スマートフォンに知らせる"],
+    ["precond", "🎯", "目標の時刻に快適に（エアコン）", "時刻と温度を決めると、電気代がいちばん安くなるように、つける時刻と温度を決める"],
+    ["costmonths", "💴", "月ごとの電気代", "電気代・売電額・差し引きを、前の月や去年と比べる"],
     ["calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"],
     ["climate", "❄", "エアコンの自動温度調整", "サーバーでの調整の様子、全体のオン/オフ"],
     ["system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"],
@@ -2775,7 +2821,7 @@
     ["oplog", "📜", "操作の記録", "だれが・いつ・何を操作したか", true],
     ["connection", "🌐", "接続", "このアプリのアドレス", true],
     ["account", "👤", "アカウント", "使っているアカウントの一覧、管理者ログイン、ログアウト", true],
-  ].filter((m) => !["selfsuff", "runalert"].includes(m[0]) || SERVER_MODE);
+  ].filter((m) => !["selfsuff", "runalert", "notify", "precond", "costmonths"].includes(m[0]) || SERVER_MODE);
 
   // ================= 表示のユーザー（家族ごとのホーム画面） =================
   const SECTIONS = [
@@ -3161,7 +3207,11 @@
     // サーバーは、Home Assistant にログインしている画面か、このトークンで確かめる
     const auth = { Authorization: "Bearer " + (await accessToken()) };
     const r = await fetch("/solar-api" + path, body ? { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, auth), body: JSON.stringify(body) } : { cache: "no-store", headers: auth });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) {
+      let msg = "HTTP " + r.status;
+      try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) { /* そのまま */ }
+      throw new Error(msg);
+    }
     return r.json();
   }
   async function loadSolar(path, body) {
@@ -3174,8 +3224,212 @@
     if (sb) sb.innerHTML = selfSuffHTML();
     const rb = $("#raBox");
     if (rb) rb.innerHTML = runAlertHTML();
+    const nb = $("#ntBox");
+    if (nb) nb.innerHTML = notifyHTML();
+    if ($("#pcBox")) pcRefresh();
   }
 
+
+  // ================= 月ごとの電気代（電気代・売電額・差し引き。前の月・去年の同じ月と比べる） =================
+  async function loadCostMonths(refresh) {
+    if (!SERVER_MODE) return;
+    S.cmBusy = !!refresh; renderCostMonths();
+    try { S.costMonths = await solarApi(refresh ? "/cost-months/refresh" : "/cost-months", refresh ? {} : undefined); S.cmErr = null; }
+    catch (e) { S.cmErr = e.message; }
+    S.cmBusy = false; renderCostMonths();
+  }
+  function renderCostMonths() {
+    const box = $("#costMonths");
+    if (box) box.innerHTML = costMonthsHTML();
+    const b2 = $("#cmBox");
+    if (b2) b2.innerHTML = costMonthsHTML();
+  }
+  function costMonthsHTML() {
+    const d = S.costMonths;
+    const head = `<h3 class="cmh">💴 月ごとの電気代</h3>`;
+    if (!d) return `<div class="card cm">${head}<div class="note">${S.cmErr ? "読めませんでした：" + esc(S.cmErr) : "読んでいます…"}</div></div>`;
+    const rows = d.months || [];
+    const refresh = `<button class="tbtn" data-set="cmRefresh" ${S.cmBusy ? "disabled" : ""}>${S.cmBusy ? "読み直しています…" : "↻ Home Assistant の記録から読み直す"}</button>`;
+    const err = d.backfill_error ? `<div class="note">Home Assistant の記録（前の月）を読めませんでした：${esc(d.backfill_error)}</div>` : "";
+    if (!rows.length) return `<div class="card cm">${head}<div class="note">まだ記録がありません。電気料金のプランを選ぶと、サーバーの記録と Home Assistant のエネルギーの記録から計算します。</div>${err}${refresh}</div>`;
+    const by = Object.fromEntries(rows.map((r) => [r.ym, r]));
+    const cur = by[S.cmSel] || rows[0];
+    const [y, m] = cur.ym.split("-").map(Number);
+    const prev = by[m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`];
+    const ly = by[`${y - 1}-${String(m).padStart(2, "0")}`];
+    const diff = (v) => (v > 0 ? "＋" : v < 0 ? "−" : "±") + Math.abs(Math.round(v)).toLocaleString("ja-JP") + "円";
+    const cmp = [prev ? `前の月より 差し引き <b>${diff(cur.net_yen - prev.net_yen)}</b>（電気代 ${diff(cur.total_yen - prev.total_yen)}）` : null,
+      ly ? `去年の${m}月より 差し引き <b>${diff(cur.net_yen - ly.net_yen)}</b>（電気代 ${diff(cur.total_yen - ly.total_yen)}）` : null].filter(Boolean);
+    // 棒グラフ（古い月が左）。上：電気代、下：売電。押すとその月
+    const list = rows.slice(0, 13).reverse();
+    const W = 640, H = 200, mid = 124, bw = W / list.length;
+    const mx = Math.max(1, ...list.map((r) => Math.max(r.total_yen || 0, r.sell_yen || 0)));
+    let g = `<line x1="0" x2="${W}" y1="${mid}" y2="${mid}" class="grid"/>`;
+    list.forEach((r, i) => {
+      const x = i * bw + bw * 0.18, w = bw * 0.64, up = (r.total_yen / mx) * (mid - 8), dn = Math.min(H - mid - 26, (r.sell_yen / mx) * (mid - 8));
+      const on = r.ym === cur.ym;
+      g += `<g data-set="cmSel" data-id="${r.ym}" class="cmbar${on ? " sel" : ""}"><rect x="${i * bw}" y="0" width="${bw}" height="${H}" class="cmhit"/>
+        <rect x="${x}" y="${mid - up}" width="${w}" height="${up}" class="cmcost"/><rect x="${x}" y="${mid}" width="${w}" height="${dn}" class="cmsell"/>
+        <text x="${i * bw + bw / 2}" y="${H - 6}" class="lbl" text-anchor="middle">${Number(r.ym.slice(5))}月</text></g>`;
+    });
+    return `<div class="card cm">${head}
+      <div class="cmsel">${y}年${m}月${cur.partial ? "（記録は途中から）" : ""}${cur.src === "ha" ? "・Home Assistant の記録から計算" : ""}</div>
+      <div class="ekpis"><div class="ek"><span class="ekl">電気代</span><span class="ekv" style="color:#ef6c00">${yenFmt(cur.total_yen)}</span></div>
+        <div class="ek"><span class="ekl">売電</span><span class="ekv" style="color:#1e88e5">${yenFmt(cur.sell_yen)}</span></div>
+        <div class="ek"><span class="ekl">差し引き</span><span class="ekv">${yenFmt(cur.net_yen)}</span></div></div>
+      <div class="note">買った電気 ${Math.round(cur.buy_kwh)}kWh・売った電気 ${Math.round(cur.sell_kwh)}kWh（使用 ${yenFmt(cur.energy_yen)}＋基本料金 ${yenFmt(cur.basic_yen)}）</div>
+      ${cmp.map((c) => `<div>${c}</div>`).join("")}
+      ${cur.ym === rows[0].ym && d.month_estimate_yen != null ? `<div class="note">今月の電気代の見込み ${yenFmt(d.month_estimate_yen)}</div>` : ""}
+      <svg viewBox="0 0 ${W} ${H}" class="chart cmchart" role="img" aria-label="月ごとの電気代（上）と売電（下）。棒を押すとその月を表示">${g}</svg>
+      <div class="note">■ <span style="color:#ef6c00">電気代</span>　■ <span style="color:#1e88e5">売電</span>（棒を押すとその月）</div>
+      <table class="cmt"><thead><tr><th>月</th><th>電気代（円）</th><th>売電（円）</th><th>差し引き（円）</th></tr></thead><tbody>
+      ${rows.slice(0, 13).map((r) => { const n = (v) => Math.round(v || 0).toLocaleString("ja-JP"); return `<tr data-set="cmSel" data-id="${r.ym}" class="${r.ym === cur.ym ? "sel" : ""}"><td>${r.ym.replace("-", "/")}${r.partial ? "＊" : ""}</td><td>${n(r.total_yen)}</td><td style="color:#1e88e5">${n(r.sell_yen)}</td><td>${n(r.net_yen)}</td></tr>`; }).join("")}
+      </tbody></table>
+      ${rows.some((r) => r.partial) ? `<div class="note">＊ 記録がその月の途中からの月です（実際より少なく出ます）</div>` : ""}
+      <div class="note">電気代は、選んだ料金プランの単価・燃料費調整額・再エネ賦課金で計算した目安です（請求額と少しずれることがあります）。売電額は売電単価 ${d.sell_price}円/kWh で計算しています。</div>
+      ${err}${refresh}</div>`;
+  }
+
+  // ================= スマートフォンへのお知らせ（知らせる先・30分ごとの電気の上限） =================
+  async function loadNotifySvcs() {
+    try { S.notifySvcs = (await solarApi("/notify-services")).services || []; } catch (e) { S.notifySvcs = []; }
+    const b = $("#ntBox");
+    if (b) b.innerHTML = notifyHTML();
+  }
+  function notifyHTML() {
+    const j = S.solar;
+    if (!j || !j.config) return `<div class="note">家のサーバーから設定を読んでいます…</div>`;
+    const c = j.config, targets = c.demand_notify || [], svcs = S.notifySvcs;
+    const list = svcs ? svcs.filter((x) => x.startsWith("notify.mobile_app") || targets.includes(x)) : null;
+    return `<div class="note">家のサーバーから、Home Assistant のスマートフォンのアプリにお知らせを送ります。ここで選んだ先に、30分ごとの電気の上限・「いま使うとお得」・つけっぱなし・エアコン（目標の時刻に快適に）のお知らせが届きます。</div>
+      ${c.ha_token_set ? "" : `<div class="warn">サーバーに Home Assistant の鍵の登録が必要です（Android 版の「エアコンの自動温度調整」から登録できます）。</div>`}
+      ${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}
+      <div class="card" style="padding:12px;margin:8px 0"><b>📱 知らせる先</b>
+      ${list === null ? `<div class="note">読んでいます…</div>` : !svcs.length ? `<div class="note">通知先が見つかりません。スマートフォンに Home Assistant のアプリを入れてログインすると「notify.mobile_app_〇〇」が出てきます。</div>`
+        : (list.length ? list : svcs).map((x) => `<label class="row"><input type="checkbox" data-set="ntTarget" data-id="${esc(x)}" ${targets.includes(x) ? "checked" : ""}>
+          <span class="rt">${x.startsWith("notify.mobile_app_") ? "📱 " + esc(x.replace("notify.mobile_app_", "")) : esc(x)}</span></label>`).join("")}
+      <div class="brow"><button class="btn outline" data-set="ntTest">ためしに送る</button></div>
+      <div class="note ok-msg" role="status" aria-live="polite">${esc(S.ntMsg || "")}</div></div>
+      <div class="sec">30分ごとの電気の上限</div>
+      <label class="row"><span class="rt">🔔 上限に近づいたらスマートフォンに知らせる<div class="sub">いまの30分が、このまま使い続けると「上限 − 余裕」を超えそうなとき、30分に1回だけ知らせます（30分の初めの5分は様子を見ます）。</div></span>
+        <input type="checkbox" data-set="ssBool" data-id="demand_enabled" ${c.demand_enabled ? "checked" : ""}></label>
+      <div class="note">見張る電気</div><div class="chips">${[["buy", "買った電気（発電の分を引く・おすすめ）"], ["use", "使った電気（家全体）"]].map(([k, l]) => `<button class="chip${(c.demand_target || "buy") === k ? " sel" : ""}" data-set="ntDemandTarget" data-id="${k}">${l}</button>`).join("")}</div>
+      <div class="note">余裕（上限からどれだけ手前で知らせるか）</div>${ssChips("demand_margin_kw", [0.3, 0.5, 1], c.demand_margin_kw ?? 0.5, kwT)}
+      <div class="brow" style="align-items:center"><input class="search" id="ntLimit" type="text" inputmode="decimal" value="${c.demand_limit_kw > 0 ? c.demand_limit_kw : ""}" placeholder="上限（kW）。空なら直近12か月の最大" style="max-width:320px;margin:0" aria-label="上限（kW）">
+        <button class="tbtn" data-set="ntLimitSave">保存</button></div>`;
+  }
+
+  // ================= 目標の時刻に快適に（エアコン。電気代がいちばん安くなるように、つける時刻と温度を決める） =================
+  const PC_DAYS = ["月", "火", "水", "木", "金", "土", "日"];
+  async function loadPrecond() {
+    try { S.precond = await solarApi("/precond"); S.pcErr = null; } catch (e) { S.pcErr = e.message; }
+    const b = $("#pcBox");
+    if (b) withKeptFocus(b, () => { b.innerHTML = precondHTML(); });
+  }
+  function pcDaysText(d) {
+    d = (d || []).slice().sort();
+    if (!d.length || d.length === 7) return "毎日";
+    if (d.join() === "0,1,2,3,4") return "平日";
+    if (d.join() === "5,6") return "土日";
+    return d.map((i) => PC_DAYS[i]).join("・");
+  }
+  function pcPlanHTML(p) {
+    if (!p || !p.steps) return "";
+    const steps = p.steps.map((s, i) => `${s.at.slice(-5)} ${i === 0 ? hvacLabel(p.mode) + " " : ""}${fmt(s.temp)}℃`).join(" → ");
+    const save = p.baseline_yen != null && p.baseline_yen - p.yen >= 1 ? `（1時間前に目標の温度でつけるより 約${Math.round(p.baseline_yen - p.yen)}円 安い）` : "";
+    return `<div>計画：${steps}（室温 ${fmt(p.tin)}℃・外 ${fmt(p.tout)}℃）</div>
+      <div class="note">見込み ${Math.round(p.yen)}円・${Number(p.kwh).toFixed(1)}kWh${save}${p.late ? "　※ 室温が遠いので、目標の時刻に少し間に合わないかもしれません" : ""}</div>`;
+  }
+  function precondHTML() {
+    const j = S.solar;
+    if (!j || !j.config) return `<div class="note">家のサーバーから設定を読んでいます…</div>`;
+    const c = j.config, rules = c.precond_rules || [];
+    const st = (S.precond && S.precond.state) || {};
+    const intro = `<div class="note">「18時に26℃」のように、部屋を快適にしたい時刻と温度を決めると、家のサーバーが、外の気温の予報・いまの室温・時間帯ごとの電気の単価・昼に余る電気の予報から、電気代がいちばん安くなる「つける時刻」と「設定温度」を15分ごとに試算して、エアコンをつけます。余る電気があるうちは少し強め（冷房なら1〜2℃低め）に動かし、そのあと目標の温度に戻すこともあります。つけたあとに人が操作したら、その日はもう触りません。目標の時刻が来ても切りません。すでに動いているエアコンには何もしません。</div>
+      ${c.ha_token_set ? "" : `<div class="warn">サーバーに Home Assistant の鍵の登録が必要です（Android 版の「エアコンの自動温度調整」から登録できます）。</div>`}
+      ${c.tariff_plan ? "" : `<div class="note">電気料金のプランを選ぶと、時間帯ごとの単価で計算します（選んでいないときは、どの時間も同じ単価として計算します）。</div>`}
+      ${S.pcErr ? `<div class="warn">${esc(S.pcErr)}</div>` : ""}${S.solarErr ? `<div class="warn">${esc(S.solarErr)}</div>` : ""}`;
+    if (S.pcEdit) return intro + pcEditHTML();
+    return intro + rules.map((r) => {
+      const s = st[r.id] || {};
+      const lg = (s.log || []).slice(0, 3).map((x) => { const t = new Date(x[0] * 1000); return `<div class="note">${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}　${esc(x[1])}</div>`; }).join("");
+      return `<div class="card" style="padding:12px;margin:8px 0">
+        <label class="row" style="padding:0"><span class="rt"><b style="font-size:20px">${esc(r.time)} に ${fmt(r.temp)}℃</b>
+          <div class="sub">${esc(entName(r.entity))}・${{ cool: "冷房", heat: "暖房" }[r.mode] || "冷房・暖房を自動で"}・${pcDaysText(r.days)}</div></span>
+          <input type="checkbox" data-set="pcEnabled" data-id="${esc(r.id)}" ${r.enabled !== false ? "checked" : ""} aria-label="${esc(r.time)} の設定を使う"></label>
+        ${s.status ? `<div style="color:var(--primary)">${esc(s.status)}</div>` : ""}${pcPlanHTML(s.plan)}${lg}
+        <div class="brow"><button class="tbtn" data-set="pcEdit" data-id="${esc(r.id)}">✎ 変える</button></div></div>`;
+    }).join("") + `<div class="brow"><button class="btn" data-set="pcNew">＋ 時刻と温度を追加</button></div>`;
+  }
+  function pcEditHTML() {
+    const r = S.pcEdit;
+    const states = S.ha ? Object.values(S.ha.states) : [];
+    const acs = states.filter((e) => dom(e) === "climate" && !isElId(e.entity_id));
+    const chip = (set, id, on, label) => `<button class="chip${on ? " sel" : ""}" data-set="${set}" data-id="${esc(String(id))}">${esc(label)}</button>`;
+    return `<div class="card" style="padding:14px;margin:8px 0" role="group" aria-label="時刻と温度の設定">
+      <b>${S.pcIsNew ? "時刻と温度を追加" : "時刻と温度を変える"}</b>
+      <div class="note">エアコン</div><div class="chips">${acs.map((e) => chip("pcF", "entity:" + e.entity_id, r.entity === e.entity_id, entName(e.entity_id))).join("") || `<span class="note">エアコンが見つかりません</span>`}</div>
+      <div class="brow" style="align-items:center"><span class="note" style="width:56px">時刻</span><input type="time" id="pcTime" value="${esc(r.time)}" step="900" aria-label="時刻"></div>
+      <div class="brow" style="align-items:center"><span class="note" style="width:56px">温度</span><button class="tbtn" data-set="pcTemp" data-id="-0.5" aria-label="温度を0.5℃下げる">−</button>
+        <b style="font-size:22px;min-width:80px;text-align:center">${fmt(r.temp)}℃</b><button class="tbtn" data-set="pcTemp" data-id="0.5" aria-label="温度を0.5℃上げる">＋</button></div>
+      <div class="note">運転</div><div class="chips">${[["auto", "自動（気温で冷房・暖房）"], ["cool", "冷房"], ["heat", "暖房"]].map(([k, l]) => chip("pcF", "mode:" + k, r.mode === k, l)).join("")}</div>
+      <div class="note">曜日</div><div class="chips">${PC_DAYS.map((n, i) => chip("pcDay", i, (r.days || []).includes(i), n)).join("")}</div>
+      <div class="note">いちばん早くて、何時間前からつけてよいか</div><div class="chips">${[60, 120, 180, 240].map((v) => chip("pcF", "early_min:" + v, r.early_min === v, v / 60 + "時間")).join("")}</div>
+      <div class="note">余る電気・安い時間に、目標より強めに動かしてよい幅</div><div class="chips">${[0, 1, 2].map((v) => chip("pcF", "adjust:" + v, r.adjust === v, v ? v + "℃まで" : "変えない")).join("")}</div>
+      <div class="note">エアコンが動き始めたときの消費電力（目安）</div><div class="chips">${[0.6, 0.9, 1.2, 1.5, 2].map((v) => chip("pcF", "power_kw:" + v, Number(r.power_kw) === v, v + "kW")).join("")}</div>
+      <label class="row"><span class="rt">つけたらスマートフォンに知らせる</span><input type="checkbox" data-set="pcNotify" ${r.notify ? "checked" : ""}></label>
+      <div class="brow"><button class="btn outline" data-set="pcPreview" ${r.entity ? "" : "disabled"}>${S.pcBusy ? "試算しています…" : "いまの状態で試算する（エアコンは動かしません）"}</button></div>
+      ${S.pcPreview ? pcPlanHTML(S.pcPreview) : ""}${S.pcPrevErr ? `<div class="warn">${esc(S.pcPrevErr)}</div>` : ""}
+      <div class="rulefoot brow"><button class="btn" data-set="pcSave" ${r.entity ? "" : "disabled"}>保存</button><button class="btn outline" data-set="pcCancel">やめる</button>
+        ${S.pcIsNew ? "" : `<span style="flex:1"></span><button class="btn outline danger" data-set="pcDel">この設定を削除</button>`}</div></div>`;
+  }
+  function pcRefresh() { const b = $("#pcBox"); if (b) withKeptFocus(b, () => { b.innerHTML = precondHTML(); }); }
+  async function onPrecond(el) {
+    const id = el.dataset.id;
+    const rules = () => (S.solar && S.solar.config && S.solar.config.precond_rules) || [];
+    const syncTime = () => { const t = $("#pcTime"); if (t && S.pcEdit && /^\d{2}:\d{2}$/.test(t.value)) S.pcEdit.time = t.value; };
+    switch (el.dataset.set) {
+      case "pcNew":
+        S.pcEdit = { id: Math.random().toString(16).slice(2, 10), entity: "", time: "18:00", temp: 26, mode: "auto", days: [0, 1, 2, 3, 4, 5, 6], early_min: 120, adjust: 1, power_kw: 0.9, enabled: true, notify: false };
+        S.pcIsNew = true; S.pcPreview = null; S.pcPrevErr = null; pcRefresh(); return true;
+      case "pcEdit": S.pcEdit = JSON.parse(JSON.stringify(rules().find((r) => r.id === id) || null)); S.pcIsNew = false; S.pcPreview = null; S.pcPrevErr = null; pcRefresh(); return true;
+      case "pcCancel": S.pcEdit = null; pcRefresh(); return true;
+      case "pcF": { syncTime(); const i = id.indexOf(":"), k = id.slice(0, i), v = id.slice(i + 1); S.pcEdit[k] = ["early_min", "adjust", "power_kw"].includes(k) ? Number(v) : v; S.pcPreview = null; pcRefresh(); return true; }
+      case "pcTemp": syncTime(); S.pcEdit.temp = Math.min(30, Math.max(16, Number(S.pcEdit.temp) + Number(id))); S.pcPreview = null; pcRefresh(); return true;
+      case "pcDay": { syncTime(); const d = Number(id), cur = new Set(S.pcEdit.days || []); cur.has(d) ? cur.delete(d) : cur.add(d); S.pcEdit.days = [...cur].sort(); pcRefresh(); return true; }
+      case "pcNotify": S.pcEdit.notify = el.checked; return true;
+      case "pcPreview":
+        syncTime(); S.pcBusy = true; S.pcPrevErr = null; pcRefresh();
+        try { S.pcPreview = (await solarApi("/precond/preview", { rule: S.pcEdit })).plan; } catch (e) { S.pcPrevErr = e.message; }
+        S.pcBusy = false; pcRefresh(); return true;
+      case "pcSave": {
+        syncTime();
+        const r = S.pcEdit, list = rules();
+        const next = list.some((x) => x.id === r.id) ? list.map((x) => (x.id === r.id ? r : x)) : [...list, r];
+        S.pcEdit = null;
+        await loadSolar("/config", { precond_rules: next }); pcRefresh(); loadPrecond(); return true;
+      }
+      case "pcDel":
+        if (!confirm("この設定を削除しますか？")) return true;
+        { const r = S.pcEdit; S.pcEdit = null; await loadSolar("/config", { precond_rules: rules().filter((x) => x.id !== r.id) }); pcRefresh(); }
+        return true;
+      case "pcEnabled":
+        await loadSolar("/config", { precond_rules: rules().map((x) => (x.id === id ? Object.assign({}, x, { enabled: el.checked }) : x)) }); pcRefresh(); return true;
+      case "ntTarget": {
+        const cur = (S.solar && S.solar.config && S.solar.config.demand_notify) || [];
+        await loadSolar("/config", { demand_notify: el.checked ? [...new Set([...cur, id])] : cur.filter((x) => x !== id) }); return true;
+      }
+      case "ntTest":
+        try { await solarApi("/notify-test", {}); S.ntMsg = "送りました。スマートフォンに届いたか確かめてください。"; } catch (e) { S.ntMsg = e.message; }
+        { const b = $("#ntBox"); if (b) b.innerHTML = notifyHTML(); } return true;
+      case "ntDemandTarget": await loadSolar("/config", { demand_target: id }); return true;
+      case "ntLimitSave": {
+        const v = parseNum(($("#ntLimit") || {}).value || "");
+        await loadSolar("/config", { demand_limit_kw: v === null || isNaN(v) ? 0 : Math.max(0, Math.min(100, v)) }); return true;
+      }
+    }
+    return false;
+  }
   // ================= 電気の自給率を上げる（どれもオプション。家のサーバーが見張って動かす） =================
   function ssChips(key, values, cur, fmtFn) {
     return `<div class="chips">${values.map((v) => `<button class="chip${Number(cur) === v ? " sel" : ""}" data-set="ssNum" data-id="${key}" data-v="${v}">${esc(fmtFn(v))}</button>`).join("")}</div>`;
@@ -3259,9 +3513,11 @@
   function costStripHTML() {
     const c = S.solar && S.solar.cost;
     if (!c) return "";
-    return `<div class="card estrip"><b>💴 電気代</b><span>今日 <b>${yenFmt(c.today_yen)}</b></span><span>今月 <b>${yenFmt(c.month_yen)}</b></span>
-      <span>見込み <b>${yenFmt(c.month_estimate_yen)}</b></span>${c.rate_now != null ? `<span>いまの単価 <b>${c.rate_now}円/kWh</b></span>` : ""}
-      ${c.today_sell_yen > 0 ? `<span>売電 <b>${yenFmt(c.today_sell_yen)}</b></span>` : ""}<span class="note">${esc(c.plan || "")}</span></div>`;
+    // 電気代（買った電気）・売電額・差し引き（電気代 − 売電額）
+    return `<div class="card estrip"><b>💴 今日</b><span>電気代 <b>${yenFmt(c.today_yen)}</b></span><span>売電 <b style="color:#1e88e5">${yenFmt(c.today_sell_yen)}</b></span>
+      <span>差し引き <b>${yenFmt(c.today_net_yen)}</b></span>${c.rate_now != null ? `<span>いまの単価 <b>${c.rate_now}円/kWh</b></span>` : ""}</div>
+      <div class="card estrip"><b>💴 今月</b><span>電気代 <b>${yenFmt(c.month_yen)}</b></span><span>売電 <b style="color:#1e88e5">${yenFmt(c.month_sell_yen)}</b></span>
+      <span>差し引き <b>${yenFmt(c.month_net_yen)}</b></span><span>電気代の見込み <b>${yenFmt(c.month_estimate_yen)}</b></span><span class="note">${esc(c.plan || "")}</span></div>`;
   }
   /** 24時間のお湯：線＝残り、棒＝1時間ごとに使った量 */
   function hotChartHTML(hist, tank, hourly) {
@@ -3391,7 +3647,7 @@
     const more = (v && (v.auto_now || []).length > 1) ? `（ほか${v.auto_now.length - 1}件）` : "";
     box.innerHTML = `<div class="card esum" role="button" tabindex="0" data-set="energyOpen" aria-label="電気とお湯。押すとくわしい情報を開きます">
       <div class="ekpis">${kpi.join("")}</div>
-      <div class="efoot"><span class="${warn ? "warn" : "eline"}">${esc(line)}${more}</span><span class="sp"></span>${c && c.today_yen != null ? `<span class="ecost">今日 <b>${yenFmt(c.today_yen)}</b></span>` : ""}<span class="emore">くわしく ›</span></div></div>`;
+      <div class="efoot"><span class="${warn ? "warn" : "eline"}">${esc(line)}${more}</span><span class="sp"></span>${c && c.today_yen != null ? (c.today_sell_yen > 0 && c.today_net_yen != null ? `<span class="ecost">今日 差し引き <b>${yenFmt(c.today_net_yen)}</b></span>` : `<span class="ecost">今日 <b>${yenFmt(c.today_yen)}</b></span>`) : ""}<span class="emore">くわしく ›</span></div></div>`;
   }
   function ssRateHTML(s) {
     if (!s || !s.show) return "";
@@ -3785,13 +4041,22 @@
   }
   function afterSettingsOpen() {
     const p = S.page === "settings" && S.settingsPage;
-    if (p === "selfsuff" || p === "runalert") loadSolar();
+    if (p === "selfsuff" || p === "runalert" || p === "notify" || p === "precond") loadSolar();
+    if (p === "notify") loadNotifySvcs();
+    if (p === "precond") {
+      loadPrecond();
+      // 開いている間は30秒ごとに今日の計画・動きを読み直す
+      clearInterval(S.pcTimer);
+      S.pcTimer = setInterval(() => { if (S.page === "settings" && S.settingsPage === "precond") { if (!S.pcEdit) loadPrecond(); } else clearInterval(S.pcTimer); }, 30000);
+    }
+    if (p === "costmonths") loadCostMonths();
     if (p === "climate") loadClimate();
     else if (p === "camrec") loadCamRec();
     else if (p === "oplog") loadOpLog();
     else if (p === "account") loadAccounts();
   }
   async function onServerSetting(el) {
+    if (/^(pc|nt)[A-Z]/.test(el.dataset.set || "") && await onPrecond(el)) return true;
     const id = el.dataset.id;
     switch (el.dataset.set) {
       case "climEnabled":
@@ -4302,6 +4567,9 @@
       case "thermo": return `<div class="sec">温度・湿度（SwitchBot などの温度計）</div>${thermoSettingsHTML()}`;
       case "selfsuff": return `<div class="sec">電気の自給率を上げる（オプション）</div><div id="ssBox">${selfSuffHTML()}</div>`;
       case "runalert": return `<div class="sec">つけっぱなしのお知らせ</div><div id="raBox">${runAlertHTML()}</div>`;
+      case "notify": return `<div class="sec">スマートフォンへのお知らせ</div><div id="ntBox">${notifyHTML()}</div>`;
+      case "precond": return `<div class="sec">目標の時刻に快適に（エアコン）</div><div id="pcBox">${precondHTML()}</div>`;
+      case "costmonths": return `<div id="cmBox">${costMonthsHTML()}</div>`;
       case "voice": {
         const pid = S.pipelineId || S.preferred;
         return `<div class="sec">音声</div>
@@ -4393,7 +4661,9 @@
       case "infoClose": S.info = null; renderInfo(); return true;
       case "thermoOpen": openThermo(id, 24); return true;
       case "guideToggle": S.guideOpen = !S.guideOpen; renderGuide(); return true;
-      case "energyOpen": $("#energyDlg").classList.remove("hidden"); return true;
+      case "energyOpen": $("#energyDlg").classList.remove("hidden"); loadCostMonths(); return true;
+      case "cmSel": S.cmSel = id; renderCostMonths(); return true;
+      case "cmRefresh": loadCostMonths(true); return true;
       case "energyClose": $("#energyDlg").classList.add("hidden"); return true;
       case "thermoHours": openThermo(S.thermo.key, Number(id)); return true;
       case "thermoClose": S.thermo = null; renderThermoDialog(); return true;
@@ -4506,7 +4776,7 @@
       <div class="sheet-body"><button class="sheet-close" id="sheetClose" aria-label="閉じる">×</button><div id="sheetContent"></div></div></div>
     <div class="dlgwrap hidden" id="energyDlg" role="dialog" aria-modal="true" aria-label="電気とお湯のくわしい情報"><div class="dlg-bg" data-set="energyClose"></div>
       <div class="dlg"><div class="pagebar"><h3 style="flex:1;margin:0">⚡ 電気とお湯</h3><button class="tbtn" data-set="energyClose">閉じる</button></div>
-      <div id="live"></div><div id="energy"></div><div id="solar"></div></div></div>
+      <div id="live"></div><div id="energy"></div><div id="costMonths"></div><div id="solar"></div></div></div>
     <div class="dlgwrap hidden" id="info" role="dialog" aria-modal="true" aria-label="動作の詳細"></div>
     <div class="dlgwrap hidden" id="thermoDlg" role="dialog" aria-modal="true" aria-label="温度計"></div>
     <div class="cambox hidden" id="camBox" role="dialog" aria-modal="true" aria-label="カメラ"><video id="camVideo" playsinline autoplay muted></video><img id="camImg" class="hidden" alt="">

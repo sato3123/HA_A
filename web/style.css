@@ -519,3 +519,21 @@ div.warn::before { content: "⚠ "; }
 /* 長い説明は2行まで（「続きを読む」で全部） */
 .note.clamp, .sub.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .morebtn { display: inline-block; background: none; border: 0; color: var(--primary); font: inherit; font-size: 14px; font-weight: 600; padding: 6px 0; min-height: 36px; cursor: pointer; }
+
+/* 月ごとの電気代 */
+.cm { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.cmh { margin: 0; font-size: 18px; }
+.cmsel { color: var(--primary); font-weight: 600; }
+.cmchart .cmcost { fill: #ef6c00; opacity: .55; }
+.cmchart .cmsell { fill: #1e88e5; opacity: .55; }
+.cmchart .cmhit { fill: transparent; }
+.cmchart .cmbar { cursor: pointer; }
+.cmchart .cmbar.sel .cmcost, .cmchart .cmbar.sel .cmsell { opacity: 1; }
+.cmchart .cmbar.sel .cmhit { fill: var(--primary); opacity: .08; }
+.cmt { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 15px; }
+.cmt th { text-align: left; font-weight: 500; color: var(--muted); font-size: 13px; padding: 4px 6px; }
+.cmt td { padding: 8px 6px; border-top: 1px solid var(--outline); }
+.cmt tr[data-set] { cursor: pointer; }
+.cmt tr.sel td { font-weight: 700; background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.cmt td, .cmt th { white-space: nowrap; }
+.cmt td:not(:first-child), .cmt th:not(:first-child) { text-align: right; }
