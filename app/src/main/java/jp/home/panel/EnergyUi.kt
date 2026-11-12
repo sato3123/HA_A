@@ -56,13 +56,22 @@ fun EnergyStrip(vm: MainViewModel, onOpen: () -> Unit) {
     }
     val cost by vm.serverCost.collectAsState()
     cost?.let { c ->
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(horizontal = 4.dp).clickable { onOpen() }) {
-            Text("💴 電気代", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Stat("今日", yenText(c, "today_yen"))
-            Stat("今月", yenText(c, "month_yen"))
-            Stat("見込み", yenText(c, "month_estimate_yen"))
-            if (!c.isNull("rate_now") && c.has("rate_now")) Stat("いまの単価", "${c.optDouble("rate_now")}円/kWh")
-            if (c.optLong("today_sell_yen") > 0) Stat("売電", yenText(c, "today_sell_yen"))
+        // 電気代（買った電気）・売電額・差し引き（電気代 − 売電額）
+        Column(Modifier.padding(horizontal = 4.dp).clickable { onOpen() }, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("💴 今日", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Stat("電気代", yenText(c, "today_yen"))
+                Stat("売電", yenText(c, "today_sell_yen"))
+                Stat("差し引き", yenText(c, "today_net_yen"))
+                if (!c.isNull("rate_now") && c.has("rate_now")) Stat("いまの単価", "${c.optDouble("rate_now")}円/kWh")
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("💴 今月", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Stat("電気代", yenText(c, "month_yen"))
+                Stat("売電", yenText(c, "month_sell_yen"))
+                Stat("差し引き", yenText(c, "month_net_yen"))
+                Stat("電気代の見込み", yenText(c, "month_estimate_yen"))
+            }
         }
     }
     if (report == null) {

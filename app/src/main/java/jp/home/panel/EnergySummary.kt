@@ -129,7 +129,10 @@ fun EnergySummaryCard(vm: MainViewModel, onOpen: () -> Unit) {
                     modifier = Modifier.weight(1f),
                 )
                 c?.takeIf { it.has("today_yen") && !it.isNull("today_yen") }?.let {
-                    Text("今日 " + String.format("%,d円", it.optLong("today_yen")), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    // 売電があれば、電気代から売電額を引いた額
+                    val net = it.has("today_net_yen") && !it.isNull("today_net_yen") && it.optLong("today_sell_yen") > 0
+                    Text(if (net) "今日 差し引き " + String.format("%,d円", it.optLong("today_net_yen")) else "今日 " + String.format("%,d円", it.optLong("today_yen")),
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                 }
                 Text("くわしく ›", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
@@ -169,6 +172,7 @@ fun EnergyDetailDialog(vm: MainViewModel, onOpenEnergy: () -> Unit, onDismiss: (
                 ) {
                     LiveStrip(vm)
                     EnergyStrip(vm, onOpen = onOpenEnergy)
+                    if (vm.shServer.value.isNotBlank()) MonthlyCostSection(vm)
                     EcoCuteCard(vm)
                     Spacer(Modifier.height(4.dp))
                 }

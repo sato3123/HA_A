@@ -357,7 +357,8 @@ fun DemandView(vm: MainViewModel) {
         }
     }
     err?.let { Text("読めませんでした：$it", style = MaterialTheme.typography.bodySmall) }
-    val j = data ?: return
+    // 記録が読めないときも、設定（上限・知らせる先）は出す
+    val j = data ?: run { DemandSettings(vm); return }
     val target = j.optString("target", "buy")
     val limit = j.optDouble("limit_kw", Double.NaN)
     val margin = j.optDouble("margin_kw", 0.5)
@@ -425,17 +426,13 @@ fun DemandView(vm: MainViewModel) {
 }
 
 @Composable
-private fun DemandSettings(vm: MainViewModel) {
+fun DemandSettings(vm: MainViewModel, withTargets: Boolean = true) {
     val conf by vm.serverConf.collectAsState()
     val enabled = conf["demand_enabled"] == true
     val target = conf["demand_target"] as? String ?: "buy"
     val margin = (conf["demand_margin_kw"] as? Number)?.toDouble() ?: 0.5
     val limit = (conf["demand_limit_kw"] as? Number)?.toDouble() ?: 0.0
-    val notifyArr = conf["demand_notify"] as? org.json.JSONArray
-    val notify = (0 until (notifyArr?.length() ?: 0)).map { notifyArr!!.optString(it) }.toSet()
-    var services by remember { mutableStateOf<List<String>?>(null) }
     var limitText by remember(limit) { mutableStateOf(if (limit > 0) limit.toString() else "") }
-    LaunchedEffect(Unit) { services = vm.notifyServices() }
     val chip = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary)
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -460,6 +457,20 @@ private fun DemandSettings(vm: MainViewModel) {
                 TextButton(onClick = { vm.setDemand(limitKw = limitText.toDoubleOrNull()?.coerceIn(0.0, 100.0) ?: 0.0) }) { Text("保存") }
             }
             HeatGuardSettings(vm)
+            if (withTargets) NotifyTargets(vm)
+        }
+    }
+}
+
+/** 知らせる先（Home Assistant のスマートフォンのアプリ）。30分ごとの電気・余った電気・つけっぱなし・エアコンのお知らせで共通 */
+@Composable
+fun NotifyTargets(vm: MainViewModel) {
+    val conf by vm.serverConf.collectAsState()
+    val notifyArr = conf["demand_notify"] as? org.json.JSONArray
+    val notify = (0 until (notifyArr?.length() ?: 0)).map { notifyArr!!.optString(it) }.toSet()
+    var services by remember { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(Unit) { services = vm.notifyServices() }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("知らせる先（Home Assistant のスマートフォンのアプリ）", style = MaterialTheme.typography.labelLarge)
             when {
                 services == null -> Text("読んでいます…", style = MaterialTheme.typography.bodySmall)
@@ -471,7 +482,6 @@ private fun DemandSettings(vm: MainViewModel) {
                     }
                 }
             }
-        }
     }
 }
 

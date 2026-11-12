@@ -308,6 +308,18 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
         if (page == "tariff") {
             item { SectionTitle("電気料金") }
             item { TariffSettings(vm) }
+            item { SectionTitle("月ごとの電気代") }
+            item { MonthlyCostSection(vm) }
+        }
+
+        if (page == "notify") {
+            item { SectionTitle("スマートフォンへのお知らせ") }
+            item { NotifySettings(vm) }
+        }
+
+        if (page == "precond") {
+            item { SectionTitle("目標の時刻に快適に（エアコン）") }
+            item { PrecondSettings(vm) }
         }
 
         if (page == "cameras") {
@@ -642,9 +654,11 @@ val SETTINGS_MENU = listOf(
     MenuItem("thermo", "🌡", "温度計", "表示する温度計、名前"),
     MenuItem("voice", "🎤", "音声と自宅の位置", "呼びかけ、アシスタント、マイクのテスト、自宅の位置"),
     MenuItem("selfsuff", "🌱", "電気の自給率を上げる", "余った電気のお知らせ・エアコン・充電など（使うものを選ぶ）"),
+    MenuItem("notify", "🔔", "スマートフォンへのお知らせ", "知らせる先のスマートフォン、30分ごとの電気の上限"),
     MenuItem("runalert", "⏰", "つけっぱなしのお知らせ", "エアコンなどが決めた時間より長く動いていたら、スマートフォンに知らせる"),
-    MenuItem("solar","☀","お湯（エコキュート）と太陽光","余った電気でお湯を沸かす、30分ごとの電気の上限"),
-    MenuItem("tariff","💴","電気料金","電力会社とプラン、時間帯・季節ごとの単価"),
+    MenuItem("precond", "🎯", "目標の時刻に快適に（エアコン）", "時刻と温度を決めると、電気代がいちばん安くなるように、つける時刻と温度を決める"),
+    MenuItem("solar","☀","お湯（エコキュート）と太陽光","余った電気でお湯を沸かす、家のサーバーの登録"),
+    MenuItem("tariff","💴","電気料金","電力会社とプラン、単価、月ごとの電気代と売電額"),
     MenuItem("climate","❄","エアコンの自動温度調整","温度の範囲を決めて、自動で冷房・暖房"),
     MenuItem("calendar", "📅", "カレンダー（TimeTree）", "予定を表示するカレンダー"),
     MenuItem("system", "⚙", "アプリの更新・設定の保存", "更新の確認、設定の書き出し・読み込み"),

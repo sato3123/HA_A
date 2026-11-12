@@ -70,7 +70,7 @@ fun decodeJpeg(bytes: ByteArray, maxWidth: Int): androidx.compose.ui.graphics.Im
 
 /** 画面に出す機器の種類（並び順もこの順） */
 val SUPPORTED_DOMAINS = listOf(
-    "climate", "light", "fan", "cover", "switch", "input_boolean", "scene", "script", "camera",
+    "climate", "light", "fan", "cover", "switch", "humidifier", "lock", "vacuum", "input_boolean", "button", "scene", "script", "camera",
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -92,7 +92,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val allEntities = MutableStateFlow<List<Entity>>(emptyList())
     val selection = MutableStateFlow(prefs.selected)
     val entities: StateFlow<List<Entity>> = combine(allEntities, selection) { all, sel ->
-        if (sel == null) all else all.filter { it.entityId in sel }
+        // 「すべて表示」のときも、ボタン（button.〇〇）は選んだものだけ（機器の再起動などのボタンが並ばないように）
+        if (sel == null) all.filter { it.domain != "button" } else all.filter { it.entityId in sel }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val weatherEntities = MutableStateFlow<List<Entity>>(emptyList())
@@ -877,6 +878,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ================= 30分ごとの電力（デマンド）と、上限に近づいたときのお知らせ =================
     suspend fun demand(day: String): JSONObject = serverCall("/demand?date=$day", null)
 
+    /** 月ごとの電気代・売電額・差し引き（新しい月が先） */
+    suspend fun costMonths(refresh: Boolean = false): JSONObject =
+        if (refresh) serverCall("/cost-months/refresh", JSONObject()) else serverCall("/cost-months", null)
+
+    /** 目標の時刻に快適に：設定と、今日の計画・動き */
+    suspend fun precond(): JSONObject = serverCall("/precond", null)
+
+    /** いまの状態で試算する（エアコンは動かさない） */
+    suspend fun precondPreview(rule: JSONObject): JSONObject = serverCall("/precond/preview", JSONObject().put("rule", rule))
+
+    /** 知らせる先に、ためしのお知らせを送る。うまくいけば null、だめならその理由 */
+    suspend fun notifyTest(): String? = try { serverCall("/notify-test", JSONObject()); null } catch (e: CancellationException) { throw e } catch (e: Exception) { e.message ?: "送れませんでした" }
+
     suspend fun notifyServices(): List<String> = runCatching {
         val a = serverCall("/notify-services", null).optJSONArray("services") ?: JSONArray()
         (0 until a.length()).map { a.optString(it) }
@@ -1216,7 +1230,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleSelection(entityId: String) {
-        val cur = selection.value ?: allEntities.value.map { it.entityId }.toSet()
+        val cur = selection.value ?: allEntities.value.filter { it.domain != "button" }.map { it.entityId }.toSet()
         val next = if (entityId in cur) cur - entityId else cur + entityId
         prefs.selected = next
         selection.value = next
@@ -1300,7 +1314,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Home Assistant が状態を定期的にしか読まない機器でも、画面にすぐ反映するため）
      */
     private fun followUp(e: Entity) {
-        if (e.domain in setOf("scene", "script", "camera")) return
+        if (e.domain in setOf("scene", "script", "camera", "button")) return
         viewModelScope.launch {
             for (wait in listOf(2_500L, 6_000L)) {
                 delay(wait)
@@ -1316,6 +1330,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun primaryAction(e: Entity) {
         when (e.domain) {
             "scene", "script" -> call(e, "turn_on")
+            // SwitchBot など：ボタン（押すだけ）・ロボット掃除機
+            "button" -> call(e, "press")
+            "vacuum" -> call(e, if (e.state == "cleaning") "return_to_base" else "start")
+            // 鍵は押しただけでは開けない（解錠は詳細の画面で確かめてから）
+            "lock" -> if (e.state == "unlocked") call(e, "lock")
             "cover" -> call(e, if (e.state == "open" || e.state == "opening") "close_cover" else "open_cover")
             "climate" -> call(e, if (e.state == "off") "turn_on" else "turn_off")
             else -> call(e, "toggle")
@@ -2907,6 +2926,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (r.code == 502) throw HaException("サーバーのサービスが止まっています（コンテナで systemctl status $service を確認してください）")
             if (r.code == 403) throw HaException("サーバーは家の中からだけ使えます")
             if (r.code == 401) throw HaException("サーバーに Home Assistant のログインを確かめてもらえませんでした（Home Assistant につながってから、もう一度試してください）")
+            if (r.code == 400) throw HaException(runCatching { JSONObject(r.body?.string().orEmpty()).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() } ?: "サーバーでエラーになりました (HTTP 400)")
             if (!r.isSuccessful) throw HaException("サーバーでエラーになりました (HTTP ${r.code})")
             JSONObject(r.body?.string().orEmpty())
         }

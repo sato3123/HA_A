@@ -71,6 +71,7 @@ fun isWide(e: Entity): Boolean = when (e.domain) {
     "fan" -> e.hasPercentage
     "cover" -> e.hasPosition
     "camera" -> true
+    "lock", "vacuum" -> true
     else -> false
 }
 
@@ -85,9 +86,9 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
         CameraTile(e, vm)
         return
     }
-    val active = e.isOn && e.domain !in setOf("scene", "script")
+    val active = e.isOn && e.domain !in setOf("scene", "script", "button")
     // スイッチ類・シーンはタップで実行、それ以外はタップで詳細パネル
-    val simple = e.domain in setOf("switch", "input_boolean", "scene", "script")
+    val simple = e.domain in setOf("switch", "input_boolean", "scene", "script", "button")
     Card(
         onClick = { if (simple) vm.primaryAction(e) else onDetail() },
         enabled = !e.unavailable,
@@ -108,6 +109,8 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
                         if (e.hasPosition) CoverPositionSlider(e, vm)
                     }
                     "climate" -> ClimateTileControls(e, vm)
+                    "lock" -> LockControls(e, vm, compact = true)
+                    "vacuum" -> VacuumControls(e, vm, compact = true)
                 }
             }
         }
@@ -116,7 +119,7 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
 
 @Composable
 fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
-    val toggle = !e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean")
+    val toggle = !e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean", "humidifier")
     val info: @Composable () -> Unit = {
         // 動作の詳細（状態・最後に変わった時刻・履歴）
         androidx.compose.material3.TextButton(
@@ -207,6 +210,10 @@ fun EntityDetail(e: Entity, vm: MainViewModel) {
                 CoverButtons(e, vm)
                 if (e.hasPosition) CoverPositionSlider(e, vm)
             }
+            "lock" -> LockControls(e, vm)
+            "vacuum" -> VacuumControls(e, vm)
+            "humidifier" -> HumidifierControls(e, vm)
+            "button" -> androidx.compose.material3.Button(onClick = { vm.call(e, "press") }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("押す") }
             "climate" -> {
                 val info = listOfNotNull(
                     e.attributes.num("current_temperature")?.let { "室温 ${fmt(it)}℃" },
@@ -522,6 +529,9 @@ fun domainLabel(domain: String) = when (domain) {
     "person" -> "人"
     "device_tracker" -> "位置"
     "lock" -> "鍵"
+    "humidifier" -> "加湿器"
+    "vacuum" -> "ロボット掃除機"
+    "button" -> "ボタン"
     "camera" -> "カメラ"
     "automation" -> "自動化"
     else -> domain
@@ -578,6 +588,28 @@ fun stateLabel(e: Entity): String {
     if (e.state == "unknown") return "不明"
     return when (e.domain) {
         "scene", "script" -> "タップで実行"
+        "button" -> "タップで押す"
+        "lock" -> when (e.state) {
+            "locked" -> "施錠"
+            "unlocked" -> "解錠"
+            "locking" -> "施錠しています…"
+            "unlocking" -> "解錠しています…"
+            "jammed" -> "引っかかっています"
+            "open" -> "開いています"
+            else -> e.state
+        }
+        "vacuum" -> when (e.state) {
+            "cleaning" -> "掃除中"
+            "docked" -> "充電台"
+            "returning" -> "充電台へ戻っています"
+            "idle" -> "待機中"
+            "paused" -> "一時停止"
+            "error" -> "エラー"
+            else -> e.state
+        } + (e.attributes.num("battery_level")?.let { "・電池 ${it.roundToInt()}%" } ?: "")
+        "humidifier" -> (if (e.state == "on") "オン" else "オフ") +
+            (e.attributes.num("current_humidity")?.let { "・湿度 ${it.roundToInt()}%" } ?: "") +
+            (if (e.state == "on") e.attributes.num("humidity")?.let { "（設定 ${it.roundToInt()}%）" } ?: "" else "")
         "cover" -> when (e.state) {
             "open" -> "開"
             "closed" -> "閉"
@@ -598,5 +630,71 @@ fun stateLabel(e: Entity): String {
             // 時刻のセンサー（次の日の出・最後に動いた時刻など）は日本時間で出す
             else -> localTimeText(e.state) ?: e.state
         }
+    }
+}
+
+// ---------- SwitchBot など（Home Assistant 経由）：鍵・ロボット掃除機・加湿器 ----------
+
+/** 鍵：施錠はすぐ。解錠は確かめてから */
+@Composable
+fun LockControls(e: Entity, vm: MainViewModel, compact: Boolean = false) {
+    var confirm by remember { mutableStateOf(false) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        androidx.compose.material3.OutlinedButton(
+            onClick = { vm.call(e, "lock") }, enabled = e.state != "locked",
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+        ) { Text("🔒 施錠") }
+        androidx.compose.material3.OutlinedButton(
+            onClick = { confirm = true }, enabled = e.state != "unlocked",
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+        ) { Text("🔓 解錠") }
+    }
+    if (confirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("「${e.name}」を解錠しますか？") },
+            text = { Text("鍵が開きます。") },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { confirm = false; vm.call(e, "unlock") }) { Text("解錠する") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirm = false }) { Text("やめる") } },
+        )
+    }
+    if (!compact && e.state == "jammed") Text("鍵が引っかかっています。扉の様子を確かめてください。", color = MaterialTheme.colorScheme.error)
+}
+
+/** ロボット掃除機：始める・止める・戻す */
+@Composable
+fun VacuumControls(e: Entity, vm: MainViewModel, compact: Boolean = false) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        if (e.state == "cleaning") {
+            androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "pause") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("⏸ 止める") }
+        } else {
+            androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "start") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("▶ 掃除") }
+        }
+        androidx.compose.material3.OutlinedButton(
+            onClick = { vm.call(e, "return_to_base") }, enabled = e.state != "docked",
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+        ) { Text("⌂ 戻す") }
+    }
+    if (!compact) {
+        androidx.compose.material3.TextButton(onClick = { vm.call(e, "locate") }) { Text("🔔 場所を知らせる（音を鳴らす）") }
+    }
+}
+
+/** 加湿器：湿度とモード */
+@Composable
+fun HumidifierControls(e: Entity, vm: MainViewModel) {
+    val lo = e.attributes.num("min_humidity") ?: 30.0
+    val hi = e.attributes.num("max_humidity") ?: 80.0
+    e.attributes.num("humidity")?.let { cur ->
+        var v by remember(cur) { mutableStateOf(cur.toFloat()) }
+        Text("湿度の設定：${v.roundToInt()}%", style = MaterialTheme.typography.titleMedium)
+        androidx.compose.material3.Slider(
+            value = v, onValueChange = { v = it }, valueRange = lo.toFloat()..hi.toFloat(),
+            onValueChangeFinished = { vm.call(e, "set_humidity", JSONObject().put("humidity", v.roundToInt())) },
+            modifier = Modifier.semantics { contentDescription = "湿度の設定" },
+        )
+    }
+    ChipGroup("モード", e.attributes.strings("available_modes"), e.attributes.optString("mode"), ::presetLabel) {
+        vm.call(e, "set_mode", JSONObject().put("mode", it))
     }
 }

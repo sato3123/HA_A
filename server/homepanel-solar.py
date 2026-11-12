@@ -119,6 +119,8 @@ DEFAULT_CONF = {
     "ss_partial": False,
     # つけっぱなしのお知らせ：[{entity, name, hours}]。決めた時間より長く続けて動いていたら、スマートフォンに知らせる（知らせる先は電力の見張りと同じ）
     "run_alerts": [],
+    # 目標の時刻に、目標の温度に（電気代がいちばん安くなるように、つける時刻と温度を決める）：[{id, entity, time, temp, mode, days, early_min, adjust, power_kw, source, notify, enabled}]
+    "precond_rules": [],
 }
 SECRET_CONF = {"aiseg_password", "ha_token"}
 
@@ -1637,10 +1639,172 @@ def cost_summary():
     return {"plan": f'{c["provider"]} {c["plan"]}', "today_yen": round(sum(h.get("yen", 0) for h in th)),
             "today_kwh": round(sum(float(h.get("buy") or 0) for h in th) / 1000, 2),
             "today_sell_yen": round(sum(h.get("sell_yen", 0) for h in th)),
+            "today_sell_kwh": round(sum(float(h.get("sell") or 0) for h in th) / 1000, 2),
+            "today_net_yen": round(sum(h.get("yen", 0) - h.get("sell_yen", 0) for h in th)),
+            "month_net_yen": round((m.get("total_yen") or 0) - m.get("sell_yen", 0)) if m else None,
+            "month_sell_kwh": m.get("sell_kwh"),
             "month_yen": m.get("total_yen"), "month_kwh": m.get("kwh"), "month_sell_yen": round(m.get("sell_yen", 0)),
             "month_estimate_yen": round((m.get("energy_yen", 0) / max(1, now.day - 1 + now.hour / 24)) * days_in + m.get("basic_yen", 0)) if m else None,
             "rate_now": round(rate * (1 - discount_of(pl)) + add, 2) if rate is not None else None,
             "band_now": band}
+
+
+# ================= 月ごとの電気代（比べる用） =================
+# 時間ごとの記録（40日分）から月ごとの電気代・売電額をまとめて energy["months"] に残す（月が終わったら固定）。
+# サーバーを入れる前の月は、Home Assistant のエネルギーの記録（長期統計・1時間ごと）から同じ料金表で計算する（energy["months_ha"]）。
+def _month_row(ym, m, hs, src, partial):
+    gen = sum(float(h.get("gen") or 0) for h in hs) / 1000
+    use = sum(float(h.get("use") or 0) for h in hs) / 1000
+    if use <= 0:
+        use = max(0.0, m.get("kwh", 0) + gen - m.get("sell_kwh", 0))
+    days = len({h["h"][:10] for h in hs})
+    return {"ym": ym, "buy_kwh": round(m.get("kwh", 0), 1), "sell_kwh": round(m.get("sell_kwh", 0), 1), "gen_kwh": round(gen, 1),
+            "use_kwh": round(use, 1), "energy_yen": round(m.get("energy_yen", 0)), "basic_yen": round(m.get("basic_yen", 0)),
+            "total_yen": round(m.get("total_yen", 0)), "sell_yen": round(m.get("sell_yen", 0)),
+            "net_yen": round(m.get("total_yen", 0) - m.get("sell_yen", 0)), "src": src, "partial": partial, "days": days}
+
+
+def months_from_hours(hours, src="server"):
+    """時間ごとの記録（{h, buy, sell, gen, use}）から月ごとの行。月の初めの記録が無い月は partial"""
+    hours = [dict(h) for h in hours]
+    c = cost_hours(hours)
+    if not c:
+        return {}
+    first = hours[0]["h"] if hours else ""
+    out = {}
+    for ym, m in c["months"].items():
+        hs = [h for h in hours if h["h"].startswith(ym)]
+        out[ym] = _month_row(ym, m, hs, src, first > ym + "-01T00")
+    return out
+
+
+def update_months():
+    with lock:
+        allh = [dict(v, h=k) for k, v in sorted(energy["hours"].items())]
+    rows = months_from_hours(allh)
+    if not rows:
+        return
+    with lock:
+        ms = energy.setdefault("months", {})
+        for ym, r in rows.items():
+            old = ms.get(ym)
+            # 固定した月（初めから記録がある月）を、記録が欠けた計算で上書きしない
+            if old and not old.get("partial") and r.get("partial"):
+                continue
+            ms[ym] = r
+        for k in sorted(ms)[:-25]:
+            del ms[k]
+        save_json(ENERGY_PATH, energy)
+
+
+def _energy_stat_ids(prefs):
+    """Home Assistant のエネルギーの設定から、買った・売った・発電の統計の ID"""
+    buy, sell, gen = [], [], []
+    for src in (prefs or {}).get("energy_sources") or []:
+        t = src.get("type")
+        if t == "grid":
+            for f in src.get("flow_from") or []:
+                if f.get("stat_energy_from"):
+                    buy.append(f["stat_energy_from"])
+            for f in src.get("flow_to") or []:
+                if f.get("stat_energy_to"):
+                    sell.append(f["stat_energy_to"])
+            if src.get("stat_energy_from"):
+                buy.append(src["stat_energy_from"])
+            if src.get("stat_energy_to"):
+                sell.append(src["stat_energy_to"])
+        elif t == "solar" and src.get("stat_energy_from"):
+            gen.append(src["stat_energy_from"])
+    return buy, sell, gen
+
+
+def ha_month_backfill(now=None, request=None):
+    """Home Assistant の長期統計（1時間ごと）から、直近13か月の月ごとの電気代を計算して残す（1日1回）"""
+    request = request or ha_ws_request
+    now = now or datetime.now()
+    prefs, = request([{"type": "energy/get_prefs"}])
+    buy_ids, sell_ids, gen_ids = _energy_stat_ids(prefs)
+    if not buy_ids:
+        raise RuntimeError("Home Assistant のエネルギーの設定に、買った電気（グリッドからの電力量）がありません")
+    with lock:
+        have = dict(energy.get("months_ha") or {})
+    y, m = now.year, now.month
+    months = []
+    for _ in range(13):
+        months.append((y, m))
+        y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+    cur = now.strftime("%Y-%m")
+    out = {}
+    for (y, m) in reversed(months):
+        ym = f"{y:04d}-{m:02d}"
+        old = have.get(ym)
+        if old and ym != cur and old.get("complete"):
+            continue
+        start = datetime(y, m, 1)
+        end = datetime(y + (m == 12), m % 12 + 1, 1)
+        res, = request([{"type": "recorder/statistics_during_period", "start_time": start.astimezone().isoformat(),
+                         "end_time": end.astimezone().isoformat(), "statistic_ids": buy_ids + sell_ids + gen_ids,
+                         "period": "hour", "types": ["change"], "units": {"energy": "kWh"}}], timeout=90)
+        hours = {}
+        for sid, rows in (res or {}).items():
+            key = "buy" if sid in buy_ids else "sell" if sid in sell_ids else "gen"
+            for r in rows or []:
+                st = r.get("start")
+                ts = st / 1000 if isinstance(st, (int, float)) else datetime.fromisoformat(str(st).replace("Z", "+00:00")).timestamp()
+                hk = datetime.fromtimestamp(ts).strftime("%Y-%m-%dT%H")
+                h = hours.setdefault(hk, {"h": hk, "buy": 0.0, "sell": 0.0, "gen": 0.0, "use": 0.0})
+                h[key] += max(0.0, float(r.get("change") or 0)) * 1000
+        if not hours:
+            continue
+        rows = months_from_hours([hours[k] for k in sorted(hours)], src="ha")
+        r = rows.get(ym)
+        if r:
+            r["partial"] = min(hours) > ym + "-01T01"
+            r["complete"] = ym != cur
+            r["at"] = int(time.time())
+            out[ym] = r
+    with lock:
+        mh = energy.setdefault("months_ha", {})
+        mh.update(out)
+        for k in sorted(mh)[:-25]:
+            del mh[k]
+        save_json(ENERGY_PATH, energy)
+    return out
+
+
+months_state = {"backfill_at": 0, "backfill_error": None}
+
+
+def months_loop():
+    while True:
+        try:
+            update_months()
+        except Exception as e:
+            print("月ごとの電気代でエラー:", e, flush=True)
+        if time.time() - months_state["backfill_at"] > 86400 and conf.get("ha_token") and conf.get("tariff_plan"):
+            months_state["backfill_at"] = time.time()
+            try:
+                ha_month_backfill()
+                months_state["backfill_error"] = None
+            except Exception as e:
+                months_state["backfill_error"] = str(e)
+                print("Home Assistant の記録からの月ごとの電気代でエラー:", e, flush=True)
+        time.sleep(1800)
+
+
+def cost_months():
+    """月ごとの電気代・売電額・差し引き（新しい月が先）。サーバーの記録が月の初めからあればそれを、なければ Home Assistant の記録"""
+    with lock:
+        srv = dict(energy.get("months") or {})
+        ha = dict(energy.get("months_ha") or {})
+    out = []
+    for ym in sorted(set(srv) | set(ha), reverse=True)[:25]:
+        a, b = srv.get(ym), ha.get(ym)
+        pick = a if a and not a.get("partial") else b if b else a
+        out.append(pick)
+    c = cost_summary_safe() or {}
+    return {"months": out, "plan": c.get("plan"), "sell_price": float(conf.get("tariff_sell") or 0),
+            "month_estimate_yen": c.get("month_estimate_yen"), "backfill_error": months_state.get("backfill_error")}
 
 
 def tariff_list():
@@ -2021,6 +2185,375 @@ def run_alert_tick(now=None):
     return sent
 
 
+# ================= 目標の時刻に、目標の温度に（電気代がいちばん安くなるように、つける時刻と温度を決める） =================
+# 決めた時刻（例：18:00）に、部屋を決めた温度（例：26℃）にする。
+# 外の気温（予報）・いまの室温・電気の単価（時間帯）・昼の余る電気（予報）から、15分ごとに「つける時刻」と「設定温度」の組み合わせを試算し、
+# 目標の時刻に間に合うもののうち、電気代がいちばん安いものを選ぶ（余る電気で使う分は、売電できたはずの金額で数える）。
+# 動かしたあとに人が操作したら、その日はもう触らない。目標の時刻が来ても切らない。
+PRECOND_LEARN_PATH = os.path.join(DIR, "precond_learn.json")
+precond_learn = load_json(PRECOND_LEARN_PATH, {})
+precond_state = {}
+_wx_cache = {"at": 0, "temp": {}, "irr": {}}
+SLOT_H = 0.25
+PRECOND_DEFAULT_RATE = {"cool": 3.0, "heat": 4.0}   # 1時間に何℃動かせるか（はじめの目安。動かすたびに学習する）
+PRECOND_TAU_H = 6.0                                 # 止めているときに、室温が外の気温へ近づく速さ（時定数・時間）
+
+
+def clean_precond(v):
+    if not isinstance(v, list) or len(v) > 12:
+        return None
+    out = []
+    for r in v:
+        if not isinstance(r, dict) or not re.fullmatch(r"climate\.[a-z0-9_]+", str(r.get("entity", ""))):
+            return None
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(r.get("time", ""))):
+            return None
+        src = str(r.get("source") or "")
+        if src and not re.fullmatch(r"sensor\.[a-z0-9_]+", src):
+            return None
+        days = [int(d) for d in r.get("days") or [0, 1, 2, 3, 4, 5, 6] if str(d).isdigit() and 0 <= int(d) <= 6]
+        out.append({"id": str(r.get("id") or uuid.uuid4().hex[:8])[:16], "entity": r["entity"], "name": str(r.get("name") or "")[:30],
+                    "enabled": bool(r.get("enabled", True)), "mode": r.get("mode") if r.get("mode") in ("auto", "cool", "heat") else "auto",
+                    "time": r["time"], "temp": max(16.0, min(30.0, round(float(r.get("temp") or 25) * 2) / 2)),
+                    "days": sorted(set(days)), "early_min": max(30, min(240, int(r.get("early_min") or 120))),
+                    "adjust": max(0, min(2, int(r.get("adjust") if r.get("adjust") is not None else 1))),
+                    "power_kw": max(0.3, min(3.0, float(r.get("power_kw") or 0.9))), "source": src,
+                    "notify": bool(r.get("notify", False))})
+    return out
+
+
+def _wx_refresh():
+    """1時間ごとの外の気温と日射量（今日・明日）。1時間に1回だけ読む"""
+    if time.time() - _wx_cache["at"] < 3600:
+        return
+    lat, lon = conf.get("lat"), conf.get("lon")
+    if lat is None or lon is None:
+        raise RuntimeError("自宅の位置がサーバーに登録されていません")
+    q = urllib.parse.urlencode({"latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "forecast_days": 2, "hourly": "temperature_2m"})
+    with urllib.request.urlopen("https://api.open-meteo.com/v1/forecast?" + q, timeout=20) as r:
+        h = json.load(r).get("hourly") or {}
+    temp = {t[:13]: float(v) for t, v in zip(h.get("time") or [], h.get("temperature_2m") or []) if v is not None}
+    irr = {}
+    try:
+        hh = _om_hourly(lat, lon, 0, 2)
+        for t in hh.get("time") or []:
+            pass
+        per = {}
+        for m_, _w in FC_MODELS:
+            vals = hh.get(f"global_tilted_irradiance_{m_}") or hh.get(f"shortwave_radiation_{m_}")
+            for t, v in zip(hh.get("time") or [], vals or []):
+                if v is not None:
+                    per.setdefault(t[:13], {})[m_] = float(v) / 1000.0
+        for k, pm in per.items():
+            mean, low = _blend(pm)
+            if mean is not None:
+                irr[k] = 0.7 * mean + 0.3 * low
+    except Exception as e:
+        print("日射量の予報（エアコンの試算用）でエラー:", e, flush=True)
+    _wx_cache.update(at=time.time(), temp=temp, irr=irr)
+
+
+def _usual_use_kw(hour):
+    with lock:
+        vals = {}
+        for k, v in energy["hours"].items():
+            if int(k[11:13]) == hour:
+                vals[k[:10]] = float(v.get("use") or 0) / 1000
+    recent = [v for d, v in sorted(vals.items())[-8:] if d != date.today().isoformat()][-7:]
+    return sum(recent) / len(recent) if recent else 0.6
+
+
+def precond_inputs(start_dt, end_dt):
+    """試算に使う 15分ごとの値：外の気温・電気の単価（円/kWh）・余る電気の見込み（kW）"""
+    _wx_refresh()
+    pr, pl = find_plan(conf.get("tariff_plan") or "")
+    sell = float(conf.get("tariff_sell") or 0)
+    k, _ = pv_factor()
+    slots = []
+    t = start_dt
+    while t < end_dt:
+        key = t.strftime("%Y-%m-%dT%H")
+        tout = _wx_cache["temp"].get(key)
+        if tout is None:
+            tout = next((v for kk, v in sorted(_wx_cache["temp"].items()) if kk >= key), 20.0)
+        rate = None
+        if pl:
+            r, _b = band_of(pl, plan_version(pl, t.date()), t)
+            if r is not None:
+                add, _x, _y = adders_of(pr, t)
+                rate = r * (1 - discount_of(pl)) + add
+        if rate is None:
+            rate = 31.0
+        surplus = max(0.0, k * _wx_cache["irr"].get(key, 0.0) - _usual_use_kw(t.hour))
+        slots.append({"t": t, "tout": tout, "price": rate, "sell": sell, "surplus": surplus})
+        t += timedelta(hours=SLOT_H)
+    return slots
+
+
+def _slot_cost(kwh, sl):
+    """その15分の電気代。余る電気で足りる分は、売電できたはずの金額で数える"""
+    cover = min(kwh, sl["surplus"] * SLOT_H)
+    return cover * sl["sell"] + (kwh - cover) * sl["price"]
+
+
+def precond_simulate(tin, target, mode, slots, start_i, deep, switch_i, rate, power_kw):
+    """start_i の枠でつけ、switch_i の枠までは target∓deep、そのあとは target にする。終わりの室温・電力量・電気代"""
+    sign = -1 if mode == "cool" else 1
+    T, kwh, yen = tin, 0.0, 0.0
+    for i, sl in enumerate(slots):
+        tout = sl["tout"]
+        if i < start_i:
+            T += (tout - T) * (SLOT_H / PRECOND_TAU_H)
+            continue
+        sp = target + sign * deep if i < switch_i else target
+        need = (T - sp) if mode == "cool" else (sp - T)
+        hold = power_kw * max(0.15, min(0.8, abs(tout - sp) / 15.0))
+        r = rate * max(0.6, min(1.0, 1 - 0.02 * max(0.0, abs(tout - sp) - 8)))
+        if need > 0.05:
+            step = min(need, r * SLOT_H)
+            frac = step / (r * SLOT_H)
+            T += -step if mode == "cool" else step
+            e = (power_kw * frac + hold * (1 - frac)) * SLOT_H
+        else:
+            # 設定より涼しい（暖かい）ときは、外の気温へ近づくまで、ほとんど電気を使わない
+            drift = (tout - T) * (SLOT_H / PRECOND_TAU_H)
+            if (mode == "cool" and T + drift <= sp) or (mode == "heat" and T + drift >= sp):
+                T += drift
+                e = 0.05 * SLOT_H
+            else:
+                T = sp
+                e = hold * SLOT_H
+        kwh += e
+        yen += _slot_cost(e, sl)
+    return T, kwh, yen
+
+
+def precond_plan(rule, tin, slots, now_i=0, learn=None):
+    """いちばん安い組み合わせ。slots は今から目標の時刻までの15分ごと（最後の枠の終わりが目標の時刻）"""
+    target = float(rule["temp"])
+    n = len(slots)
+    if n == 0:
+        return None
+    mode = rule.get("mode") or "auto"
+    if mode == "auto":
+        tout_end = slots[-1]["tout"]
+        mode = "cool" if (tin > target + 0.5 or (tout_end > target and tin >= target - 0.5)) else "heat"
+    lr = (learn or {}).get(rule["entity"], {}).get(mode) or {}
+    rate = float(lr.get("rate") or PRECOND_DEFAULT_RATE[mode])
+    pkw = float(rule.get("power_kw") or 0.9)
+    ok_T = (lambda T: T <= target + 0.3) if mode == "cool" else (lambda T: T >= target - 0.3)
+    best = None
+    early = max(0, n - int(rule.get("early_min", 120) / 60 / SLOT_H))
+    for s in range(max(now_i, early), n):
+        for deep in range(0, int(rule.get("adjust", 1)) + 1):
+            for sw in ([s] if deep == 0 else range(s + 1, n)):
+                T, kwh, yen = precond_simulate(tin, target, mode, slots, s, deep, sw, rate, pkw)
+                if not ok_T(T):
+                    continue
+                key = (round(yen, 1), -s, deep)
+                if best is None or key < best[0]:
+                    best = (key, s, deep, sw, T, kwh, yen)
+    # 間に合う組み合わせが無い（室温が遠い）：できるだけ早くつける
+    late = best is None
+    if late:
+        s = max(now_i, early)
+        T, kwh, yen = precond_simulate(tin, target, mode, slots, s, 0, s, rate, pkw)
+        best = (None, s, 0, s, T, kwh, yen)
+    _, s, deep, sw, T, kwh, yen = best
+    # 比べる相手：目標の1時間前に、目標の温度でつけた場合
+    b = max(0, n - int(1 / SLOT_H))
+    bT, bk, by = precond_simulate(tin, target, mode, slots, b, 0, b, rate, pkw)
+    sign = -1 if mode == "cool" else 1
+    steps = [{"at": slots[s]["t"].strftime("%Y-%m-%dT%H:%M"), "temp": target + sign * deep}]
+    if deep:
+        steps.append({"at": slots[sw]["t"].strftime("%Y-%m-%dT%H:%M"), "temp": target})
+    return {"mode": mode, "steps": steps, "start": steps[0]["at"], "end_temp": round(T, 1), "kwh": round(kwh, 2), "yen": round(yen, 1),
+            "baseline_yen": round(by, 1) if ok_T(bT) else None, "late": late, "rate": round(rate, 2), "tin": round(tin, 1),
+            "tout": round(slots[-1]["tout"], 1)}
+
+
+def _precond_room_temp(rule, ac):
+    if rule.get("source"):
+        sv = ha_state(rule["source"])
+        if sv and sv.get("state") not in ("unknown", "unavailable", None):
+            return float(sv["state"])
+    t = (ac.get("attributes") or {}).get("current_temperature") if ac else None
+    return float(t) if t is not None else None
+
+
+def _precond_target_dt(rule, now):
+    hh, mm = map(int, rule["time"].split(":"))
+    t = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return t
+
+
+def precond_preview(rule, now=None):
+    """いまの状態で試算する（画面の「試算」用。機器は動かさない）"""
+    now = now or datetime.now()
+    rule = (clean_precond([rule]) or [None])[0]
+    if not rule:
+        raise ValueError("設定が正しくありません")
+    tdt = _precond_target_dt(rule, now)
+    if tdt <= now:
+        tdt += timedelta(days=1)
+    ac = ha_state(rule["entity"])
+    tin = _precond_room_temp(rule, ac)
+    if tin is None:
+        raise RuntimeError("室温が読めません")
+    first = tdt - timedelta(minutes=rule["early_min"])
+    start = max(first, now.replace(second=0, microsecond=0))
+    start = start - timedelta(minutes=start.minute % 15) if start > first else first
+    slots = precond_inputs(start, tdt)
+    plan = precond_plan(rule, tin, slots, 0, precond_learn)
+    plan["target_at"] = tdt.strftime("%Y-%m-%dT%H:%M")
+    return plan
+
+
+def _precond_notify(rule, msg):
+    if not rule.get("notify"):
+        return
+    try:
+        ss_notify_send("エアコン（目標の時刻に快適に）", msg)
+    except Exception as e:
+        print("お知らせでエラー:", e, flush=True)
+
+
+def precond_tick(now=None, run=None):
+    """1分ごと：計画を立て（目標の時刻の数時間前から15分ごとに見直し）、時刻が来たら設定を送る"""
+    now = now or datetime.now()
+    run = run or run_device_timer
+    for rule in conf.get("precond_rules") or []:
+        rid = rule.get("id")
+        st = precond_state.setdefault(rid, {"log": []})
+        if not rule.get("enabled"):
+            st["status"] = "オフ"
+            continue
+        tdt = _precond_target_dt(rule, now)
+        day = tdt.date().isoformat()
+        if st.get("day") != day:
+            st.update(day=day, plan=None, done=[], stopped=None, started=False, last=None, planned_at=0, start_temp=None, reached=None)
+        if now.weekday() not in rule.get("days", list(range(7))):
+            st["status"] = "今日はお休みの日です"
+            continue
+        if now >= tdt + timedelta(minutes=1):
+            if st.get("started") and not st.get("learned"):
+                st["learned"] = True
+                _precond_learn(rule, st)
+            st["status"] = st.get("stopped") or ("目標の時刻を過ぎました" + ("（動かしました）" if st.get("started") else ""))
+            continue
+        first = tdt - timedelta(minutes=int(rule.get("early_min", 120)) + 30)
+        if now < first:
+            st["status"] = f"{first.strftime('%H:%M')} ごろから計画を立てます"
+            continue
+        if st.get("stopped"):
+            st["status"] = st["stopped"]
+            continue
+        try:
+            ac = ha_state(rule["entity"])
+        except Exception as e:
+            st["status"] = f"Home Assistant から読めませんでした：{e}"
+            continue
+        a = ac.get("attributes") or {}
+        mode_now, sp_now = ac.get("state"), a.get("temperature")
+        try:
+            tin = _precond_room_temp(rule, ac)
+        except Exception:
+            tin = None
+        if tin is None:
+            st["status"] = "室温が読めません"
+            continue
+        # 人が操作したら、その日はもう触らない
+        last = st.get("last")
+        if st.get("started") and last and time.time() - last["at"] > 90 and (mode_now != last["mode"] or (sp_now is not None and float(sp_now) != float(last["temp"]))):
+            st["stopped"] = "手で操作されたので、今日はここまでにしました"
+            st["log"] = ([[time.time(), st["stopped"]]] + st["log"])[:30]
+            log(f"目標の時刻に快適に：{a.get('friendly_name', rule['entity'])} は手で操作されたので、今日はここまでにしました")
+            continue
+        if not st.get("started") and mode_now not in (None, "off", "unavailable", "unknown"):
+            st["status"] = "すでに動いているので、そのままにしています"
+            continue
+        if st.get("started") and st.get("reached") is None and st.get("plan"):
+            sp = st["plan"]["steps"][0]["temp"]
+            if (st["plan"]["mode"] == "cool" and tin <= sp + 0.3) or (st["plan"]["mode"] == "heat" and tin >= sp - 0.3):
+                st["reached"] = time.time()
+        # 計画を立てる（まだ始めていなければ15分ごとに見直す）
+        if not st.get("started") and time.time() - st.get("planned_at", 0) >= 900:
+            try:
+                start = now.replace(second=0, microsecond=0)
+                start -= timedelta(minutes=start.minute % 15)
+                slots = precond_inputs(start, tdt)
+                r2 = dict(rule, early_min=max(15, int((tdt - start).total_seconds() // 60)) if start > tdt - timedelta(minutes=rule["early_min"]) else rule["early_min"])
+                plan = precond_plan(r2, tin, slots, 0, precond_learn)
+                plan["target_at"] = tdt.strftime("%Y-%m-%dT%H:%M")
+                st["plan"], st["planned_at"] = plan, time.time()
+            except Exception as e:
+                st["status"] = f"試算できませんでした：{e}"
+                continue
+        plan = st.get("plan")
+        if not plan:
+            continue
+        for i, step in enumerate(plan["steps"]):
+            if i in st["done"] or now < datetime.strptime(step["at"], "%Y-%m-%dT%H:%M"):
+                continue
+            try:
+                run({"entity": rule["entity"], "action": "set_hvac_mode", "data": {"hvac_mode": plan["mode"], "temperature": step["temp"]}})
+            except Exception as e:
+                st["status"] = f"エアコンを操作できませんでした：{e}"
+                break
+            st["done"].append(i)
+            st["last"] = {"at": time.time(), "mode": plan["mode"], "temp": step["temp"]}
+            what = f"{HVAC_NAME.get(plan['mode'], plan['mode'])} {step['temp']:g}℃"
+            if i == 0:
+                st["started"], st["start_temp"] = True, tin
+                msg = f"{what}でつけました（室温 {tin:.1f}℃・{rule['time']} に {rule['temp']:g}℃ の予定・見込み {plan['yen']:.0f}円）"
+            else:
+                msg = f"{what}にしました（目標の温度へ）"
+            st["log"] = ([[time.time(), msg]] + st["log"])[:30]
+            log(f"目標の時刻に快適に：{a.get('friendly_name', rule['entity'])} を{msg}")
+            _precond_notify(rule, f"{a.get('friendly_name', rule['entity'])}：{msg}")
+        if st.get("started"):
+            st["status"] = f"動かしています（室温 {tin:.1f}℃・{rule['time']} に {rule['temp']:g}℃）"
+        else:
+            st["status"] = f"{plan['start'][11:]} に {HVAC_NAME.get(plan['mode'], plan['mode'])} {plan['steps'][0]['temp']:g}℃ でつける予定（見込み {plan['yen']:.0f}円）"
+
+
+def _precond_learn(rule, st):
+    """つけてから設定温度に届くまでの速さを学習する（1時間に何℃）"""
+    plan = st.get("plan") or {}
+    t0, reached = st.get("start_temp"), st.get("reached")
+    if t0 is None or not reached or not plan.get("steps"):
+        return
+    began = st["log"][-1][0] if st.get("log") else None
+    started_at = min((x[0] for x in st["log"] if "つけました" in x[1]), default=began)
+    if not started_at or reached <= started_at:
+        return
+    hours = (reached - started_at) / 3600
+    moved = abs(t0 - plan["steps"][0]["temp"])
+    if hours < 0.1 or moved < 1.0:
+        return
+    obs = max(0.5, min(8.0, moved / hours))
+    m = plan["mode"]
+    with lock:
+        cur = precond_learn.setdefault(rule["entity"], {}).setdefault(m, {"rate": PRECOND_DEFAULT_RATE[m], "n": 0})
+        cur["rate"] = round(cur["rate"] * 0.7 + obs * 0.3, 2) if cur["n"] else round(obs, 2)
+        cur["n"] += 1
+        save_json(PRECOND_LEARN_PATH, precond_learn)
+
+
+def precond_loop():
+    while True:
+        try:
+            precond_tick()
+        except Exception as e:
+            print("目標の時刻に快適に でエラー:", e, flush=True)
+        time.sleep(60)
+
+
+def precond_public():
+    return {"rules": conf.get("precond_rules") or [], "learn": precond_learn,
+            "state": {k: {kk: vv for kk, vv in v.items() if kk in ("status", "plan", "log", "started", "stopped")} for k, v in precond_state.items()}}
+
+
 def run_alert_loop():
     while True:
         try:
@@ -2082,6 +2615,107 @@ def el_call(eid, service, data=None):
             raise RuntimeError(err)
 
 
+def _ws_send(sock, obj):
+    data = json.dumps(obj).encode()
+    hdr = bytearray([0x81])
+    n = len(data)
+    if n < 126:
+        hdr.append(0x80 | n)
+    elif n < 65536:
+        hdr.append(0x80 | 126); hdr += struct.pack(">H", n)
+    else:
+        hdr.append(0x80 | 127); hdr += struct.pack(">Q", n)
+    mask = os.urandom(4)
+    hdr += mask
+    sock.sendall(bytes(hdr) + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+def _ws__ws_recv_exact(sock, n):
+    b = b""
+    while len(b) < n:
+        c = sock.recv(n - len(b))
+        if not c:
+            raise ConnectionError("切れました")
+        b += c
+    return b
+
+def _ws_recv(sock):
+    buf = b""
+    while True:
+        h = _ws_recv_exact(sock, 2)
+        fin, op, n = h[0] & 0x80, h[0] & 0x0F, h[1] & 0x7F
+        if n == 126:
+            n = struct.unpack(">H", _ws_recv_exact(sock, 2))[0]
+        elif n == 127:
+            n = struct.unpack(">Q", _ws_recv_exact(sock, 8))[0]
+        if h[1] & 0x80:
+            _ws_recv_exact(sock, 4)
+        payload = _ws_recv_exact(sock, n)
+        if op == 0x8:
+            raise ConnectionError("Home Assistant が接続を閉じました")
+        if op == 0x9:  # ping → pong
+            sock.sendall(bytes([0x8A, 0x80 | len(payload)]) + b"\0\0\0\0" + payload)
+            continue
+        if op in (0x1, 0x0, 0x2):
+            buf += payload
+            if fin:
+                return json.loads(buf.decode("utf-8", "replace"))
+
+
+
+def _ws_connect():
+    """Home Assistant の WebSocket につないで認証まで済ませる（家の中の http だけ）。認証済みのソケットを返す"""
+    import base64
+    import urllib.parse as up
+    base, tok = ha_base_url(), conf.get("ha_token") or ""
+    if not base or not tok:
+        raise RuntimeError("Home Assistant の鍵が登録されていません")
+    u = up.urlparse(base)
+    port = u.port or (443 if u.scheme == "https" else 80)
+    if u.scheme == "https":
+        raise RuntimeError("家の中の http の Home Assistant だけ対応しています")
+    sock = socket.create_connection((u.hostname, port), timeout=30)
+    key = base64.b64encode(os.urandom(16)).decode()
+    sock.sendall((f"GET /api/websocket HTTP/1.1\r\nHost: {u.hostname}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        c = sock.recv(1024)
+        if not c:
+            raise ConnectionError("返事がありません")
+        head += c
+    if b" 101 " not in head.split(b"\r\n")[0]:
+        raise ConnectionError(head.split(b"\r\n")[0].decode(errors="replace"))
+    _ws_recv(sock)  # auth_required
+    _ws_send(sock, {"type": "auth", "access_token": tok})
+    r = _ws_recv(sock)
+    if r.get("type") != "auth_ok":
+        sock.close()
+        raise ConnectionError("Home Assistant の鍵が使えません")
+    return sock
+
+
+def ha_ws_request(msgs, timeout=60):
+    """Home Assistant の WebSocket に問い合わせを送り、それぞれの result を順に返す（読むだけの問い合わせ用）"""
+    sock = _ws_connect()
+    try:
+        sock.settimeout(timeout)
+        out = {}
+        for i, m in enumerate(msgs, 1):
+            _ws_send(sock, dict(m, id=i))
+        while len(out) < len(msgs):
+            r = _ws_recv(sock)
+            if r.get("type") == "result" and r.get("id") in range(1, len(msgs) + 1):
+                if not r.get("success"):
+                    raise RuntimeError(((r.get("error") or {}).get("message")) or "Home Assistant がエラーを返しました")
+                out[r["id"]] = r.get("result")
+        return [out[i] for i in range(1, len(msgs) + 1)]
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
 def ha_ws_loop():
     """Home Assistant の WebSocket につなぎ、イベント homepanel_el（スケジュール・オートメーションからの ECHONET Lite の操作）を受け取る"""
     import base64
@@ -2089,50 +2723,7 @@ def ha_ws_loop():
     import struct
     import urllib.parse as up
 
-    def send(sock, obj):
-        data = json.dumps(obj).encode()
-        hdr = bytearray([0x81])
-        n = len(data)
-        if n < 126:
-            hdr.append(0x80 | n)
-        elif n < 65536:
-            hdr.append(0x80 | 126); hdr += struct.pack(">H", n)
-        else:
-            hdr.append(0x80 | 127); hdr += struct.pack(">Q", n)
-        mask = os.urandom(4)
-        hdr += mask
-        sock.sendall(bytes(hdr) + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
-
-    def recv_exact(sock, n):
-        b = b""
-        while len(b) < n:
-            c = sock.recv(n - len(b))
-            if not c:
-                raise ConnectionError("切れました")
-            b += c
-        return b
-
-    def recv(sock):
-        buf = b""
-        while True:
-            h = recv_exact(sock, 2)
-            fin, op, n = h[0] & 0x80, h[0] & 0x0F, h[1] & 0x7F
-            if n == 126:
-                n = struct.unpack(">H", recv_exact(sock, 2))[0]
-            elif n == 127:
-                n = struct.unpack(">Q", recv_exact(sock, 8))[0]
-            if h[1] & 0x80:
-                recv_exact(sock, 4)
-            payload = recv_exact(sock, n)
-            if op == 0x8:
-                raise ConnectionError("Home Assistant が接続を閉じました")
-            if op == 0x9:  # ping → pong
-                sock.sendall(bytes([0x8A, 0x80 | len(payload)]) + b"\0\0\0\0" + payload)
-                continue
-            if op in (0x1, 0x0, 0x2):
-                buf += payload
-                if fin:
-                    return json.loads(buf.decode("utf-8", "replace"))
+    send, recv = _ws_send, _ws_recv
 
     while True:
         base, tok = ha_base_url(), conf.get("ha_token") or ""
@@ -3978,6 +4569,10 @@ class Api(BaseHTTPRequestHandler):
             return self._ok({"services": ha_notify_services()})
         if p == "/tariffs":
             return self._ok(tariff_list())
+        if p == "/cost-months":
+            return self._ok(cost_months())
+        if p == "/precond":
+            return self._ok(precond_public())
         if p == "/energy5":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._ok(energy5_report((q.get("date") or [date.today().isoformat()])[0]))
@@ -4062,6 +4657,11 @@ class Api(BaseHTTPRequestHandler):
                             b[k_] = max(lo, min(hi, float(b[k_])))
                         except (TypeError, ValueError):
                             return self._ok({"error": f"{k_} の値が正しくありません"}, 400)
+                if "precond_rules" in b:
+                    v = clean_precond(b["precond_rules"])
+                    if v is None:
+                        return self._ok({"error": "目標の時刻に快適に の設定が正しくありません"}, 400)
+                    b["precond_rules"] = v
                 if "demand_notify" in b:
                     if not isinstance(b["demand_notify"], list) or not all(re.fullmatch(r"notify\.[a-z0-9_]+", str(x)) for x in b["demand_notify"]):
                         return self._ok({"error": "通知先が正しくありません（notify.〇〇）"}, 400)
@@ -4139,6 +4739,35 @@ class Api(BaseHTTPRequestHandler):
             if len(device_timers) != before:
                 log("タイマーを取り消しました")
             return self._ok(timers_public())
+        if p == "/notify-test":
+            # 知らせる先に、ためしのお知らせを送る
+            if not conf.get("demand_notify"):
+                return self._ok({"error": "知らせる先が選ばれていません"}, 400)
+            errs = []
+            for target in conf.get("demand_notify") or []:
+                try:
+                    ha_call("notify", str(target).split(".", 1)[1], {"title": "ホームパネル", "message": "ためしのお知らせです。届けば、知らせる先の設定はできています。"})
+                except Exception as e:
+                    errs.append(f"{target}：{e}")
+            if errs:
+                return self._ok({"error": "送れませんでした（" + "、".join(errs) + "）"}, 400)
+            return self._ok({"ok": True, "to": conf.get("demand_notify")})
+        if p == "/precond/preview":
+            # 試算だけ（機器は動かさない）
+            try:
+                return self._ok({"plan": precond_preview(b.get("rule") or {})})
+            except Exception as e:
+                return self._ok({"error": str(e)}, 400)
+        if p == "/cost-months/refresh":
+            # 月ごとの電気代：Home Assistant の記録から今すぐ読み直す
+            try:
+                months_state["backfill_at"] = time.time()
+                ha_month_backfill()
+                months_state["backfill_error"] = None
+            except Exception as e:
+                months_state["backfill_error"] = str(e)
+            update_months()
+            return self._ok(cost_months())
         if p == "/retry":
             log("手動で設定をやり直します")
             run_plan(manual=True)
@@ -4259,6 +4888,8 @@ def main():
     threading.Thread(target=el_rescue_loop, daemon=True).start()
     threading.Thread(target=run_alert_loop, daemon=True).start()
     threading.Thread(target=fuel_auto_loop, daemon=True).start()
+    threading.Thread(target=months_loop, daemon=True).start()
+    threading.Thread(target=precond_loop, daemon=True).start()
     print(f"おひさま沸き上げのサービスを開始（画面用 127.0.0.1:{API_PORT}）", flush=True)
     ThreadingHTTPServer(("127.0.0.1", API_PORT), Api).serve_forever()
 

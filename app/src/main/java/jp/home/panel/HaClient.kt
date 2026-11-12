@@ -25,7 +25,7 @@ data class Entity(
     val name: String get() = attributes.optString("friendly_name", entityId)
     val isOn: Boolean
         get() = state in setOf(
-            "on", "open", "opening", "heat", "cool", "auto", "heat_cool", "dry", "fan_only",
+            "on", "open", "opening", "heat", "cool", "auto", "heat_cool", "dry", "fan_only", "cleaning", "unlocked",
         )
 }
 

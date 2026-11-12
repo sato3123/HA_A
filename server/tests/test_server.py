@@ -594,6 +594,10 @@ CONFIG_SAMPLES = {
     "groups": ([{"id": "g1", "name": "おやすみ", "icon": "🌙", "action": "off", "entities": ["light.a"]}],),
     "run_alerts": ([{"entity": "climate.living", "name": "リビング エアコン", "hours": 3}],
                    [{"entity": "climate.living", "name": "リビング エアコン", "hours": 3.0}]),
+    "precond_rules": ([{"id": "p1", "entity": "climate.living", "time": "18:00", "temp": 26, "mode": "cool", "days": [0, 1, 2, 3, 4],
+                        "early_min": 120, "adjust": 1, "power_kw": 0.9, "enabled": True}],
+                      [{"id": "p1", "entity": "climate.living", "name": "", "enabled": True, "mode": "cool", "time": "18:00", "temp": 26.0,
+                        "days": [0, 1, 2, 3, 4], "early_min": 120, "adjust": 1, "power_kw": 0.9, "source": "", "notify": False}]),
 }
 # サーバーの設定で、画面からは変えないもの（理由）
 CONFIG_NOT_FROM_SCREEN = {
@@ -853,6 +857,149 @@ class TestFuelAuto(SolarTestBase):
         finally:
             m["conf"]["tariff_plan"] = keep
             m["fuel_data"].clear()
+
+
+class TestCostMonths(SolarTestBase):
+    def test_months_net_and_backfill(self):
+        m = self.m
+        keep = dict(m["conf"])
+        m["conf"].update(tariff_plan="kepco_hapie_r", tariff_contract=10, tariff_sell=8.5)
+        try:
+            hours = []
+            for d in range(1, 31):
+                for h in range(24):
+                    hours.append({"h": f"2026-09-{d:02d}T{h:02d}", "buy": 500.0, "sell": 1000.0 if 10 <= h < 14 else 0.0, "gen": 0.0, "use": 0.0})
+            rows = m["months_from_hours"](hours)
+            r = rows["2026-09"]
+            self.assertFalse(r["partial"])
+            self.assertEqual(r["sell_kwh"], 120.0)
+            self.assertEqual(r["sell_yen"], 1020)
+            self.assertEqual(r["net_yen"], r["total_yen"] - r["sell_yen"])
+            # Home Assistant の長期統計から（偽物の問い合わせ）
+            now = datetime(2026, 11, 12, 22, 0)
+
+            def req(msgs, timeout=60):
+                q = msgs[0]
+                if q["type"] == "energy/get_prefs":
+                    return [{"energy_sources": [{"type": "grid", "flow_from": [{"stat_energy_from": "sensor.buy"}], "flow_to": [{"stat_energy_to": "sensor.sell"}]},
+                                                {"type": "solar", "stat_energy_from": "sensor.pv"}]}]
+                self.assertEqual(q["type"], "recorder/statistics_during_period")
+                self.assertEqual(q["period"], "hour")
+                st = datetime.fromisoformat(q["start_time"]).replace(tzinfo=None)
+                if st < datetime(2026, 10, 1):
+                    return [{}]
+                rows = {"sensor.buy": [], "sensor.sell": []}
+                t = st
+                while t < datetime.fromisoformat(q["end_time"]).replace(tzinfo=None) and t < now:
+                    ms = int(t.timestamp() * 1000)
+                    rows["sensor.buy"].append({"start": ms, "change": 0.4})
+                    rows["sensor.sell"].append({"start": ms, "change": 0.2})
+                    t += timedelta(hours=1)
+                return [rows]
+            out = m["ha_month_backfill"](now, req)
+            self.assertIn("2026-10", out)
+            self.assertTrue(out["2026-10"]["complete"])
+            self.assertFalse(out["2026-10"]["partial"])
+            self.assertAlmostEqual(out["2026-10"]["buy_kwh"], 0.4 * 24 * 31, delta=1)
+            self.assertFalse(out["2026-11"]["complete"])
+            # 一覧：サーバーの記録が月の初めから無い月は Home Assistant の記録を使う
+            m["energy"]["months"] = {"2026-10": dict(out["2026-10"], src="server", partial=True, total_yen=1)}
+            cm = m["cost_months"]()
+            got = {x["ym"]: x for x in cm["months"]}
+            self.assertEqual(got["2026-10"]["src"], "ha")
+        finally:
+            m["conf"].clear(); m["conf"].update(keep)
+            m["energy"].pop("months", None); m["energy"].pop("months_ha", None)
+
+
+class TestPrecond(SolarTestBase):
+    def slots(self, start, n, tout=32.0, price=30.0, surplus_until=None):
+        out = []
+        for i in range(n):
+            t = start + timedelta(minutes=15 * i)
+            out.append({"t": t, "tout": tout, "price": price, "sell": 8.5, "surplus": 3.0 if surplus_until and t < surplus_until else 0.0})
+        return out
+
+    def test_clean(self):
+        c = self.m["clean_precond"]
+        self.assertIsNone(c([{"entity": "light.x", "time": "18:00"}]))
+        self.assertIsNone(c([{"entity": "climate.a", "time": "25:00"}]))
+        r = c([{"entity": "climate.a", "time": "18:00", "temp": 40, "adjust": 9}])[0]
+        self.assertEqual((r["temp"], r["adjust"], r["mode"], r["enabled"]), (30.0, 2, "auto", True))
+
+    def test_late_start_when_flat_price(self):
+        m = self.m
+        rule = m["clean_precond"]([{"entity": "climate.a", "time": "18:00", "temp": 26, "mode": "cool", "adjust": 1, "early_min": 120}])[0]
+        start = datetime(2026, 8, 1, 16, 0)
+        pl = m["precond_plan"](rule, 28.0, self.slots(start, 8), 0, {})
+        self.assertEqual(pl["mode"], "cool")
+        self.assertEqual(len(pl["steps"]), 1, "単価が同じなら温度は変えない")
+        self.assertGreaterEqual(pl["start"], "2026-08-01T17:00", "単価が同じなら遅めにつける")
+        self.assertLessEqual(pl["end_temp"], 26.3)
+        self.assertLessEqual(pl["yen"], pl["baseline_yen"] + 0.01)
+
+    def test_uses_surplus_early_and_deeper(self):
+        m = self.m
+        rule = m["clean_precond"]([{"entity": "climate.a", "time": "18:00", "temp": 26, "mode": "cool", "adjust": 2, "early_min": 180}])[0]
+        start = datetime(2026, 8, 1, 15, 0)
+        pl = m["precond_plan"](rule, 28.0, self.slots(start, 12, price=40.0, surplus_until=datetime(2026, 8, 1, 16, 30)), 0, {})
+        self.assertLess(pl["start"], "2026-08-01T16:30", "余る電気のあるうちにつける")
+        self.assertLess(pl["yen"], pl["baseline_yen"])
+        self.assertLessEqual(pl["end_temp"], 26.3)
+
+    def test_tick_runs_and_stops_on_manual(self):
+        m = self.m
+        rule = m["clean_precond"]([{"id": "r1", "entity": "climate.a", "time": "18:00", "temp": 26, "mode": "cool", "adjust": 0, "early_min": 60}])[0]
+        keep = dict(m["conf"])
+        m["conf"]["precond_rules"] = [rule]
+        state = {"state": "off", "attributes": {"current_temperature": 29.0, "temperature": 24, "friendly_name": "リビング"}}
+        sent = []
+        real = (m["ha_state"], m["precond_inputs"], m["time"].time)
+        now_ts = [1000.0]
+        try:
+            m["ha_state"] = lambda eid: state
+            m["precond_inputs"] = lambda a, b: self.slots(a, int((b - a).total_seconds() // 900))
+            m["time"].time = lambda: now_ts[0]
+            m["precond_state"].clear()
+            t = datetime(2026, 8, 3, 16, 40)  # 月曜
+            m["precond_tick"](t, lambda x: sent.append(x))
+            self.assertEqual(sent, [])
+            st = m["precond_state"]["r1"]
+            self.assertIn("つける予定", st["status"])
+            at = datetime.strptime(st["plan"]["start"], "%Y-%m-%dT%H:%M")
+            now_ts[0] += 3600
+            m["precond_tick"](at, lambda x: sent.append(x))
+            self.assertEqual(sent[0]["data"], {"hvac_mode": "cool", "temperature": 26.0})
+            state.update(state="cool", attributes=dict(state["attributes"], temperature=26.0))
+            now_ts[0] += 300
+            m["precond_tick"](at + timedelta(minutes=5), lambda x: sent.append(x))
+            self.assertIsNone(st.get("stopped"))
+            # 人が 24℃ に変えた → 今日はもう触らない
+            state["attributes"]["temperature"] = 24.0
+            now_ts[0] += 300
+            m["precond_tick"](at + timedelta(minutes=10), lambda x: sent.append(x))
+            self.assertIn("手で操作", st["stopped"])
+            self.assertEqual(len(sent), 1)
+        finally:
+            m["ha_state"], m["precond_inputs"], m["time"].time = real
+            m["conf"].clear(); m["conf"].update(keep)
+
+    def test_skip_when_already_running(self):
+        m = self.m
+        rule = m["clean_precond"]([{"id": "r2", "entity": "climate.a", "time": "18:00", "temp": 26, "mode": "cool", "early_min": 60}])[0]
+        keep = dict(m["conf"])
+        m["conf"]["precond_rules"] = [rule]
+        real = m["ha_state"]
+        try:
+            m["ha_state"] = lambda eid: {"state": "cool", "attributes": {"current_temperature": 27.0, "temperature": 27}}
+            m["precond_state"].clear()
+            sent = []
+            m["precond_tick"](datetime(2026, 8, 3, 17, 30), lambda x: sent.append(x))
+            self.assertEqual(sent, [])
+            self.assertIn("すでに動いている", m["precond_state"]["r2"]["status"])
+        finally:
+            m["ha_state"] = real
+            m["conf"].clear(); m["conf"].update(keep)
 
 
 class TestCamera(unittest.TestCase):

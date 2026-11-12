@@ -86,7 +86,7 @@ private fun OptionCard(title: String, desc: String, on: Boolean, onToggle: (Bool
 }
 
 @Composable
-private fun ChoiceRow(label: String, values: List<Double>, current: Double, fmt: (Double) -> String, onPick: (Double) -> Unit) {
+fun ChoiceRow(label: String, values: List<Double>, current: Double, fmt: (Double) -> String, onPick: (Double) -> Unit) {
     val chip = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary)
     Text(label, style = MaterialTheme.typography.labelLarge)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -139,8 +139,8 @@ fun SelfSuffSettings(vm: MainViewModel) {
             HoursRow(conf, "ss_notify", 9, 15, vm)
             val targets = conf.strList("demand_notify")
             Text(
-                if (targets.isEmpty()) "知らせる先がまだありません。「お湯（エコキュート）と太陽光」→「30分ごとの電気の上限」の「知らせる先」で、スマートフォンを選んでください（同じ先に知らせます）。"
-                else "知らせる先：" + targets.joinToString("、") { it.removePrefix("notify.mobile_app_") } + "（30分ごとの電気の上限と同じ先）",
+                if (targets.isEmpty()) "知らせる先がまだありません。⚙ 設定 →「スマートフォンへのお知らせ」で、スマートフォンを選んでください（どのお知らせも同じ先に知らせます）。"
+                else "知らせる先：" + targets.joinToString("、") { it.removePrefix("notify.mobile_app_") } + "（⚙ 設定 →「スマートフォンへのお知らせ」で変えられます）",
                 style = MaterialTheme.typography.bodySmall,
                 color = if (targets.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -410,7 +410,7 @@ fun RunAlertSettings(vm: MainViewModel) {
         }
         val targets = conf.strList("demand_notify")
         Text(
-            if (targets.isEmpty()) "知らせる先がまだありません。「お湯（エコキュート）と太陽光」→「30分ごとの電気の上限」の「知らせる先」で、スマートフォンを選んでください（同じ先に知らせます）。"
+            if (targets.isEmpty()) "知らせる先がまだありません。⚙ 設定 →「スマートフォンへのお知らせ」で、スマートフォンを選んでください（どのお知らせも同じ先に知らせます）。"
             else "知らせる先：" + targets.joinToString("、") { it.removePrefix("notify.mobile_app_") },
             style = MaterialTheme.typography.bodySmall,
             color = if (targets.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,

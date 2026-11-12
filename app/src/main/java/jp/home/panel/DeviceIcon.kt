@@ -128,6 +128,39 @@ private fun DrawScope.drawDevice(domain: String, c: Color, on: Boolean) {
             drawCircle(c, radius = w * 0.16f, center = p(0.5f, 0.57f), style = stroke)
             if (on) drawCircle(c, radius = w * 0.06f, center = p(0.82f, 0.42f))
         }
+        "lock" -> {
+            // 鍵：南京錠（開いているときは輪が外れる）
+            drawRoundRect(c, topLeft = p(0.16f, 0.44f), size = Size(w * 0.68f, w * 0.48f), cornerRadius = CornerRadius(w * 0.1f))
+            val shackle = Path().apply {
+                moveTo(0.3f * w, 0.44f * w); lineTo(0.3f * w, 0.3f * w)
+                cubicTo(0.3f * w, 0.02f * w, 0.7f * w, 0.02f * w, 0.7f * w, 0.3f * w)
+                if (!on) lineTo(0.7f * w, 0.44f * w)
+            }
+            drawPath(shackle, c, style = stroke)
+        }
+        "humidifier" -> {
+            // 加湿器：しずく
+            val drop = Path().apply {
+                moveTo(0.5f * w, 0.06f * w)
+                cubicTo(0.75f * w, 0.4f * w, 0.84f * w, 0.56f * w, 0.84f * w, 0.66f * w)
+                cubicTo(0.84f * w, 0.86f * w, 0.68f * w, 0.96f * w, 0.5f * w, 0.96f * w)
+                cubicTo(0.32f * w, 0.96f * w, 0.16f * w, 0.86f * w, 0.16f * w, 0.66f * w)
+                cubicTo(0.16f * w, 0.56f * w, 0.25f * w, 0.4f * w, 0.5f * w, 0.06f * w)
+                close()
+            }
+            if (on) drawPath(drop, c) else drawPath(drop, c, style = stroke)
+        }
+        "vacuum" -> {
+            // ロボット掃除機：丸い本体とセンサー
+            drawCircle(c, radius = w * 0.42f, center = p(0.5f, 0.5f), style = stroke)
+            drawLine(c, p(0.3f, 0.32f), p(0.7f, 0.32f), strokeWidth = w * 0.07f, cap = StrokeCap.Round)
+            drawCircle(c, radius = w * 0.08f, center = p(0.5f, 0.58f))
+        }
+        "button" -> {
+            // ボタン：押しボタン
+            drawCircle(c, radius = w * 0.42f, center = p(0.5f, 0.5f), style = stroke)
+            drawCircle(c, radius = w * 0.24f, center = p(0.5f, 0.5f))
+        }
         else -> drawCircle(c, radius = w * 0.2f, center = p(0.5f, 0.5f))
     }
 }
