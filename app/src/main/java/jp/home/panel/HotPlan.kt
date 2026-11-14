@@ -151,7 +151,7 @@ fun HeatTempSettings(vm: MainViewModel) {
             Text(
                 when {
                     read != null -> "エコキュートの設定：${read}℃（$at に読みました）"
-                    ht?.optString("error")?.takeIf { it.isNotBlank() && it != "null" } != null -> "読めませんでした：${ht.optString("error")}"
+                    ht?.optString("error")?.takeIf { it.isNotBlank() && it != "null" } != null -> "読めませんでした：${ht?.optString("error")}"
                     else -> "まだ読んでいません（30分ごとに読みます）"
                 } + (ht?.let { "・計算に使う温度 ${it.optDouble("used").toInt()}℃（${it.optString("used_how")}）" } ?: ""),
                 style = MaterialTheme.typography.bodySmall,
