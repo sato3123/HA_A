@@ -492,11 +492,29 @@ class TestEveningPrep(SolarTestBase):
             eco["remain"] = m["state"]["prep"]["target"]
             m["prep_tick"](eco, datetime.combine(today, datetime.min.time()).replace(hour=17, minute=5))
             self.assertFalse(m["state"]["prep"]["heating"])
-            # 20時：たくさん使って、残りが「そこからの予想＋余裕」を下回った → 30分たっていれば沸かし足す
+            # 夕方の時刻に目標に届いた → その日の計画を基準にする
+            at = lambda h, mi=0: datetime.combine(today, datetime.min.time()).replace(hour=h, minute=mi)
+            m["prep_tick"](eco, at(17, 6))
+            met = m["state"]["prep"]["met"]
+            self.assertEqual(met["predicted"], need["predicted"])
             m["state"]["prep"]["stopped_at"] = 0
-            eco["remain"] = 120
-            m["prep_tick"](eco, datetime.combine(today, datetime.min.time()).replace(hour=20))
+            n_calls = len(calls)
+            # 19〜21時：予想の範囲でお湯を使って減っていく → 沸かし足さない（以前は、ここで沸かし足していた）
+            target = met["target"]
+            for i, (h, mi) in enumerate([(19, 0), (19, 30), (20, 0), (20, 30), (21, 0)]):
+                eco["remain"] = target - int(need["predicted"] * 0.9 * (i + 1) / 5)
+                m["prep_tick"](eco, at(h, mi))
+                self.assertFalse(m["state"]["prep"]["heating"], f"{h}:{mi:02d} に沸かし足してしまった（残り {eco['remain']}L）")
+            self.assertEqual(len(calls), n_calls)
+            # 予想と余裕を使い切って、ほとんど空（10%未満）→ 沸かし足す
+            eco["remain"] = 30
+            m["prep_tick"](eco, at(21, 30))
             self.assertTrue(m["state"]["prep"]["heating"])
+            self.assertIn((0xB0, b"\x42"), calls[n_calls:])
+            # 残りの予想＋20L まで沸いたらやめる
+            eco["remain"] = m["state"]["prep"]["floor"] + 25
+            m["prep_tick"](eco, at(21, 50))
+            self.assertFalse(m["state"]["prep"]["heating"])
             rest = m["evening_need"](today, 20)
             self.assertLess(rest["need"], need["need"])
             # 昼に余った電気で沸かす目標：今夜の分＋翌日分（タンクの95%まで）

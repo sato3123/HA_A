@@ -3663,7 +3663,62 @@ def prep_tick(eco, now):
         st["heating"] = False
         state["prep"] = st
         return
-    need = evening_need(now.date(), now.hour if in_evening else None)
+    # 夕方の時刻に目標まで用意できた後は、その日の計画（夕方の時刻の予想＋余裕）を基準にする。
+    # お湯を使って減っても、使った分は予想のうちなので沸かし足さない。予想と余裕を使い切って、
+    # なお「残りの予想」より少なくなったときと、ほとんど空（タンクの10%未満）のときだけ沸かし足す。
+    met = st.get("met")
+    if in_evening and not met and not st.get("heating") and st.get("target") and remain >= st["target"] - 5:
+        base_need = evening_need(now.date(), None)
+        met = st["met"] = {"at": now.strftime("%H:%M"), "remain": remain, "target": st["target"],
+                           "predicted": int(base_need.get("predicted") or 0), "loss": int(base_need.get("loss") or 0), "used": 0}
+        log(f"夕方の準備：{met['at']} に {remain}L あり、目標 {st['target']}L に届いています（このあと使って減っても、予想の範囲なら沸かし足しません）")
+    if met:
+        last = st.get("last_remain")
+        if last is not None and remain < last and not eco.get("heating"):
+            met["used"] += last - remain
+        st["last_remain"] = remain
+        st["need"] = met["target"]
+        st["until"] = end_at.strftime("%H:%M") if end_h < 24 else f"翌{end_h - 24}:00"
+        tank = eco.get("tank") or 0
+        left_pred = max(0, met["predicted"] - met["used"])
+        floor = max(left_pred, int(tank * 0.1) if tank else 0)
+        st["floor"] = floor
+        st["short"] = max(0, floor - remain)
+        if st.get("heating"):
+            if remain >= floor + 20 or now >= end_at:
+                st["heating"] = False
+                st["stopped_at"] = time.time()
+                (eco_pause if state.get("night_stop") else eco_auto)(f"夕方の準備：{remain}L になりました（残りの予想 {floor}L）")
+                state["ensure"] = False
+            state["prep"] = st
+            return
+        if remain >= floor or time.time() - st.get("stopped_at", 0) < 1800 or eco.get("heating") or not eco.get("can_manual", True):
+            state["prep"] = st
+            return
+        target = floor + 20
+        why = (f"予想（{met['predicted']}L）と余裕を使い切り、今夜の沸き上げ（{st['until']}）までの残りの予想 {left_pred}L より少なくなった"
+               if left_pred >= int(tank * 0.1 if tank else 0) else "お湯がほとんど残っていない（タンクの10%未満）")
+        st["target"] = target
+    else:
+        need = evening_need(now.date(), now.hour if in_evening else None)
+        why = None
+    if met:
+        if guard["active"]:
+            guard_release("夕方のお湯が足りないため（お湯切れを防ぐ）", cool=1800)
+        s_ = eco_caps["set"]
+        if s_ is None or 0xC0 in s_:
+            el.setc(conf["eco_ip"], conf["eco_eoj"], 0xC0, b"\x41")
+        err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
+        if not err:
+            st["heating"] = True
+            with lock:
+                state["by_us"] = True
+                state["ensure"] = True
+            log(f"夕方の準備：{why}ため、いま {remain}L から沸かし足します（{target}L まで）")
+        else:
+            log(f"夕方の準備：沸かし始められませんでした（{err}）")
+        state["prep"] = st
+        return
     st["need"] = need.get("need")
     st["until"] = end_at.strftime("%H:%M") if end_h < 24 else f"翌{end_h - 24}:00"
     if not need.get("need"):

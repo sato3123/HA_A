@@ -90,6 +90,10 @@ fun HotPlanSummary(vm: MainViewModel) {
     p.optJSONObject("prep")?.let { st ->
         when {
             st.optBoolean("heating") -> Text("♨ 夕方の準備のために沸かしています", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            st.optJSONObject("met") != null -> st.optJSONObject("met")!!.let { m ->
+                Text("✓ ${m.optString("at")} に ${m.optInt("remain")}L 用意できました（目標 ${m.optInt("target")}L）。そのあと使った ${m.optInt("used")}L は予想のうちなので沸かし足しません" +
+                    "（沸かし足すのは、残りが ${st.optInt("floor")}L を下回ったときだけ）", style = MaterialTheme.typography.bodySmall)
+            }
             st.optInt("short") > 0 && st.optString("start_at").isNotBlank() && !st.optBoolean("done") ->
                 Text("今のままだと ${st.optInt("short")}L 足りないので、${st.optString("start_at")} ごろから沸かします（昼に余った電気で沸けば不要）", style = MaterialTheme.typography.bodySmall)
             else -> {}
