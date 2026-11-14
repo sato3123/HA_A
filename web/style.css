@@ -537,3 +537,11 @@ div.warn::before { content: "⚠ "; }
 .cmt tr.sel td { font-weight: 700; background: color-mix(in srgb, var(--primary) 10%, transparent); }
 .cmt td, .cmt th { white-space: nowrap; }
 .cmt td:not(:first-child), .cmt th:not(:first-child) { text-align: right; }
+
+/* 設定の画面の「保存」の帯（上に固定） */
+.savebar { position: sticky; top: 56px; z-index: 4; display: flex; align-items: center; gap: 10px; background: var(--surface2); border-radius: 12px; padding: 6px 8px 6px 12px; margin: 0 0 10px; }
+.savebar #saveBar { flex: 1; min-width: 0; font-size: 15px; }
+.savebar .sv { color: var(--muted); }
+.savebar .sv.ok { color: var(--primary); }
+.savebar .sv.err { color: var(--danger, #c62828); font-weight: 700; }
+.savebar .btn { min-height: 44px; }

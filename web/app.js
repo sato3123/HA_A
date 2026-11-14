@@ -23,7 +23,10 @@
     get(k, d = null) {
       try { const v = localStorage.getItem("hp_" + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; }
     },
-    set(k, v) { try { localStorage.setItem("hp_" + k, JSON.stringify(v)); } catch (e) { /* 保存できない環境 */ } },
+    set(k, v) {
+      try { localStorage.setItem("hp_" + k, JSON.stringify(v)); if (typeof onLocalSaved === "function") onLocalSaved(k); }
+      catch (e) { if (typeof onLocalSaved === "function") onLocalSaved(k, e); }
+    },
     del(k) { try { localStorage.removeItem("hp_" + k); } catch (e) { /* noop */ } },
   };
   const num = (a, k) => {
@@ -1441,11 +1444,58 @@
     document.querySelectorAll("[data-update-slot]").forEach((el) => { el.innerHTML = updateHTML(true); });
   }
 
+  // ================= 保存の状態（設定の画面の上に出す） =================
+  // この画面の設定は、選ぶ・切り替えるとその場で保存される（帯に「✓ 保存しました」と出る）。
+  // 「保存」ボタンは、入力中の欄を確定し、家のサーバーに設定が残っているかを確かめる（違っていれば送り直す）。
+  S.changedConf = {};
+  S.saveSt = { st: "idle" };
+  const BG_KEYS = ["tokens", "admin_tokens", "flash", "state", "openPage", "helpShown", "roomFilter", "timers"];
+  function onLocalSaved(k, err) {
+    if (S.page !== "settings" || !S.settingsPage || BG_KEYS.includes(k)) return;
+    err ? setSave("error", "このブラウザに保存できませんでした（プライベートブラウズでは保存できません）") : setSave("saved", "このブラウザ");
+  }
+  function setSave(st, msg) {
+    S.saveSt = { st, msg: msg || "", at: new Date() };
+    const b = $("#saveBar");
+    if (b) b.innerHTML = saveBarText();
+    const btn = document.querySelector('[data-set="saveConfirm"]');
+    if (btn) btn.disabled = st === "saving";
+  }
+  function saveBarText() {
+    const s = S.saveSt, t = s.at ? `${s.at.getHours()}:${String(s.at.getMinutes()).padStart(2, "0")}` : "";
+    switch (s.st) {
+      case "saving": return `<span class="sv">… 保存しています…</span>`;
+      case "saved": return `<span class="sv ok">✓ 保存しました（${t}・${esc(s.msg)}）</span>`;
+      case "confirmed": return `<span class="sv ok">✓ 保存されています（${t} に${esc(s.msg)}で確かめました）</span>`;
+      case "error": return `<span class="sv err">⚠ 保存できませんでした：${esc(s.msg)}</span>`;
+      default: return `<span class="sv">ⓘ この画面の設定は、選ぶとその場で保存されます</span>`;
+    }
+  }
+  async function confirmSaved() {
+    // 入力中の欄を確定する（change が起きて、その場で保存される）
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    setSave("saving");
+    await new Promise((r) => setTimeout(r, 400));
+    const keys = Object.keys(S.changedConf);
+    if (!SERVER_MODE || !keys.length) { S.saveSt = { st: "confirmed", msg: "このブラウザ", at: new Date() }; setSave("confirmed", "このブラウザ"); return; }
+    try {
+      const conf = ((await solarApi("/status")) || {}).config || {};
+      const diff = {};
+      keys.forEach((k) => { if (JSON.stringify(conf[k]) !== JSON.stringify(S.changedConf[k])) diff[k] = S.changedConf[k]; });
+      if (Object.keys(diff).length) {
+        await loadSolar("/config", diff);
+        if (S.saveSt.st === "error") return;
+      }
+      setSave("confirmed", "家のサーバー" + (Object.keys(diff).length ? `（${Object.keys(diff).length}件を送り直しました）` : ""));
+    } catch (e) { setSave("error", "サーバーに確かめられませんでした：" + e.message); }
+  }
+
   // ================= 設定・使い方ページ =================
   function settingsHTML() {
     if (S.settingsPage) {
       const m = SETTINGS_MENU.find((x) => x[0] === S.settingsPage) || ["", "", "設定"];
       return `<div class="wrap"><div class="pagebar"><button class="tbtn" data-set="menuBack">← 設定</button><h2>${esc(m[2])}</h2></div>
+        <div class="savebar"><span id="saveBar" role="status" aria-live="polite">${saveBarText()}</span><button class="btn" data-set="saveConfirm">保存</button></div>
         ${settingsPageHTML(S.settingsPage)}<div style="height:40px"></div></div>`;
     }
     const row = ([k, icon, title, sub]) => `<button class="menurow" data-set="menu" data-id="${k}"><span class="mi">${icon}</span>
@@ -3216,8 +3266,20 @@
   }
   async function loadSolar(path, body) {
     if (!SERVER_MODE) return;
-    try { S.solar = await solarApi(path || "/status", body); S.solarErr = null; renderEnergy(); }
-    catch (e) { if (path) S.solarErr = "サーバーに送れませんでした：" + e.message; else S.solar = null; }
+    const saving = path === "/config" && body;
+    if (saving) { Object.assign(S.changedConf, body); setSave("saving"); }
+    try {
+      S.solar = await solarApi(path || "/status", body); S.solarErr = null; renderEnergy();
+      if (saving) {
+        const ign = (S.solar && S.solar.ignored) || [];
+        if (ign.length) { ign.forEach((k) => delete S.changedConf[k]); setSave("error", "保存できなかった項目があります（" + ign.join("・") + "）。サーバーの更新を待ってから、もう一度お試しください"); }
+        else setSave("saved", "家のサーバー");
+      }
+    }
+    catch (e) {
+      if (path) S.solarErr = "サーバーに送れませんでした：" + e.message; else S.solar = null;
+      if (saving) { Object.keys(body).forEach((k) => delete S.changedConf[k]); setSave("error", "サーバーに保存できませんでした：" + e.message); }
+    }
     renderSolar();
     renderGroups();
     const sb = $("#ssBox");
@@ -4614,7 +4676,8 @@
   async function onNewSetting(el) {
     const id = el.dataset.id;
     switch (el.dataset.set) {
-      case "menu": S.menuY = $("#page").scrollTop; S.settingsPage = id; openPage("settings"); return true;
+      case "menu": S.menuY = $("#page").scrollTop; S.settingsPage = id; S.changedConf = {}; S.saveSt = { st: "idle" }; openPage("settings"); return true;
+      case "saveConfirm": confirmSaved(); return true;
       case "simpleTap": { const e = S.ha && S.ha.states[id]; if (e && !isUnav(e)) primary(e); return true; }
       case "advToggle": S.showAdv = !S.showAdv; openPage("settings"); return true;
       case "simpleMode": store.set("simpleMode", el.checked); applySimple(); return true;

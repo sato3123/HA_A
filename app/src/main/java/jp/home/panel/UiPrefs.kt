@@ -5,6 +5,15 @@ import android.content.Context
 /** 画面設定（秘密情報ではないので通常の SharedPreferences） */
 class UiPrefs(context: Context) {
     private val p = context.getSharedPreferences("ui_prefs", Context.MODE_PRIVATE)
+    private var listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
+
+    /** このタブレットの設定が書き込まれたら知らせる（画面の「保存しました」の表示用） */
+    fun onSaved(cb: () -> Unit) {
+        // 画面の裏で自動で書き換わるもの（記録・見つけた機器など）は、保存の知らせに数えない
+        val background = setOf("sh_log", "sh_plan", "sh_tank_by_us", "sh_shift_unsup", "el_devices", "cam_server", "room_filter", "timers", "help_shown")
+        listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, k -> if (k !in background) cb() }
+        p.registerOnSharedPreferenceChangeListener(listener)
+    }
 
     /** 表示する機器。null = まだ選んでいない（すべて表示） */
     var selected: Set<String>?

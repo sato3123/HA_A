@@ -31,6 +31,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,20 +89,28 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
         .filter { q.isEmpty() || it.name.contains(q, ignoreCase = true) || it.entityId.contains(q, ignoreCase = true) }
         .groupBy { it.domain }
 
+    // ページを開くたびに、保存の表示をはじめに戻す
+    LaunchedEffect(page) { vm.resetSaveStatus() }
+    Column(Modifier.fillMaxSize()) {
+    if (page != null) {
+        // 上に固定：戻る・ページの名前・保存の帯（スクロールしても見える）
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { page = null }) { Text("← 設定") }
+                Text(SETTINGS_MENU.firstOrNull { it.key == page }?.title ?: "", style = MaterialTheme.typography.titleLarge)
+            }
+            SettingsSaveBar(vm)
+        }
+    }
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier.weight(1f).fillMaxWidth(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        item {
+        if (page == null) item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (page == null) {
-                    TextButton(onClick = onClose) { Text("← 戻る") }
-                    Text("設定", style = MaterialTheme.typography.titleLarge)
-                } else {
-                    TextButton(onClick = { page = null }) { Text("← 設定") }
-                    Text(SETTINGS_MENU.firstOrNull { it.key == page }?.title ?: "", style = MaterialTheme.typography.titleLarge)
-                }
+                TextButton(onClick = onClose) { Text("← 戻る") }
+                Text("設定", style = MaterialTheme.typography.titleLarge)
             }
         }
         // ---- メニュー（項目ごとに分ける） ----
@@ -399,6 +408,7 @@ fun SettingsScreen(vm: MainViewModel, onClose: () -> Unit, onEnableWake: () -> U
         }
 
         item { Spacer(Modifier.size(32.dp)) }
+    }
     }
 
     assignFor?.let { e ->

@@ -173,8 +173,8 @@ fun SolarHeatSettings(vm: MainViewModel) {
                     modifier = Modifier.weight(1f))
                 TextButton(onClick = { vm.setSolarWhere("server", serverText) }) { Text("保存") }
             }
-            Button(onClick = { vm.pushSolarToServer() }) { Text("このタブレットの設定をサーバーに送る") }
-            HelpText("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、下の時間帯などの設定をサーバーに送ります。最初に1回押してください。", style = MaterialTheme.typography.bodySmall)
+            Button(onClick = { vm.pushSolarToServer() }) { Text("見つけた機器と自宅の位置をサーバーに登録する") }
+            HelpText("見つけたエコキュートとスマートメーター、Home Assistant の自宅の位置（天気予報に使います）と、時間帯などの設定をサーバーに登録します。最初に1回押してください（下の設定は、選ぶとその場で保存されます。このボタンを押す必要はありません）。", style = MaterialTheme.typography.bodySmall)
             serverMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
             // 夜の沸き上げの減らし方（サーバー）

@@ -3011,10 +3011,64 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setServerConf(key: String, value: Any) = viewModelScope.launch {
         val before = serverConf.value
         serverConf.value = before + (key to value)
+        changedServerKeys[key] = value
+        saveStatus.value = SaveStatus(SaveStatus.SAVING)
         // 保存できなかったら、画面の表示も元に戻す（保存できたように見えないように）
-        if (!serverPost("/config", JSONObject().put(key, value)) && serverConf.value[key] == value) {
-            serverConf.value = if (before.containsKey(key)) serverConf.value + (key to before[key]) else serverConf.value - key
+        if (!serverPost("/config", JSONObject().put(key, value))) {
+            if (serverConf.value[key] == value) {
+                serverConf.value = if (before.containsKey(key)) serverConf.value + (key to before[key]) else serverConf.value - key
+            }
+            changedServerKeys.remove(key)
+            saveStatus.value = SaveStatus(SaveStatus.ERROR, msg = shServerMsg.value ?: "サーバーに保存できませんでした")
+        } else {
+            saveStatus.value = SaveStatus(SaveStatus.SAVED, where = "家のサーバー")
         }
+    }
+
+    // ---------- 保存の状態（設定の画面の上に出す） ----------
+    /** この画面を開いてから家のサーバーに保存した設定（「保存」を押したときに、サーバーに残っているか確かめる） */
+    private val changedServerKeys = java.util.concurrent.ConcurrentHashMap<String, Any>()
+    val saveStatus = MutableStateFlow(SaveStatus(SaveStatus.IDLE))
+
+    /**
+     * 「保存」ボタン：家のサーバーの設定を読み直して、この画面で変えた設定がそのとおり残っているか確かめる。
+     * 違っていれば送り直す。このタブレットの設定は、選んだときにすでに保存されている
+     */
+    fun confirmSaved() = viewModelScope.launch {
+        saveStatus.value = SaveStatus(SaveStatus.SAVING)
+        if (shServer.value.isBlank() || changedServerKeys.isEmpty()) {
+            saveStatus.value = SaveStatus(SaveStatus.CONFIRMED, where = "このタブレット")
+            return@launch
+        }
+        try {
+            val conf = serverCall("/status", null).optJSONObject("config") ?: JSONObject()
+            fun same(a: Any?, b: Any?): Boolean = when {
+                a is Number && b is Number -> Math.abs(a.toDouble() - b.toDouble()) < 1e-9
+                a is JSONArray || a is JSONObject || b is JSONArray || b is JSONObject -> a.toString() == b.toString() ||
+                    runCatching { JSONArray(a.toString()).toString() == JSONArray(b.toString()).toString() }.getOrDefault(false)
+                else -> a == b
+            }
+            val diff = changedServerKeys.filter { (k, v) -> !same(conf.opt(k), v) }
+            if (diff.isNotEmpty()) {
+                val body = JSONObject()
+                diff.forEach { (k, v) -> body.put(k, v) }
+                if (!serverPost("/config", body)) {
+                    saveStatus.value = SaveStatus(SaveStatus.ERROR, msg = shServerMsg.value ?: "サーバーに保存できませんでした")
+                    return@launch
+                }
+            }
+            saveStatus.value = SaveStatus(SaveStatus.CONFIRMED, where = "家のサーバー", msg = if (diff.isNotEmpty()) "${diff.size}件を送り直しました" else "")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            saveStatus.value = SaveStatus(SaveStatus.ERROR, msg = "サーバーに確かめられませんでした：${e.message}")
+        }
+    }
+
+    /** 設定の画面を開いたとき：表示をはじめの状態に戻す */
+    fun resetSaveStatus() {
+        changedServerKeys.clear()
+        saveStatus.value = SaveStatus(SaveStatus.IDLE)
     }
 
     /** サーバーに登録した AiSEG2 の状態（画面用） */
@@ -3711,6 +3765,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * このクラスの最後で動かす（途中に置くと、まだ準備できていない値を読んで止まる）
      */
     init {
+        // このタブレットの設定が書き込まれたら「保存しました」と出す
+        prefs.onSaved { saveStatus.value = SaveStatus(SaveStatus.SAVED, where = "このタブレット") }
         // 開発用のビルドの「デモ表示」：Home Assistant につながず、見本のデータで画面を出す（画面の確認用）
         if (!solarStarted) { solarStarted = true; startSolarHeat() }
         startClimateAuto()
