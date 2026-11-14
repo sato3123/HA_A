@@ -72,6 +72,9 @@ fun EcoCuteCard(vm: MainViewModel) {
                     Text("残りのお湯", style = MaterialTheme.typography.bodySmall)
                     Text("${s.remainL}L", fontSize = 22.sp, fontWeight = FontWeight.Medium)
                     s.tankL?.let { Text("／ ${it}L" + (pct?.let { p -> "（$p%）" } ?: ""), style = MaterialTheme.typography.bodySmall) }
+                    // 沸き上げの温度（エコキュートから読めたとき）
+                    val htv by vm.serverHeatTemp.collectAsState()
+                    htv?.takeIf { s.server && !it.isNull("value") }?.let { Text("・沸き上げ ${it.optInt("value")}℃", style = MaterialTheme.typography.bodySmall) }
                 }
                 pct?.let { LinearProgressIndicator(progress = { it / 100f }, modifier = Modifier.fillMaxWidth()) }
             }
@@ -192,6 +195,7 @@ fun SolarHeatSettings(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
             HotPlanSettings(vm, view?.tankL)
+            HeatTempSettings(vm)
             ServerSetupInfo(vm)
             HeatGuardSettings(vm)
             if (method == "stop") {

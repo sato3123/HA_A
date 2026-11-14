@@ -132,10 +132,40 @@ fun NightLateSettings(vm: MainViewModel) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         listOf(5, 6, 7, 8).forEach { v -> FilterChip(ne == v, { vm.setServerConf("night_end_hour", v) }, { Text("${v}時") }, colors = chip) }
     }
+}
+
+/** 沸き上げの温度：エコキュートから自動で読む（読めない機種・おまかせのときは、選んだ値） */
+@Composable
+fun HeatTempSettings(vm: MainViewModel) {
+    val conf by vm.serverConf.collectAsState()
+    val ht by vm.serverHeatTemp.collectAsState()
+    val chip = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary)
+    val auto = conf["tank_temp_auto"] != false
+    val read = ht?.takeIf { !it.isNull("value") }?.optInt("value")
+    val at = ht?.takeIf { !it.isNull("at") }?.optDouble("at")?.let {
+        java.text.SimpleDateFormat("M/d H:mm", java.util.Locale.JAPAN).format(java.util.Date((it * 1000).toLong()))
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("沸き上げの温度をエコキュートから自動で読む", style = MaterialTheme.typography.labelLarge)
+            Text(
+                when {
+                    read != null -> "エコキュートの設定：${read}℃（$at に読みました）"
+                    ht?.optString("error")?.takeIf { it.isNotBlank() && it != "null" } != null -> "読めませんでした：${ht.optString("error")}"
+                    else -> "まだ読んでいません（30分ごとに読みます）"
+                } + (ht?.let { "・計算に使う温度 ${it.optDouble("used").toInt()}℃（${it.optString("used_how")}）" } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            HelpText("冷めて減るお湯の量や、夜に沸かす時刻の計算に使います。エコキュートの「沸き上げ湯温設定値」を30分ごとに読みます。機種や「おまかせ」の設定で読めないときは、下で選んだ温度を使います。", style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = auto, onCheckedChange = { vm.setServerConf("tank_temp_auto", it) })
+    }
     val tt = (conf["tank_temp"] as? Number)?.toInt() ?: 65
-    Text("沸き上げの温度（冷める量の計算に使う）：${tt}℃", style = MaterialTheme.typography.bodySmall)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOf(60, 65, 70, 80, 90).forEach { v -> FilterChip(tt == v, { vm.setServerConf("tank_temp", v) }, { Text("${v}℃") }, colors = chip) }
+    if (!auto || read == null) {
+        Text((if (auto) "読めないときに使う温度" else "沸き上げの温度（冷める量の計算に使う）") + "：${tt}℃", style = MaterialTheme.typography.bodySmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(60, 65, 70, 75, 80, 85, 90).forEach { v -> FilterChip(tt == v, { vm.setServerConf("tank_temp", v) }, { Text("${v}℃") }, colors = chip) }
+        }
     }
 }
 

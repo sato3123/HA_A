@@ -74,7 +74,8 @@ DEFAULT_CONF = {
     # 夜の沸き上げを、できるだけ遅く（朝に近く）する：沸かしたお湯は外気との温度差に比例して冷めるので、
     # 冷める分と、その時刻の電気料金・外気温での効率（COP）から、いちばん安く済む開始時刻を選ぶ（「夜は止める」の方式のとき）
     "night_late": True, "night_end_hour": 7,
-    "tank_temp": 65,                        # 沸き上げの温度（℃）
+    "tank_temp": 65,                        # 沸き上げの温度（℃）。自動で読めないとき・自動をやめたときに使う
+    "tank_temp_auto": True,                 # 沸き上げの温度をエコキュートから読む（沸き上げ湯温設定値 0xB3）
     "tank_loss_w_per_k": 1.0,               # タンクの冷めやすさ（外気との温度差1℃あたりの熱の逃げ方・W）
     "night_late_tol_yen": 1.0,
     # 気温による、お湯の使い方・冷めて減る量を学び、翌日の気温の予報で沸かす量の予想を直す
@@ -511,6 +512,16 @@ def forecast_sunny(day):
 # ================= おひさま沸き上げ =================
 
 eco_caps = {"set": None}
+heat_temp_state = {"value": None, "at": 0, "tried": 0, "error": None}
+
+
+def tank_temp_eff():
+    """冷める量などの計算に使う沸き上げの温度（℃）と、どこから来たか。
+    自動のとき、エコキュートから読めた値（1日以内）を使う。読めなければ設定の値"""
+    ht = heat_temp_state
+    if conf.get("tank_temp_auto", True) and ht.get("value") is not None and time.time() - ht.get("at", 0) < 86400:
+        return float(ht["value"]), "エコキュートから"
+    return float(conf.get("tank_temp") or 65), "設定" if not conf.get("tank_temp_auto", True) else "設定（エコキュートから読めないため）"
 
 
 def eco_read():
@@ -531,6 +542,22 @@ def eco_read():
         eco.update(heating=u8(0xB2) == 0x41 if u8(0xB2) is not None else None, manual=u8(0xB0) == 0x42 if u8(0xB0) is not None else None,
                    remain=u16(0xE1), tank=u16(0xE2), shift=u8(0xC7) == 0x41 if u8(0xC7) is not None else None,
                    shift_raw=u8(0xC7), shift_hour=u8(0xCA), tank_mode=u8(0xB6))
+    # 沸き上げの温度（沸き上げ湯温設定値 0xB3・℃）：読めない機種もあるので別に、30分に1回だけ読む
+    ht = heat_temp_state
+    if v and time.time() - ht.get("tried", 0) > 1800:
+        ht["tried"] = time.time()
+        try:
+            r = el.get(ip, eoj, [0xB3], timeout=4)
+            b3 = r.get(0xB3) if r else None
+            if b3 and len(b3) >= 1 and 30 <= b3[0] <= 95:
+                ht.update(value=int(b3[0]), at=time.time(), error=None)
+            else:
+                ht.update(error="エコキュートが沸き上げの温度を返しませんでした" if not b3 else f"読めた値が温度ではありません（{b3.hex().upper()}・おまかせの設定かもしれません）")
+        except Exception as e:
+            ht["error"] = f"読めませんでした：{e}"
+    if ht.get("value") is not None:
+        eco["heat_temp"] = ht["value"]
+        eco["heat_temp_at"] = ht["at"]
     s = eco_caps["set"]
     eco["can_manual"] = s is None or 0xB0 in s
     eco["can_shift"] = s is None or 0xC7 in s
@@ -3173,7 +3200,7 @@ def learn_loss():
     """冷めて減る量（L／時／℃）を学ぶ：沸き上げもお湯の使用もほとんど無い1時間に、残りのお湯が減った量 ÷ (タンクの温度 − 外気温)。
     直近30日の中央値。記録が少なければ目安の値"""
     days = energy.get("days") or {}
-    t_tank = float(conf.get("tank_temp") or 65)
+    t_tank = tank_temp_eff()[0]
     samples = []
     for i in range(1, 31):
         d = (date.today() - timedelta(days=i)).isoformat()
@@ -3201,7 +3228,7 @@ def learn_draw_ratio():
     沸き上げの無い1時間で、20L 以上使った時間の「残りの減り − 冷めて減る分」÷「使った量」の中央値（直近30日）。記録が少なければ 1"""
     days = energy.get("days") or {}
     k = learn_loss()["k"]
-    t_tank = float(conf.get("tank_temp") or 65)
+    t_tank = tank_temp_eff()[0]
     samples = []
     for i in range(1, 31):
         rec = days.get((date.today() - timedelta(days=i)).isoformat()) or {}
@@ -3279,7 +3306,7 @@ def loss_liters(start, end):
         return 0.0
     k = learn_loss()["k"]
     temps = outdoor_temps()
-    t_tank = float(conf.get("tank_temp") or 65)
+    t_tank = tank_temp_eff()[0]
     tot, t = 0.0, start
     while t < end:
         dh = min(1.0, (end - t).total_seconds() / 3600)
@@ -3478,7 +3505,7 @@ def plan_night_heat(liters, now=None):
     rate_lph, _ = heat_rate()
     hours = max(0.0, liters) / max(30.0, rate_lph)
     temps = outdoor_temps()
-    t_tank = float(conf.get("tank_temp") or 65)
+    t_tank = tank_temp_eff()[0]
     t_in = SUPPLY_TEMP[(w1.month - 1) % 12]
     q_total = max(0.0, liters) * 4.186 * max(10.0, t_tank - t_in) / 3600  # 沸かすのに要る熱（kWh）
     k = float(conf.get("tank_loss_w_per_k") or 1.0) / 1000                 # kW/℃
@@ -3631,7 +3658,7 @@ def hot_plan_public():
     lr = learn_usage_temp(hot_day_type(tomorrow))
     f, tinfo = temp_factor(tomorrow)
     learn = {"loss_k": lo["k"], "loss_n": lo["n"], "loss_how": lo["how"],
-             "loss_day_l": round(lo["k"] * max(0.0, float(conf.get("tank_temp") or 65) - (forecast_mean(tomorrow) or 10)) * 24),
+             "loss_day_l": round(lo["k"] * max(0.0, tank_temp_eff()[0] - (forecast_mean(tomorrow) or 10)) * 24),
              "usage_per_deg": round(-lr["b"], 1) if lr else None, "usage_days": lr["n"] if lr else 0,
              "tomorrow_t": forecast_mean(tomorrow), "tomorrow_factor": f, "enabled": bool(conf.get("hot_temp_learn", True))}
     try:
@@ -3973,7 +4000,7 @@ def store_ahead_cost(now=None):
     戻り値：{"day": 100L あたりの円, "night": 同, "cheaper": 昼のほうが安いか, "how": 説明}"""
     now = now or datetime.now()
     tank = float((state.get("eco") or {}).get("tank") or 460)
-    t_tank = float(conf.get("tank_temp") or 65)
+    t_tank = tank_temp_eff()[0]
     w0, w1 = night_window(now if now.hour >= 12 else now + timedelta(hours=12))
     t_in = SUPPLY_TEMP[(w1.month - 1) % 12]
     q = 100 * 4.186 * max(10.0, t_tank - t_in) / 3600                      # 100L を沸かす熱（kWh）
@@ -4422,6 +4449,8 @@ def public_state():
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "hot_plan": hot_plan_safe(), "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
                 "run_alert_now": {k: v for k, v in run_alert_state["last"].items()},
+                "heat_temp": {"value": heat_temp_state.get("value"), "at": heat_temp_state.get("at") or None, "error": heat_temp_state.get("error"),
+                              "used": tank_temp_eff()[0], "used_how": tank_temp_eff()[1]},
                 "el_rescue": {"on": bool(conf.get("el_rescue", True)), "targets": el_rescue_targets(), "sent": el_rescue_state["sent"],
                               "every_min": float(conf.get("el_rescue_min") or 3),
                               "at": el_rescue_state["last"] or None, "error": el_rescue_state["error"]},

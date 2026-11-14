@@ -592,7 +592,7 @@ CONFIG_SAMPLES = {
     "night_method": ("stop",), "stop_min_pct": (40,), "safety_hour": (5,), "safety_pct": (25,), "ensure_pct": (50,), "lat": (35.6,), "lon": (139.7,),
     "aiseg_url": ("http://192.168.1.216",), "aiseg_user": ("aiseg2",), "aiseg_password": ("pw-test",), "night_heat_pct": (60,),
     "hot_store_tomorrow": (False,), "hot_auto": (True,), "hot_margin_l": (120,), "prep_hour": (18,), "night_start_hour": (22,),
-    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,),
+    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,), "tank_temp_auto": (False,),
     "tank_loss_w_per_k": (1.2,), "night_late_tol_yen": (2.0,), "hot_temp_learn": (False,), "el_rescue": (False,), "el_rescue_min": (5,),
     "el_rescue_ips": (["192.168.1.30"],), "el_known_ips": (["192.168.1.12"],), "ha_token": ("token-test",),
     "climate_enabled": (True,), "climate_rules": ([{"entity": "climate.x", "enabled": True, "min": 20, "max": 26, "source": "sensor.t"}],),
@@ -1018,6 +1018,43 @@ class TestPrecond(SolarTestBase):
         finally:
             m["ha_state"] = real
             m["conf"].clear(); m["conf"].update(keep)
+
+
+class TestHeatTemp(SolarTestBase):
+    def test_reads_heat_temp_from_ecocute(self):
+        m = self.m
+        keep = dict(m["conf"]); real_el = m["el"]
+
+        class FakeEl:
+            def __init__(self, b3): self.b3 = b3
+            def get(self, ip, eoj, epcs, timeout=None):
+                if epcs == [0xB3]:
+                    return {0xB3: self.b3} if self.b3 is not None else None
+                if epcs == [0x9E]:
+                    return None
+                return {0xE1: (300).to_bytes(2, "big"), 0xE2: (460).to_bytes(2, "big"), 0xB2: b"\x42"}
+        try:
+            m["conf"].update(eco_ip="192.168.1.9", eco_eoj="026b01", tank_temp=65, tank_temp_auto=True)
+            m["heat_temp_state"].update(value=None, at=0, tried=0, error=None)
+            m["el"] = FakeEl(bytes([75]))
+            eco = m["eco_read"]()
+            self.assertEqual(eco["heat_temp"], 75)
+            self.assertEqual(m["tank_temp_eff"](), (75.0, "エコキュートから"))
+            # 自動をやめると設定の値
+            m["conf"]["tank_temp_auto"] = False
+            self.assertEqual(m["tank_temp_eff"]()[0], 65.0)
+            # 温度でない値（おまかせなど）は使わない
+            m["conf"]["tank_temp_auto"] = True
+            m["heat_temp_state"].update(value=None, at=0, tried=0, error=None)
+            m["el"] = FakeEl(b"\xfd")
+            m["eco_read"]()
+            self.assertIsNone(m["heat_temp_state"]["value"])
+            self.assertIn("温度ではありません", m["heat_temp_state"]["error"])
+            self.assertEqual(m["tank_temp_eff"]()[0], 65.0)
+        finally:
+            m["el"] = real_el
+            m["conf"].clear(); m["conf"].update(keep)
+            m["heat_temp_state"].update(value=None, at=0, tried=0, error=None)
 
 
 class TestCamera(unittest.TestCase):
