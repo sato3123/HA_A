@@ -21,6 +21,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -1071,8 +1072,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             // 直接つないでいる機器と結びつけた機器の操作で、まだ「利用不可なら直接操作」になっていないもの
                             if (r != null && !raw.contains(EL_FALLBACK) && r.actions.any { it.entityId in linked }) needFallback.add(r)
                             // 前の形（温度の操作に運転モードを付けただけ）で、エアコンがつかないもの
-                            else if (r != null && !raw.contains("climate.set_hvac_mode") &&
-                                r.actions.any { it.service == "climate.set_temperature" && it.data["temperature"] != null && (it.data["hvac_mode"] ?: "off") != "off" }
+                            // エアコンを運転する操作で、まだ「つかなければもう一度」になっていないもの
+                            else if (r != null && !raw.contains(EL_ENSURE) &&
+                                r.actions.any { it.service.startsWith("climate.") && !isEchonetEntity(it.entityId) && (it.data["hvac_mode"]?.toString() ?: "off") != "off" }
                             ) needFallback.add(r)
                         }
                     } catch (e: HaException) {
@@ -3771,6 +3773,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         // このタブレットの設定が書き込まれたら「保存しました」と出す
         prefs.onSaved { saveStatus.value = SaveStatus(SaveStatus.SAVED, where = "このタブレット") }
+        // 起動したら一度、ホームパネルで作ったスケジュール・オートメーションを読み、古い形のものを新しい形で保存し直す
+        // （エアコンを運転する操作の「つかなければもう一度」など。オートメーションの画面を開かなくても直るように）
+        viewModelScope.launch {
+            automations.first { list -> list.any { isAppRuleId(it.attributes.optString("id")) } }
+            kotlinx.coroutines.withTimeoutOrNull(60_000) { isAdmin.first { it != null } }
+            if (canEditRules) loadRules()
+        }
         // 開発用のビルドの「デモ表示」：Home Assistant につながず、見本のデータで画面を出す（画面の確認用）
         if (!solarStarted) { solarStarted = true; startSolarHeat() }
         startClimateAuto()

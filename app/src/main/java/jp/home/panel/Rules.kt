@@ -64,6 +64,9 @@ const val EL_EVENT = "homepanel_el"
 /** Home Assistant の機器が利用不可のとき、直接（ECHONET Lite）操作に切り替える分かれ道の名前 */
 const val EL_FALLBACK = "ホームパネル：利用不可なら直接操作"
 
+/** エアコンを運転する操作のあと、つかなければ（「停止」のまま）もう一度送る部分の名前 */
+const val EL_ENSURE = "ホームパネル：つかなければもう一度"
+
 fun newRule(schedule: Boolean) = Rule(
     id = (if (schedule) "hp_sched_" else "hp_auto_") + System.currentTimeMillis(),
     name = "",
@@ -167,9 +170,35 @@ fun Rule.toConfig(nameOf: ((String) -> String)? = null, elFor: ((String) -> Stri
         fan?.let {
             seq.put(JSONObject().put("action", "climate.set_fan_mode").put("target", JSONObject().put("entity_id", a.entityId)).put("data", JSONObject().put("fan_mode", it)))
         }
+        val el = elFor?.invoke(a.entityId)
+        // エアコンを運転する操作は、送ったあと1分待って、まだ「停止」なら、もう一度送る（届かなかったとき・連携が取りこぼしたとき）。
+        // それでも「停止」のままで、直接つないでいる機器と結びつけてあれば、ホームパネルのサーバーに直接つけてもらう。
+        // 1つの操作がエラーになっても、ほかの機器の操作は続ける
+        if (a.service.startsWith("climate.") && mode.isNotBlank() && mode != "off") {
+            val first = JSONArray()
+            for (i in 0 until seq.length()) first.put(JSONObject(seq.getJSONObject(i).toString()).put("continue_on_error", true))
+            val again = JSONArray()
+            for (i in 0 until seq.length()) again.put(JSONObject(seq.getJSONObject(i).toString()).put("continue_on_error", true))
+            val isOff = JSONObject().put("condition", "state").put("entity_id", a.entityId).put("state", "off")
+            val then = JSONArray(again.toString())
+            if (el != null && isEchonetEntity(el)) {
+                then.put(JSONObject().put("wait_template", "{{ not is_state('${a.entityId}', 'off') }}").put("timeout", "00:01:00").put("continue_on_timeout", true))
+                then.put(JSONObject().put("if", JSONArray().put(isOff)).put("then", JSONArray().put(
+                    JSONObject().put("event", EL_EVENT).put("event_data", JSONObject()
+                        .put("entity_id", el).put("service", a.service.substringAfter('.'))
+                        .put("data", JSONObject(data.toString()).apply { fan?.let { put("fan_mode", it) } }).put("name", nameOf?.invoke(a.entityId) ?: a.entityId))
+                )))
+            }
+            val ensure = JSONArray()
+            for (i in 0 until first.length()) ensure.put(first.get(i))
+            ensure.put(JSONObject().put("wait_template", "{{ not is_state('${a.entityId}', 'off') }}").put("timeout", "00:01:00").put("continue_on_timeout", true))
+            ensure.put(JSONObject().put("if", JSONArray().put(isOff)).put("then", then))
+            val wrapped = JSONArray().put(JSONObject().put("alias", EL_ENSURE).put("sequence", ensure))
+            while (seq.length() > 0) seq.remove(0)
+            seq.put(wrapped.get(0))
+        }
         // 直接つないでいる（ECHONET Lite）機器と結びつけてある Home Assistant の機器は、Home Assistant 側で
         // 「利用不可」になっていたら、ホームパネルのサーバーに直接操作してもらう（Home Assistant の連携が切れていても動くように）
-        val el = elFor?.invoke(a.entityId)
         if (el != null && isEchonetEntity(el)) {
             val elData = JSONObject(data.toString()).apply { fan?.let { put("fan_mode", it) } }
             acts.put(
@@ -274,15 +303,31 @@ fun parseRule(id: String, j: JSONObject): Rule? {
 
     val actsRaw = j.listOf("actions", "action") ?: return null
     val actsJ = JSONArray()
-    for (i in 0 until actsRaw.length()) {
-        val a = actsRaw.optJSONObject(i) ?: return null
-        if (a.has("choose") && a.optString("alias") == EL_FALLBACK) {
-            val seq = a.optJSONArray("choose")?.optJSONObject(0)?.optJSONArray("sequence") ?: return null
-            for (k in 0 until seq.length()) actsJ.put(seq.get(k))
-        } else {
-            actsJ.put(a)
+    // ホームパネルが足した部分（利用不可なら直接操作・つかなければもう一度）は、中の最初の操作だけを読む
+    fun flatten(arr: JSONArray): Boolean {
+        for (i in 0 until arr.length()) {
+            val a = arr.optJSONObject(i) ?: return false
+            when {
+                a.has("choose") && a.optString("alias") == EL_FALLBACK -> {
+                    val seq = a.optJSONArray("choose")?.optJSONObject(0)?.optJSONArray("sequence") ?: return false
+                    if (!flatten(seq)) return false
+                }
+                a.has("sequence") && a.optString("alias") == EL_ENSURE -> {
+                    val seq = a.optJSONArray("sequence") ?: return false
+                    val head = JSONArray()
+                    for (k in 0 until seq.length()) {
+                        val x = seq.optJSONObject(k) ?: return false
+                        if (x.has("wait_template") || x.has("if")) break
+                        head.put(JSONObject(x.toString()).apply { remove("continue_on_error") })
+                    }
+                    if (!flatten(head)) return false
+                }
+                else -> actsJ.put(a)
+            }
         }
+        return true
     }
+    if (!flatten(actsRaw)) return null
     val acts = mutableListOf<Act>()
     for (i in 0 until actsJ.length()) {
         val a = actsJ.optJSONObject(i) ?: return null

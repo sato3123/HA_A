@@ -82,4 +82,6 @@ dependencies {
     // スクリーンセーバーの写真表示
     implementation("io.coil-kt:coil-compose:2.7.0")
     testImplementation("junit:junit:4.13.2")
+    // 単体テストで org.json を本物で動かす（Android の org.json は単体テストでは中身が無いため）
+    testImplementation("org.json:json:20240303")
 }

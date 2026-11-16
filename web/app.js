@@ -2110,11 +2110,28 @@
           main = [a.service === "climate.set_temperature" && data.temperature === undefined && data.hvac_mode
             ? { action: "climate.set_hvac_mode", target: { entity_id: a.entity }, data } : { action: a.service, target: { entity_id: a.entity }, data }];
         }
-        return fan === null ? main : [...main, { action: "climate.set_fan_mode", target: { entity_id: a.entity }, data: { fan_mode: fan } }];
+        if (fan !== null) main = [...main, { action: "climate.set_fan_mode", target: { entity_id: a.entity }, data: { fan_mode: fan } }];
+        // エアコンを運転する操作は、送ったあと1分待って、まだ「停止」なら、もう一度送る（届かなかったとき・連携が取りこぼしたとき）。
+        // 1つの操作がエラーになっても、ほかの機器の操作は続ける
+        const mode = data.hvac_mode;
+        if (a.service.startsWith("climate.") && mode && mode !== "off") {
+          const ce = (x) => Object.assign(JSON.parse(JSON.stringify(x)), { continue_on_error: true });
+          const wait = { wait_template: `{{ not is_state('${a.entity}', 'off') }}`, timeout: "00:01:00", continue_on_timeout: true };
+          return [{ alias: EL_ENSURE, sequence: [...main.map(ce), wait, { if: [{ condition: "state", entity_id: a.entity, state: "off" }], then: main.map(ce) }] }];
+        }
+        return main;
       }).flat(),
     };
   }
 
+  // エアコンを運転する操作のあと、つかなければもう一度送る部分（Android 版と同じ名前）
+  const EL_ENSURE = "ホームパネル：つかなければもう一度";
+  // その中の最初の操作（待つ・もう一度、の前まで）だけを読む
+  const ensureHead = (x) => {
+    const out = [];
+    for (const y of x.sequence) { if (!y || y.wait_template || y.if) break; const c = Object.assign({}, y); delete c.continue_on_error; out.push(c); }
+    return out;
+  };
   const asList = (v) => (Array.isArray(v) ? v : v ? [v] : null);
   const single = (v) => (typeof v === "string" ? v : Array.isArray(v) && v.length === 1 ? v[0] : null);
   function parseOffset(v) {
@@ -2169,8 +2186,11 @@
       if (a && a.choose && a.alias === "ホームパネル：利用不可なら直接操作") {
         const seq = a.choose[0] && a.choose[0].sequence;
         if (!Array.isArray(seq)) return null;
-        acts.push(...seq);
-      } else acts.push(a);
+        for (const x of seq) {
+          if (x && x.sequence && x.alias === EL_ENSURE) acts.push(...ensureHead(x)); else acts.push(x);
+        }
+      } else if (a && a.sequence && a.alias === EL_ENSURE) acts.push(...ensureHead(a));
+      else acts.push(a);
     }
     const actions = [];
     for (const a of acts) {
