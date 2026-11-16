@@ -2656,7 +2656,7 @@ def _ws_send(sock, obj):
     hdr += mask
     sock.sendall(bytes(hdr) + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
 
-def _ws__ws_recv_exact(sock, n):
+def _ws_recv_exact(sock, n):
     b = b""
     while len(b) < n:
         c = sock.recv(n - len(b))
@@ -2674,9 +2674,10 @@ def _ws_recv(sock):
             n = struct.unpack(">H", _ws_recv_exact(sock, 2))[0]
         elif n == 127:
             n = struct.unpack(">Q", _ws_recv_exact(sock, 8))[0]
-        if h[1] & 0x80:
-            _ws_recv_exact(sock, 4)
+        mask = _ws_recv_exact(sock, 4) if h[1] & 0x80 else None
         payload = _ws_recv_exact(sock, n)
+        if mask:
+            payload = bytes(x ^ mask[i % 4] for i, x in enumerate(payload))
         if op == 0x8:
             raise ConnectionError("Home Assistant が接続を閉じました")
         if op == 0x9:  # ping → pong
@@ -2706,7 +2707,7 @@ def _ws_connect():
                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
     head = b""
     while b"\r\n\r\n" not in head:
-        c = sock.recv(1024)
+        c = sock.recv(1)
         if not c:
             raise ConnectionError("返事がありません")
         head += c
@@ -2769,7 +2770,8 @@ def ha_ws_loop():
                           f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
             head = b""
             while b"\r\n\r\n" not in head:
-                c = sock.recv(1024)
+                # 1バイトずつ読む（続けて届く最初のメッセージを読み捨てないように）
+                c = sock.recv(1)
                 if not c:
                     raise ConnectionError("返事がありません")
                 head += c

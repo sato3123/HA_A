@@ -6,6 +6,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RulesTest {
+    // 数は型（Double・BigDecimal など）を問わず、値で比べる
+    private fun norm(l: List<Act>) = l.map { a -> Triple(a.entityId, a.service, a.data.mapValues { (_, v) -> if (v is Number) v.toDouble() else v.toString() }) }
+
     private fun rule(vararg acts: Act) = Rule(
         id = "hp_auto_1", name = "朝の暖房", schedule = false, trigger = Trig.Time("06:00"),
         weekdays = emptySet(), after = null, before = null, actions = acts.toList(), conds = emptyList(),
@@ -27,7 +30,7 @@ class RulesTest {
         // 読み直すと、もとの1つの操作に戻る
         val back = parseRule("hp_auto_1", c)
         assertNotNull(back)
-        assertEquals(r.actions, back!!.actions)
+        assertEquals(norm(r.actions), norm(back!!.actions))
     }
 
     @Test
@@ -38,7 +41,7 @@ class RulesTest {
         assertTrue(s.contains(EL_FALLBACK))
         assertTrue(s.contains(EL_ENSURE))
         val back = parseRule("hp_auto_1", c)
-        assertEquals(r.actions, back!!.actions)
+        assertEquals(norm(r.actions), norm(back!!.actions))
     }
 
     @Test
@@ -46,6 +49,6 @@ class RulesTest {
         val r = rule(Act("climate.living", "climate.turn_off"))
         val c = r.toConfig()
         assertTrue(!c.toString().contains(EL_ENSURE))
-        assertEquals(r.actions, parseRule("hp_auto_1", c)!!.actions)
+        assertEquals(norm(r.actions), norm(parseRule("hp_auto_1", c)!!.actions))
     }
 }

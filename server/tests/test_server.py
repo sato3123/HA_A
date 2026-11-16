@@ -1057,6 +1057,65 @@ class TestHeatTemp(SolarTestBase):
             m["heat_temp_state"].update(value=None, at=0, tried=0, error=None)
 
 
+class TestHaWebSocket(SolarTestBase):
+    """スケジュール・オートメーションからの ECHONET Lite の操作（イベント homepanel_el）を受け取れること"""
+
+    def test_frames_round_trip(self):
+        import socket as so
+        a, b = so.socketpair()
+        try:
+            self.m["_ws_send"](a, {"type": "ping", "x": "あ" * 200})
+            self.assertEqual(self.m["_ws_recv"](b), {"type": "ping", "x": "あ" * 200})
+        finally:
+            a.close(); b.close()
+
+    def test_loop_receives_event_and_operates(self):
+        import socket as so, struct as st, threading as th, json as js
+        m = self.m
+        srv = so.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def frame(obj):
+            d = js.dumps(obj).encode()
+            h = bytes([0x81]) + (bytes([len(d)]) if len(d) < 126 else bytes([126]) + st.pack(">H", len(d)))
+            return h + d
+
+        def fake_ha():
+            c, _ = srv.accept()
+            req = b""
+            while b"\r\n\r\n" not in req:
+                req += c.recv(1024)
+            c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+            c.sendall(frame({"type": "auth_required"}))
+            m["_ws_recv"](c)  # auth
+            c.sendall(frame({"type": "auth_ok"}))
+            m["_ws_recv"](c)  # subscribe
+            c.sendall(frame({"type": "event", "event": {"data": {"entity_id": "climate.el_192_168_1_12_013001", "service": "set_temperature",
+                                                                    "data": {"hvac_mode": "heat", "temperature": 22}, "name": "寝室"}}}))
+            import time as t
+            t.sleep(2)
+            c.close()
+
+        th.Thread(target=fake_ha, daemon=True).start()
+        calls = []
+        keep = dict(m["conf"]); real = (m["el_call"], m["ha_base_url"])
+        try:
+            m["conf"]["ha_token"] = "tok"
+            m["ha_base_url"] = lambda: f"http://127.0.0.1:{port}"
+            m["el_call"] = lambda eid, svc, data: calls.append((eid, svc, data))
+            th.Thread(target=m["ha_ws_loop"], daemon=True).start()
+            import time as t
+            for _ in range(50):
+                if calls:
+                    break
+                t.sleep(0.1)
+            self.assertEqual(calls, [("climate.el_192_168_1_12_013001", "set_temperature", {"hvac_mode": "heat", "temperature": 22})])
+        finally:
+            m["el_call"], m["ha_base_url"] = real
+            m["conf"].clear(); m["conf"].update(keep)
+            srv.close()
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
