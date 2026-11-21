@@ -71,7 +71,7 @@ fun isWide(e: Entity): Boolean = when (e.domain) {
     "fan" -> e.hasPercentage
     "cover" -> e.hasPosition
     "camera" -> true
-    "lock", "vacuum" -> true
+    "lock", "vacuum", "media_player" -> true
     else -> false
 }
 
@@ -110,6 +110,7 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
                     }
                     "climate" -> ClimateTileControls(e, vm)
                     "lock" -> LockControls(e, vm, compact = true)
+                    "media_player" -> if (e.isOn) MediaControls(e, vm, compact = true)
                     "vacuum" -> VacuumControls(e, vm, compact = true)
                 }
             }
@@ -119,7 +120,7 @@ fun EntityTile(e: Entity, vm: MainViewModel, onDetail: () -> Unit) {
 
 @Composable
 fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
-    val toggle = !e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean", "humidifier")
+    val toggle = !e.unavailable && e.domain in setOf("light", "fan", "switch", "input_boolean", "humidifier", "media_player")
     val info: @Composable () -> Unit = {
         // 動作の詳細（状態・最後に変わった時刻・履歴）
         androidx.compose.material3.TextButton(
@@ -211,6 +212,7 @@ fun EntityDetail(e: Entity, vm: MainViewModel) {
                 if (e.hasPosition) CoverPositionSlider(e, vm)
             }
             "lock" -> LockControls(e, vm)
+            "media_player" -> MediaControls(e, vm, compact = false)
             "vacuum" -> VacuumControls(e, vm)
             "humidifier" -> HumidifierControls(e, vm)
             "button" -> androidx.compose.material3.Button(onClick = { vm.call(e, "press") }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("押す") }
@@ -530,6 +532,7 @@ fun domainLabel(domain: String) = when (domain) {
     "device_tracker" -> "位置"
     "lock" -> "鍵"
     "humidifier" -> "加湿器"
+    "media_player" -> "テレビ・音響"
     "vacuum" -> "ロボット掃除機"
     "button" -> "ボタン"
     "camera" -> "カメラ"
@@ -589,6 +592,7 @@ fun stateLabel(e: Entity): String {
     return when (e.domain) {
         "scene", "script" -> "タップで実行"
         "button" -> "タップで押す"
+        "media_player" -> mediaStateText(e)
         "lock" -> when (e.state) {
             "locked" -> "施錠"
             "unlocked" -> "解錠"
@@ -696,5 +700,77 @@ fun HumidifierControls(e: Entity, vm: MainViewModel) {
     }
     ChipGroup("モード", e.attributes.strings("available_modes"), e.attributes.optString("mode"), ::presetLabel) {
         vm.call(e, "set_mode", JSONObject().put("mode", it))
+    }
+}
+
+// ---------- テレビ・音響（Home Assistant の media_player：テレビの連携・SwitchBot の赤外線のテレビなど） ----------
+
+private fun mediaHas(e: Entity, bit: Int): Boolean {
+    val f = e.attributes.num("supported_features")?.toInt() ?: return true // わからないときは出す
+    return f and bit != 0
+}
+
+fun mediaStateText(e: Entity): String {
+    val a = e.attributes
+    val st = when (e.state) {
+        "off" -> "電源オフ"
+        "standby" -> "待機中"
+        "on", "idle" -> "電源オン"
+        "playing" -> "再生中"
+        "paused" -> "一時停止"
+        "buffering" -> "読み込み中"
+        else -> e.state
+    }
+    if (!e.isOn) return st
+    val src = a.optString("source").takeIf { it.isNotBlank() && it != "null" }
+    val vol = a.num("volume_level")?.let { "音量 ${(it * 100).roundToInt()}" }
+    val muted = if (a.optBoolean("is_volume_muted")) "消音" else null
+    val title = a.optString("media_title").takeIf { it.isNotBlank() && it != "null" }
+    return listOfNotNull(st, src, title, muted ?: vol).joinToString("・")
+}
+
+/** テレビ：音量・消音・入力・再生。compact はタイルの中（音量と消音だけ） */
+@Composable
+fun MediaControls(e: Entity, vm: MainViewModel, compact: Boolean) {
+    val a = e.attributes
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (mediaHas(e, 1024) || mediaHas(e, 4)) {
+            androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "volume_down") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { contentDescription = "音量を下げる" }) { Text("🔉 −") }
+            androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "volume_up") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { contentDescription = "音量を上げる" }) { Text("🔊 ＋") }
+        }
+        if (mediaHas(e, 8)) {
+            val muted = a.optBoolean("is_volume_muted")
+            androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "volume_mute", JSONObject().put("is_volume_muted", !muted)) },
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(if (muted) "🔈 消音を解除" else "🔇 消音") }
+        }
+    }
+    if (compact) return
+    if (mediaHas(e, 4)) a.num("volume_level")?.let { lv ->
+        var v by remember(lv) { mutableStateOf((lv * 100).toFloat()) }
+        Text("音量：${v.roundToInt()}", style = MaterialTheme.typography.titleMedium)
+        androidx.compose.material3.Slider(
+            value = v, onValueChange = { v = it }, valueRange = 0f..100f,
+            onValueChangeFinished = { vm.call(e, "volume_set", JSONObject().put("volume_level", (v / 100f).toDouble())) },
+            modifier = Modifier.semantics { contentDescription = "音量" },
+        )
+    }
+    // 再生・チャンネル（前・次）
+    val prev = mediaHas(e, 16); val next = mediaHas(e, 32); val play = mediaHas(e, 1) || mediaHas(e, 16384)
+    if (prev || next || play) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            if (prev) androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "media_previous_track") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("⏮ 前") }
+            if (play) androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "media_play_pause") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text(if (e.state == "playing") "⏸ 一時停止" else "▶ 再生") }
+            if (next) androidx.compose.material3.OutlinedButton(onClick = { vm.call(e, "media_next_track") }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("次 ⏭") }
+        }
+    }
+    // 入力の切り替え（HDMI・地デジ・アプリなど）
+    if (mediaHas(e, 2048)) {
+        ChipGroup("入力", a.strings("source_list"), a.optString("source"), { it }) {
+            vm.call(e, "select_source", JSONObject().put("source", it))
+        }
+    }
+    // 音の出し方（サウンドモード）
+    ChipGroup("音の出し方", a.strings("sound_mode_list"), a.optString("sound_mode"), { it }) {
+        vm.call(e, "select_sound_mode", JSONObject().put("sound_mode", it))
     }
 }

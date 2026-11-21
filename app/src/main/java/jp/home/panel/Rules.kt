@@ -388,6 +388,7 @@ fun opsFor(domain: String): List<OpDef> = when (domain) {
     "cover" -> listOf(OpDef("open_cover", "開ける"), OpDef("close_cover", "閉める"), OpDef("set_cover_position", "開き具合を指定する", Param.POSITION))
     "scene", "script" -> listOf(OpDef("turn_on", "実行する"))
     "button" -> listOf(OpDef("press", "押す"))
+    "media_player" -> listOf(OpDef("turn_on", "電源を入れる"), OpDef("turn_off", "電源を切る"), OpDef("media_pause", "一時停止"))
     "lock" -> listOf(OpDef("lock", "施錠する"), OpDef("unlock", "解錠する"))
     "vacuum" -> listOf(OpDef("start", "掃除を始める"), OpDef("pause", "一時停止"), OpDef("return_to_base", "充電台に戻す"))
     "humidifier" -> listOf(OpDef("turn_on", "オンにする"), OpDef("turn_off", "オフにする"), OpDef("toggle", "切り替える"))

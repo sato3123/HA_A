@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.Dp
@@ -155,6 +156,12 @@ private fun DrawScope.drawDevice(domain: String, c: Color, on: Boolean) {
             drawCircle(c, radius = w * 0.42f, center = p(0.5f, 0.5f), style = stroke)
             drawLine(c, p(0.3f, 0.32f), p(0.7f, 0.32f), strokeWidth = w * 0.07f, cap = StrokeCap.Round)
             drawCircle(c, radius = w * 0.08f, center = p(0.5f, 0.58f))
+        }
+        "media_player" -> {
+            // テレビ：画面と台
+            drawRoundRect(c, topLeft = p(0.08f, 0.16f), size = Size(w * 0.84f, w * 0.56f), cornerRadius = CornerRadius(w * 0.06f), style = if (on) Fill else stroke)
+            drawLine(c, p(0.36f, 0.86f), p(0.64f, 0.86f), strokeWidth = w * 0.08f, cap = StrokeCap.Round)
+            drawLine(c, p(0.5f, 0.72f), p(0.5f, 0.86f), strokeWidth = w * 0.07f)
         }
         "button" -> {
             // ボタン：押しボタン

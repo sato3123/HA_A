@@ -10,10 +10,10 @@
   const UPDATE_SERVICE = { domain: "shell_command", service: "update_homepanel" };
   // Home Assistant の /local/ に置いた場合と、専用サーバー（Proxmox の LXC）から配信する場合がある
   const SERVER_MODE = !location.pathname.startsWith("/local/");
-  const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "humidifier", "lock", "vacuum", "input_boolean", "button", "scene", "script", "camera"];
+  const SUPPORTED = ["climate", "light", "fan", "cover", "switch", "media_player", "humidifier", "lock", "vacuum", "input_boolean", "button", "scene", "script", "camera"];
   const ACTION_DOMAINS = SUPPORTED.filter((d) => d !== "camera");
   const SIMPLE = ["switch", "input_boolean", "scene", "script", "button"];
-  const TOGGLEABLE = ["light", "fan", "switch", "input_boolean", "humidifier"];
+  const TOGGLEABLE = ["light", "fan", "switch", "input_boolean", "humidifier", "media_player"];
 
   // ================= 小道具 =================
   const $ = (s, el = document) => el.querySelector(s);
@@ -40,16 +40,16 @@
   const dom = (e) => e.entity_id.split(".")[0];
   const nameOf = (e) => (e.attributes && e.attributes.friendly_name) || e.entity_id;
   const isUnav = (e) => e.state === "unavailable" || e.state === "unknown";
-  const isOn = (e) => ["on", "open", "opening", "heat", "cool", "auto", "heat_cool", "dry", "fan_only", "cleaning", "unlocked"].includes(e.state);
+  const isOn = (e) => ["on", "open", "opening", "heat", "cool", "auto", "heat_cool", "dry", "fan_only", "cleaning", "unlocked", "playing", "paused", "idle", "buffering"].includes(e.state);
   const colorModes = (e) => (e.attributes && e.attributes.supported_color_modes) || [];
   const dimmable = (e) => colorModes(e).some((m) => m !== "onoff");
   const hasPct = (e) => dom(e) === "fan" && e.attributes && "percentage" in e.attributes;
   const hasPos = (e) => dom(e) === "cover" && num(e.attributes, "current_position") !== null;
   const canStop = (e) => ((e.attributes && e.attributes.supported_features) & 8) !== 0;
-  const isWide = (e) => ({ climate: true, light: dimmable(e), fan: hasPct(e), cover: hasPos(e), camera: true, lock: true, vacuum: true }[dom(e)] || false);
+  const isWide = (e) => ({ climate: true, light: dimmable(e), fan: hasPct(e), cover: hasPos(e), camera: true, lock: true, vacuum: true, media_player: true }[dom(e)] || false);
 
   // ================= 表示名 =================
-  const DOMAIN_LABEL = { light: "照明", switch: "スイッチ", fan: "ファン", cover: "カーテン・シャッター", climate: "エアコン", input_boolean: "切り替え", scene: "シーン", script: "スクリプト", camera: "カメラ", humidifier: "加湿器", lock: "鍵", vacuum: "ロボット掃除機", button: "ボタン" };
+  const DOMAIN_LABEL = { light: "照明", switch: "スイッチ", fan: "ファン", cover: "カーテン・シャッター", climate: "エアコン", input_boolean: "切り替え", scene: "シーン", script: "スクリプト", camera: "カメラ", humidifier: "加湿器", media_player: "テレビ・音響", lock: "鍵", vacuum: "ロボット掃除機", button: "ボタン" };
   const HVAC = { off: "停止", heat: "暖房", cool: "冷房", auto: "自動", heat_cool: "冷暖自動", dry: "除湿", fan_only: "送風" };
   const FANM = { auto: "自動", low: "弱", medium: "中", middle: "中", mid: "中", high: "強", quiet: "静音", silent: "静音", turbo: "パワフル", strong: "パワフル", powerful: "パワフル", on: "オン", off: "オフ" };
   const SWING = { off: "固定", on: "スイング", vertical: "上下", horizontal: "左右", both: "上下左右" };
@@ -71,6 +71,7 @@
     switch (dom(e)) {
       case "scene": case "script": return "タップで実行";
       case "button": return "タップで押す";
+      case "media_player": return mediaStateText(e);
       case "lock": return { locked: "施錠", unlocked: "解錠", locking: "施錠しています…", unlocking: "解錠しています…", jammed: "引っかかっています", open: "開いています" }[e.state] || e.state;
       case "vacuum": return ({ cleaning: "掃除中", docked: "充電台", returning: "充電台へ戻っています", idle: "待機中", paused: "一時停止", error: "エラー" }[e.state] || e.state) +
         (num(a, "battery_level") !== null ? `・電池 ${Math.round(num(a, "battery_level"))}%` : "");
@@ -428,7 +429,7 @@
   function headHTML(e, large) {
     const unav = isUnav(e);
     const sw = !unav && TOGGLEABLE.includes(dom(e))
-      ? `<label class="sw"><input type="checkbox" data-act="toggle" ${e.state === "on" ? "checked" : ""}><span></span></label>`
+      ? `<label class="sw"><input type="checkbox" data-act="toggle" ${(dom(e) === "media_player" ? isOn(e) : e.state === "on") ? "checked" : ""}><span></span></label>`
       : "";
     const act = dom(e) === "camera" ? "none" : SIMPLE.includes(dom(e)) ? "primary" : "detail";
     return `<div class="head" data-act="${act}">${iconHTML(e)}
@@ -443,8 +444,32 @@
     fan: (v) => `風量 ${Math.round(v)}%`,
     position: (v) => `開き具合 ${Math.round(v)}%`,
     humid: (v) => `湿度の設定 ${Math.round(v)}%`,
+    volume: (v) => `音量 ${Math.round(v)}`,
   };
   // SwitchBot など（Home Assistant 経由）：鍵・ロボット掃除機
+  // テレビ・音響（Home Assistant の media_player）
+  const mediaHas = (e, bit) => { const f = num(e.attributes || {}, "supported_features"); return f === null || (f & bit) !== 0; };
+  function mediaStateText(e) {
+    const a = e.attributes || {};
+    const st = { off: "電源オフ", standby: "待機中", on: "電源オン", idle: "電源オン", playing: "再生中", paused: "一時停止", buffering: "読み込み中" }[e.state] || e.state;
+    if (!isOn(e)) return st;
+    const vol = num(a, "volume_level") !== null ? `音量 ${Math.round(num(a, "volume_level") * 100)}` : null;
+    return [st, a.source || null, a.media_title || null, a.is_volume_muted ? "消音" : vol].filter(Boolean).join("・");
+  }
+  function mediaHTML(e, compact) {
+    const a = e.attributes || {};
+    let h = `<div class="brow">`;
+    if (mediaHas(e, 1024) || mediaHas(e, 4)) h += `<button class="btn outline" data-act="svc" data-svc="volume_down" aria-label="音量を下げる">🔉 −</button><button class="btn outline" data-act="svc" data-svc="volume_up" aria-label="音量を上げる">🔊 ＋</button>`;
+    if (mediaHas(e, 8)) h += `<button class="btn outline" data-act="mute">${a.is_volume_muted ? "🔈 消音を解除" : "🔇 消音"}</button>`;
+    h += `</div>`;
+    if (compact) return h;
+    if (mediaHas(e, 4) && num(a, "volume_level") !== null) h += rangeHTML("volume", num(a, "volume_level") * 100, 0, 100, 1);
+    const prev = mediaHas(e, 16), next = mediaHas(e, 32), play = mediaHas(e, 1) || mediaHas(e, 16384);
+    if (prev || next || play) h += `<div class="brow">${prev ? `<button class="btn outline" data-act="svc" data-svc="media_previous_track">⏮ 前</button>` : ""}${play ? `<button class="btn outline" data-act="svc" data-svc="media_play_pause">${e.state === "playing" ? "⏸ 一時停止" : "▶ 再生"}</button>` : ""}${next ? `<button class="btn outline" data-act="svc" data-svc="media_next_track">次 ⏭</button>` : ""}</div>`;
+    if (mediaHas(e, 2048)) h += chipsHTML("入力", a.source_list, a.source, "select_source", "source", (x) => x);
+    h += chipsHTML("音の出し方", a.sound_mode_list, a.sound_mode, "select_sound_mode", "sound_mode", (x) => x);
+    return h;
+  }
   function lockHTML(e) {
     return `<div class="brow"><button class="btn outline" data-act="svc" data-svc="lock" ${e.state === "locked" ? "disabled" : ""}>🔒 施錠</button>
       <button class="btn outline" data-act="unlock" ${e.state === "unlocked" ? "disabled" : ""}>🔓 解錠</button></div>`;
@@ -537,6 +562,7 @@
       else if (d === "cover") body = coverButtons(e) + (hasPos(e) ? positionHTML(e) : "");
       else if (d === "climate") body = climateTileHTML(e);
       else if (d === "lock") body = lockHTML(e);
+      else if (d === "media_player" && isOn(e)) body = mediaHTML(e, true);
       else if (d === "vacuum") body = vacuumHTML(e, true);
     }
     const cls = ["tile", isWide(e) ? "wide" : "", isOn(e) && d !== "scene" && d !== "script" && d !== "button" ? "on" : "", unav ? "unav" : "", SIMPLE.includes(d) ? "simple" : ""].join(" ");
@@ -568,6 +594,8 @@
       h += chipsHTML("風量", a.fan_modes, a.fan_mode, "set_fan_mode", "fan_mode", fanLabel);
       h += chipsHTML("風向き", a.swing_modes, a.swing_mode, "set_swing_mode", "swing_mode", swingLabel);
       h += chipsHTML("プリセット", a.preset_modes, a.preset_mode, "set_preset_mode", "preset_mode", presetLabel);
+    } else if (d === "media_player") {
+      h += mediaHTML(e, false);
     } else if (d === "lock") {
       h += lockHTML(e) + (e.state === "jammed" ? `<div class="warn">鍵が引っかかっています。扉の様子を確かめてください。</div>` : "");
     } else if (d === "vacuum") {
@@ -737,6 +765,7 @@
       case "none": break;
       case "primary": primary(e); break;
       // 解錠は確かめてから
+      case "mute": call(e, "volume_mute", { is_volume_muted: !(e.attributes || {}).is_volume_muted }); break;
       case "unlock": if (confirm(`「${nameOf(e)}」を解錠しますか？（鍵が開きます）`)) call(e, "unlock"); break;
       case "detail": S.detail = e.entity_id; renderSheet(); break;
       case "toggle": call(e, el.checked ? "turn_on" : "turn_off"); break;
@@ -762,6 +791,7 @@
       case "fan": if (v < 1) call(e, "turn_off"); else call(e, "set_percentage", { percentage: Math.round(v) }); break;
       case "position": call(e, "set_cover_position", { position: Math.round(v) }); break;
       case "humid": call(e, "set_humidity", { humidity: Math.round(v) }); break;
+      case "volume": call(e, "volume_set", { volume_level: Math.round(v) / 100 }); break;
     }
   }
 
@@ -1952,6 +1982,7 @@
       case "cover": return [["open_cover", "開ける"], ["close_cover", "閉める"], ["set_cover_position", "開き具合を指定する", "position"]];
       case "scene": case "script": return [["turn_on", "実行する"]];
       case "button": return [["press", "押す"]];
+      case "media_player": return [["turn_on", "電源を入れる"], ["turn_off", "電源を切る"], ["media_pause", "一時停止"]];
       case "lock": return [["lock", "施錠する"], ["unlock", "解錠する"]];
       case "vacuum": return [["start", "掃除を始める"], ["pause", "一時停止"], ["return_to_base", "充電台に戻す"]];
       case "humidifier": return [["turn_on", "オンにする"], ["turn_off", "オフにする"], ["toggle", "切り替える"]];
@@ -2861,6 +2892,7 @@
     lock: '<rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5" fill="currentColor"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
     humidifier: '<path d="M12 2.5C15.5 7.5 18.5 11 18.5 14.5a6.5 6.5 0 0 1-13 0C5.5 11 8.5 7.5 12 2.5z" fill="currentColor"/>',
     vacuum: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7.5 8h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="13.5" r="2" fill="currentColor"/>',
+    media_player: '<rect x="2.5" y="4" width="19" height="12.5" rx="2" fill="currentColor"/><path d="M8.5 20.5h7M12 16.5v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
     button: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="5" fill="currentColor"/>',
     camera: '<rect x="2" y="7" width="20" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="8" y="3.5" width="8" height="4" rx="1.2" fill="currentColor"/><circle cx="12" cy="13.5" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/>',
   };

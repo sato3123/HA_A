@@ -71,7 +71,7 @@ fun decodeJpeg(bytes: ByteArray, maxWidth: Int): androidx.compose.ui.graphics.Im
 
 /** 画面に出す機器の種類（並び順もこの順） */
 val SUPPORTED_DOMAINS = listOf(
-    "climate", "light", "fan", "cover", "switch", "humidifier", "lock", "vacuum", "input_boolean", "button", "scene", "script", "camera",
+    "climate", "light", "fan", "cover", "switch", "media_player", "humidifier", "lock", "vacuum", "input_boolean", "button", "scene", "script", "camera",
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
