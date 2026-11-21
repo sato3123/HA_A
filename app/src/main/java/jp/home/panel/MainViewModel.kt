@@ -2730,10 +2730,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun ecoManualStart() = viewModelScope.launch {
-        if (isServerMode) { serverPost("/heat", JSONObject().put("action", "start")); return@launch }
-        val d = ecoDevice() ?: return@launch
+        if (isServerMode) {
+            if (serverPost("/heat", JSONObject().put("action", "start"))) toastRequest.tryEmit("♨ 沸き増しを始めました")
+            return@launch
+        }
+        val d = ecoDevice() ?: run { toastRequest.tryEmit("エコキュートが見つかりません"); return@launch }
         if (d.canSet(0xC0)) echonet.setWaterHeater(d.key, listOf(Prop(0xC0, bytesOf(0x41))))
-        if (ecoSet(d, listOf(Prop(0xB0, bytesOf(0x42))), "手動で沸き増しを始めました")) shByUs = false
+        if (ecoSet(d, listOf(Prop(0xB0, bytesOf(0x42))), "手動で沸き増しを始めました")) { shByUs = false; toastRequest.tryEmit("♨ 沸き増しを始めました") }
+        else toastRequest.tryEmit("エコキュートが沸き増しを受け付けませんでした")
         updateSolarView()
     }
 

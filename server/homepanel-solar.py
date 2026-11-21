@@ -4866,6 +4866,9 @@ class Api(BaseHTTPRequestHandler):
                     el.setc(conf["eco_ip"], conf["eco_eoj"], 0xC0, b"\x41")
                 err = el.setc(conf["eco_ip"], conf["eco_eoj"], 0xB0, b"\x42")
                 log("手動で沸き増しを始めました" if not err else f"手動の沸き増しができませんでした（{err}）")
+                if err:
+                    eco_read()
+                    return self._ok({"error": f"エコキュートが沸き増しを受け付けませんでした（{err}）"}, 400)
             elif a == "auto":
                 eco_auto("手動の操作")
             eco_read()

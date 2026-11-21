@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -136,7 +137,40 @@ fun EnergySummaryCard(vm: MainViewModel, onOpen: () -> Unit) {
                 }
                 Text("くわしく ›", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
+            // お湯：今すぐ沸き増し（沸き増し中なら「自動に戻す」）
+            sh?.takeIf { it.canManual }?.let { h -> BoostRow(vm, h) }
         }
+    }
+}
+
+/** 「♨ 今すぐ沸き増し」のボタン。押し間違いで沸かさないように、確かめてから始める */
+@Composable
+private fun BoostRow(vm: MainViewModel, h: MainViewModel.SolarHeatView) {
+    var ask by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        when {
+            h.manual == true -> {
+                Text("♨ 沸き増し中", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                androidx.compose.material3.OutlinedButton(onClick = { vm.ecoBackToAuto() }, modifier = Modifier.heightIn(min = 48.dp)) { Text("止めて自動に戻す") }
+            }
+            h.heating == true -> Text("♨ 沸き上げ中", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+            else -> {
+                Spacer(Modifier.weight(1f))
+                androidx.compose.material3.Button(onClick = { ask = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("♨ 今すぐ沸き増し") }
+            }
+        }
+    }
+    if (ask) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text("いま沸き増ししますか？") },
+            text = {
+                Text((h.remainL?.let { r -> "いまのお湯は ${r}L" + (h.tankL?.let { t -> "（タンク ${t}L）" } ?: "") + "です。" } ?: "") +
+                    "エコキュートが沸き増しを始めます。いっぱいになるか、「止めて自動に戻す」を押すまで続きます（昼の時間帯以外は、電気代が高めになることがあります）。")
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { ask = false; vm.ecoManualStart() }) { Text("沸き増しする") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { ask = false }) { Text("やめる") } },
+        )
     }
 }
 

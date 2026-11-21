@@ -545,3 +545,8 @@ div.warn::before { content: "⚠ "; }
 .savebar .sv.ok { color: var(--primary); }
 .savebar .sv.err { color: var(--danger, #c62828); font-weight: 700; }
 .savebar .btn { min-height: 44px; }
+.esum .eboost { display: flex; align-items: center; gap: 10px; }
+.esum .eboost .sp { flex: 1; }
+.esum .eboost .btn { min-height: 48px; }
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); background: var(--on, #222); color: var(--bg, #fff); padding: 12px 18px; border-radius: 12px; font-size: 15px; max-width: calc(100vw - 32px); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 60; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }

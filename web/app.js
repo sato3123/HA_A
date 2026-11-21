@@ -3729,7 +3729,32 @@
     const more = (v && (v.auto_now || []).length > 1) ? `（ほか${v.auto_now.length - 1}件）` : "";
     box.innerHTML = `<div class="card esum" role="button" tabindex="0" data-set="energyOpen" aria-label="電気とお湯。押すとくわしい情報を開きます">
       <div class="ekpis">${kpi.join("")}</div>
-      <div class="efoot"><span class="${warn ? "warn" : "eline"}">${esc(line)}${more}</span><span class="sp"></span>${c && c.today_yen != null ? (c.today_sell_yen > 0 && c.today_net_yen != null ? `<span class="ecost">今日 差し引き <b>${yenFmt(c.today_net_yen)}</b></span>` : `<span class="ecost">今日 <b>${yenFmt(c.today_yen)}</b></span>`) : ""}<span class="emore">くわしく ›</span></div></div>`;
+      <div class="efoot"><span class="${warn ? "warn" : "eline"}">${esc(line)}${more}</span><span class="sp"></span>${c && c.today_yen != null ? (c.today_sell_yen > 0 && c.today_net_yen != null ? `<span class="ecost">今日 差し引き <b>${yenFmt(c.today_net_yen)}</b></span>` : `<span class="ecost">今日 <b>${yenFmt(c.today_yen)}</b></span>`) : ""}<span class="emore">くわしく ›</span></div>${boostHTML(eco)}</div>`;
+  }
+  // 短い知らせ（画面の下に数秒だけ出す）
+  function flash(msg) {
+    let t = $("#toast");
+    if (!t) { t = document.createElement("div"); t.id = "toast"; t.setAttribute("role", "status"); t.setAttribute("aria-live", "polite"); document.body.appendChild(t); }
+    t.textContent = msg; t.classList.add("show");
+    clearTimeout(flash.tm); flash.tm = setTimeout(() => t.classList.remove("show"), 4000);
+  }
+  // 「♨ 今すぐ沸き増し」（沸き増し中なら「止めて自動に戻す」）。押し間違いで沸かさないように、確かめてから始める
+  function boostHTML(eco) {
+    const e = (S.solar && S.solar.eco) || {};
+    if (!SERVER_MODE || !e.can_manual) return "";
+    if (e.manual) return `<div class="eboost"><span class="eline" style="color:var(--primary)">♨ 沸き増し中</span><span class="sp"></span><button class="btn outline" data-set="boost" data-id="auto">止めて自動に戻す</button></div>`;
+    if (e.heating || eco.heating) return `<div class="eboost"><span class="eline" style="color:var(--primary)">♨ 沸き上げ中</span></div>`;
+    return `<div class="eboost"><span class="sp"></span><button class="btn" data-set="boost" data-id="start">♨ 今すぐ沸き増し</button></div>`;
+  }
+  async function onBoost(id) {
+    if (id === "start") {
+      const e = (S.solar && S.solar.eco) || {};
+      const now = e.remain != null ? `いまのお湯は ${e.remain}L${e.tank ? `（タンク ${e.tank}L）` : ""}です。` : "";
+      if (!confirm(`いま沸き増ししますか？\n${now}エコキュートが沸き増しを始めます。いっぱいになるか、「止めて自動に戻す」を押すまで続きます（昼の時間帯以外は、電気代が高めになることがあります）。`)) return;
+    }
+    await loadSolar("/heat", { action: id });
+    flash(S.solarErr ? S.solarErr : id === "start" ? "♨ 沸き増しを始めました" : "自動の沸き上げに戻しました");
+    renderESum();
   }
   function ssRateHTML(s) {
     if (!s || !s.show) return "";
@@ -4795,6 +4820,7 @@
       case "popClose": S.popupHidden = S.voice; renderPopup(); return true;
       case "solarRetry": loadSolar("/retry", {}); return true;
       case "solarHeat": loadSolar("/heat", { action: id }); return true;
+      case "boost": onBoost(id); return true;
       default: return onServerSetting(el);
     }
   }
