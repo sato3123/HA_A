@@ -156,7 +156,7 @@ fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
                 DeviceIcon(e, 40.dp)
                 names(Modifier.weight(1f))
                 info()
-                if (toggle) Switch(checked = e.state == "on", onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") })
+                if (toggle) Switch(checked = if (e.domain == "media_player") e.isOn else e.state == "on", onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") })
             }
         } else {
             // 狭いとき（小さいタイル）：上の段にアイコン・ⓘ・スイッチ、下の段に名前
@@ -165,7 +165,7 @@ fun EntityHeader(e: Entity, vm: MainViewModel, large: Boolean) {
                     DeviceIcon(e, 40.dp)
                     Spacer(Modifier.weight(1f))
                     info()
-                    if (toggle) Switch(checked = e.state == "on", onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") })
+                    if (toggle) Switch(checked = if (e.domain == "media_player") e.isOn else e.state == "on", onCheckedChange = { vm.call(e, if (it) "turn_on" else "turn_off") })
                 }
                 names(Modifier.fillMaxWidth())
             }
