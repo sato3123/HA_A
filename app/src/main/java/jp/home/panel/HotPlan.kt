@@ -104,6 +104,15 @@ fun HotPlanSummary(vm: MainViewModel) {
     p.optJSONObject("day_store")?.takeIf { it.optBoolean("on") && !it.isNull("target") }?.let { d ->
         Text("☀ 昼に余った電気では ${d.optInt("target")}L まで沸かします（${d.optString("how")}）", style = MaterialTheme.typography.bodySmall)
     }
+    // 今日の湯はり（夕方の時刻より前の分は、夕方に残す量から差し引いた）
+    val bath by vm.serverBath.collectAsState()
+    bath?.optJSONArray("events")?.let { ev ->
+        (0 until ev.length()).mapNotNull { ev.optJSONObject(it) }.forEach { x ->
+            Text("🛁 ${x.optString("at")} ごろ ${x.optString("how")}で ${x.optInt("liters")}L" +
+                if (x.optBoolean("early") && conf["bath_early"] != false) "（夕方の時刻より前なので、夕方に残す量から差し引きました）" else "",
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }
     p.optJSONObject("prep")?.let { st ->
         when {
             st.optBoolean("heating") -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -234,6 +243,15 @@ fun HotPlanSettings(vm: MainViewModel, tank: Int?) {
         Text("何時までに用意するか（夕方・お風呂の前）：${ph}時", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(15, 16, 17, 18, 19, 20).forEach { v -> FilterChip(ph == v, { vm.setServerConf("prep_hour", v) }, { Text("${v}時") }, colors = chip) }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("${ph}時より前に湯はりをしたら、その分は沸かし足さない", style = MaterialTheme.typography.bodyMedium)
+                HelpText("早めに湯船にお湯をためた日は、そのお湯（タンクから減った量）を「夕方から使う予想」から差し引きます。使う予定のお湯を先に使っただけなので、その分を沸かし足しません。" +
+                    "湯はりは、エコキュートの湯はりの状態で見分けます（返さない機種では、沸かしていないときに30分でタンクが70L以上減ったら湯はりとみなします）。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = conf["bath_early"] != false, onCheckedChange = { vm.setServerConf("bath_early", it) })
         }
         val ns = (conf["night_start_hour"] as? Number)?.toInt() ?: 23
         Text("夜の沸き上げが始まる時刻（夜の安い時間の始まり。はぴｅタイムRは23時）：${ns}時", style = MaterialTheme.typography.bodySmall)

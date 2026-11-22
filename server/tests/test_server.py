@@ -592,7 +592,7 @@ CONFIG_SAMPLES = {
     "night_method": ("stop",), "stop_min_pct": (40,), "safety_hour": (5,), "safety_pct": (25,), "ensure_pct": (50,), "lat": (35.6,), "lon": (139.7,),
     "aiseg_url": ("http://192.168.1.216",), "aiseg_user": ("aiseg2",), "aiseg_password": ("pw-test",), "night_heat_pct": (60,),
     "hot_store_tomorrow": (False,), "hot_auto": (True,), "hot_margin_l": (120,), "prep_hour": (18,), "night_start_hour": (22,),
-    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,), "tank_temp_auto": (False,),
+    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,), "tank_temp_auto": (False,), "bath_early": (False,),
     "tank_loss_w_per_k": (1.2,), "night_late_tol_yen": (2.0,), "hot_temp_learn": (False,), "el_rescue": (False,), "el_rescue_min": (5,),
     "el_rescue_ips": (["192.168.1.30"],), "el_known_ips": (["192.168.1.12"],), "ha_token": ("token-test",),
     "climate_enabled": (True,), "climate_rules": ([{"entity": "climate.x", "enabled": True, "min": 20, "max": 26, "source": "sensor.t"}],),
@@ -1141,6 +1141,75 @@ class TestPrepCancel(SolarTestBase):
         finally:
             m["eco_auto"], m["eco_pause"] = real
             m["conf"].clear(); m["conf"].update(keep)
+
+
+class TestBathEarly(SolarTestBase):
+    def test_bath_before_prep_is_deducted(self):
+        m = self.m
+        keep = dict(m["conf"])
+        try:
+            m["conf"].update(prep_hour=17, bath_early=True)
+            m["state"].pop("bath", None)
+            t = datetime(2026, 11, 23, 15, 50)
+            m["bath_track"]({"remain": 400}, t, False)
+            m["bath_track"]({"remain": 400}, t + timedelta(minutes=1), True)    # 湯はり開始
+            m["state"]["eco"] = {"remain": 350}
+            m["bath_track"]({"remain": 350}, t + timedelta(minutes=8), True)
+            self.assertEqual(m["bath_early_liters"](t.date()), 50, "湯はりの途中も数える")
+            m["bath_track"]({"remain": 300}, t + timedelta(minutes=15), False)  # 湯はり終わり
+            m["state"]["eco"] = {"remain": 300}
+            self.assertEqual(m["bath_early_liters"](t.date()), 100)
+            self.assertEqual(m["state"]["bath"]["events"][0]["liters"], 100)
+            # 夕方の時刻より後の湯はりは差し引かない（夕方から使う予想のうち）
+            m["bath_track"]({"remain": 300}, t.replace(hour=19), True)
+            m["bath_track"]({"remain": 200}, t.replace(hour=19, minute=15), False)
+            self.assertEqual(m["bath_early_liters"](t.date()), 100)
+            # 次の日は 0
+            self.assertEqual(m["bath_early_liters"](t.date() + timedelta(days=1)), 0)
+            # オフにすると差し引かない
+            m["conf"]["bath_early"] = False
+            self.assertEqual(m["bath_early_liters"](t.date()), 0)
+        finally:
+            m["conf"].clear(); m["conf"].update(keep)
+            m["state"].pop("bath", None)
+
+    def test_guess_when_status_unreadable(self):
+        m = self.m
+        keep = dict(m["conf"])
+        try:
+            m["conf"].update(prep_hour=17, bath_early=True)
+            m["state"].pop("bath", None)
+            t = datetime(2026, 11, 23, 16, 0)
+            for i, r in enumerate([400, 380, 350, 320]):
+                m["bath_track"]({"remain": r, "heating": False}, t + timedelta(minutes=5 * i), None)
+            self.assertEqual(m["bath_early_liters"](t.date()), 80)
+            # 沸かしている間の変化は数えない
+            m["state"].pop("bath", None)
+            for i, r in enumerate([400, 380, 350, 320]):
+                m["bath_track"]({"remain": r, "heating": i == 1}, t + timedelta(minutes=5 * i), None)
+            self.assertEqual(m["bath_early_liters"](t.date()), 0)
+        finally:
+            m["conf"].clear(); m["conf"].update(keep)
+            m["state"].pop("bath", None)
+
+    def test_evening_need_subtracts_bath(self):
+        m = self.m
+        d = date.today()
+        keep = dict(m["conf"])
+        try:
+            m["conf"].update(prep_hour=17, hot_margin_l=50)
+            real = m["predict_span"]
+            m["predict_span"] = lambda d_, h0, h1: {"liters": 200, "p75": 200, "max": 250, "days": 7, "type": "平日"}
+            m["state"]["bath"] = {"date": d.isoformat(), "early_l": 120, "events": []}
+            n = m["evening_need"](d)
+            self.assertEqual(n["predicted"], round(200 * m["learn_draw_ratio"]()["r"]) - 120)
+            self.assertIn("湯はり", n["how"])
+            m["state"]["bath"]["early_l"] = 999
+            self.assertEqual(m["evening_need"](d)["predicted"], 0, "予想より多くは引かない")
+        finally:
+            m["predict_span"] = real
+            m["conf"].clear(); m["conf"].update(keep)
+            m["state"].pop("bath", None)
 
 
 class TestCamera(unittest.TestCase):

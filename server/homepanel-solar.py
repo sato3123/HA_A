@@ -75,7 +75,8 @@ DEFAULT_CONF = {
     # 冷める分と、その時刻の電気料金・外気温での効率（COP）から、いちばん安く済む開始時刻を選ぶ（「夜は止める」の方式のとき）
     "night_late": True, "night_end_hour": 7,
     "tank_temp": 65,                        # 沸き上げの温度（℃）。自動で読めないとき・自動をやめたときに使う
-    "tank_temp_auto": True,                 # 沸き上げの温度をエコキュートから読む（沸き上げ湯温設定値 0xB3）
+    "tank_temp_auto": True,
+    "bath_early": True,                     # 夕方の時刻より前に湯はりをしたら、そのお湯は夕方に残す量から差し引く                 # 沸き上げの温度をエコキュートから読む（沸き上げ湯温設定値 0xB3）
     "tank_loss_w_per_k": 1.0,               # タンクの冷めやすさ（外気との温度差1℃あたりの熱の逃げ方・W）
     "night_late_tol_yen": 1.0,
     # 気温による、お湯の使い方・冷めて減る量を学び、翌日の気温の予報で沸かす量の予想を直す
@@ -561,9 +562,93 @@ def eco_read():
     s = eco_caps["set"]
     eco["can_manual"] = s is None or 0xB0 in s
     eco["can_shift"] = s is None or 0xC7 in s
+    # 湯はり（風呂の湯船にお湯をためる）の状態（風呂動作状態監視 0xEA）：読めない機種もあるので別に読む
+    if v and eco.get("remain") is not None:
+        try:
+            bath_track(eco, datetime.now(), read_bath_status(ip, eoj))
+        except Exception as e:
+            print("湯はりの見張りでエラー:", e, flush=True)
     with lock:
         state["eco"] = eco
     return eco
+
+
+# ================= 湯はり（風呂の湯船にためたお湯） =================
+# 夕方の時刻より前に湯はりをしたら、そのお湯（タンクから減った量）は「夕方から使う予想」から差し引く。
+# 早めに湯はりをしても、その分を沸かし足さないようにするため（使う予定のお湯を先に使っただけなので）。
+# エコキュートが湯はりの状態（0xEA）を返さないときは、タンクの減り方（30分で一定以上・沸かしていないとき）で湯はりらしいものを見分ける。
+bath_caps = {"ok": None, "fail": 0, "retry_at": 0}
+BATH_GUESS_L = 70        # 湯はりとみなす、30分のタンクの減り（L）。エコキュートが湯はりの状態を返さないときだけ使う
+
+
+def read_bath_status(ip, eoj):
+    """湯はり中なら True、していなければ False、読めなければ None"""
+    if bath_caps["ok"] is False and time.time() < bath_caps["retry_at"]:
+        return None
+    r = el.get(ip, eoj, [0xEA], timeout=3)
+    b = r.get(0xEA) if r else None
+    if not b:
+        bath_caps["fail"] += 1
+        if bath_caps["fail"] >= 3:
+            bath_caps.update(ok=False, retry_at=time.time() + 6 * 3600)
+        return None
+    bath_caps.update(ok=True, fail=0)
+    return b[0] == 0x41  # 0x41 湯はり中・0x42 停止・0x43 保温中
+
+
+def bath_track(eco, now, filling):
+    """湯はりを見張り、今日の夕方の時刻より前に湯はりで減ったタンクのお湯（L）を数える"""
+    today = now.date().isoformat()
+    b = state.get("bath") or {}
+    if b.get("date") != today:
+        b = {"date": today, "early_l": 0, "events": [], "samples": []}
+    remain, heating = eco["remain"], bool(eco.get("heating"))
+    ph = int(conf.get("prep_hour", 17))
+    early = now.hour < ph
+    if filling is not None:
+        b["how"] = "エコキュートの湯はりの状態"
+        if filling and not b.get("filling"):
+            b["filling"] = {"at": now.strftime("%H:%M"), "remain": remain, "early": early}
+        elif not filling and b.get("filling"):
+            f = b.pop("filling")
+            drop = max(0, f["remain"] - remain)
+            if drop >= 20:
+                b["events"].append({"at": f["at"], "liters": drop, "early": f["early"], "how": "湯はり"})
+                if f["early"]:
+                    b["early_l"] += drop
+                    log(f"湯はり：{f['at']} に湯はりで {drop}L 使いました（夕方の時刻より前なので、夕方に残す量から差し引きます）")
+    else:
+        # 湯はりの状態が読めない：30分でタンクが大きく減ったら（沸かしていないとき）湯はりとみなす
+        b["how"] = f"タンクの減り方（30分で{BATH_GUESS_L}L以上）"
+        smp = [x for x in b.get("samples", []) if now.timestamp() - x[0] <= 1800]
+        smp.append([now.timestamp(), remain, heating])
+        b["samples"] = smp
+        if not any(x[2] for x in smp) and smp[0][1] - remain >= BATH_GUESS_L and now.timestamp() - b.get("guess_at", 0) > 3600:
+            drop = smp[0][1] - remain
+            b["guess_at"] = now.timestamp()
+            at = datetime.fromtimestamp(smp[0][0]).strftime("%H:%M")
+            b["events"].append({"at": at, "liters": drop, "early": early, "how": "大きな使用（湯はりらしい）"})
+            b["samples"] = [[now.timestamp(), remain, heating]]
+            if early:
+                b["early_l"] += drop
+                log(f"湯はり：{at} ごろから30分でタンクが {drop}L 減りました（湯はりらしいので、夕方に残す量から差し引きます）")
+    state["bath"] = b
+
+
+def bath_early_liters(d):
+    """d（今日）の夕方の時刻より前に湯はりで使ったタンクのお湯（L）"""
+    if not conf.get("bath_early", True):
+        return 0
+    b = state.get("bath") or {}
+    if b.get("date") != d.isoformat():
+        return 0
+    n = int(b.get("early_l") or 0)
+    # 湯はりの途中も、ここまでに減った分を数える（湯はりの途中で沸かし始めないように）
+    f = b.get("filling")
+    cur = (state.get("eco") or {}).get("remain")
+    if f and f.get("early") and cur is not None:
+        n += max(0, f["remain"] - cur)
+    return n
 
 
 def meter_surplus_w():
@@ -3366,6 +3451,11 @@ def evening_need(d=None, h_from=None):
     tank_extra = round(extra * dr["r"])
     if abs(dr["r"] - 1) >= 0.05:
         how += f"・使った 1L でタンクの残りは {dr['r']}L 減る（{dr['how']}）ので {use}L → {tank_use}L"
+    # 夕方の時刻より前に湯はりをした日は、そのお湯を先に使っただけなので、予想から差し引く（沸かし足さない）
+    bath = min(bath_early_liters(d), tank_use)
+    if bath > 0:
+        tank_use -= bath
+        how += f"・夕方の時刻より前に湯はりで {bath}L 使ったので差し引き"
     return {"date": d.isoformat(), "from": h0, "to": h1, "predicted": tank_use, "tap": use, "avg": p["liters"], "max": p["max"], "margin": margin,
             "extra": tank_extra, "note": note, "need": tank_use + margin + tank_extra + loss, "how": how + temp_note(p), "loss": loss,
             "temp": p.get("temp"), "ratio": dr["r"]}
@@ -4484,7 +4574,7 @@ def public_state():
         return {"night_pending": bool(state.get("night_pending")), "daily": dict(sorted(energy.get("days", {}).items())[-10:]),
                 "hot_history": hot, "hot_hourly": state.get("hot_hourly"), "cost": cost_summary_safe(), "forecast": state.get("forecast"),
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
-                "hot_plan": hot_plan_safe(), "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
+                "hot_plan": hot_plan_safe(), "bath": {k: v for k, v in (state.get("bath") or {}).items() if k != "samples"}, "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
                 "run_alert_now": {k: v for k, v in run_alert_state["last"].items()},
                 "heat_temp": {"value": heat_temp_state.get("value"), "at": heat_temp_state.get("at") or None, "error": heat_temp_state.get("error"),
                               "used": tank_temp_eff()[0], "used_how": tank_temp_eff()[1]},
