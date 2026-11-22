@@ -3773,7 +3773,10 @@
   // 「♨ 今すぐ沸き増し」（沸き増し中なら「止めて自動に戻す」）。押し間違いで沸かさないように、確かめてから始める
   function boostHTML(eco) {
     const e = (S.solar && S.solar.eco) || {};
-    if (!SERVER_MODE || !e.can_manual) return "";
+    if (!SERVER_MODE) return "";
+    const prep = S.solar && S.solar.hot_plan && S.solar.hot_plan.prep;
+    if (prep && prep.heating) return `<div class="eboost"><span class="eline" style="color:var(--primary)">♨ 夕方の準備で沸かしています</span><span class="sp"></span><button class="btn outline" data-set="boost" data-id="prepCancel">やめる</button></div>`;
+    if (!e.can_manual) return "";
     if (e.manual) return `<div class="eboost"><span class="eline" style="color:var(--primary)">♨ 沸き増し中</span><span class="sp"></span><button class="btn outline" data-set="boost" data-id="auto">止めて自動に戻す</button></div>`;
     if (e.heating || eco.heating) return `<div class="eboost"><span class="eline" style="color:var(--primary)">♨ 沸き上げ中</span></div>`;
     return `<div class="eboost"><span class="sp"></span><button class="btn" data-set="boost" data-id="start">♨ 今すぐ沸き増し</button></div>`;
@@ -3783,6 +3786,13 @@
       const e = (S.solar && S.solar.eco) || {};
       const now = e.remain != null ? `いまのお湯は ${e.remain}L${e.tank ? `（タンク ${e.tank}L）` : ""}です。` : "";
       if (!confirm(`いま沸き増ししますか？\n${now}エコキュートが沸き増しを始めます。いっぱいになるか、「止めて自動に戻す」を押すまで続きます（昼の時間帯以外は、電気代が高めになることがあります）。`)) return;
+    }
+    if (id === "prepCancel") {
+      if (!confirm("夕方の沸き上げをやめますか？\n沸き上げを止めて、エコキュートをいつもの動きに戻します。今日はもう夕方の沸き上げをしません（夜の沸き上げはいつもどおりです）。お湯が足りなくなるかもしれません。")) return;
+      await loadSolar("/prep/cancel", {});
+      flash(S.solarErr ? S.solarErr : "夕方の沸き上げをやめました");
+      renderESum();
+      return;
     }
     await loadSolar("/heat", { action: id });
     flash(S.solarErr ? S.solarErr : id === "start" ? "♨ 沸き増しを始めました" : "自動の沸き上げに戻しました");

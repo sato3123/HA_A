@@ -3018,6 +3018,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val before = serverConf.value
         serverConf.value = before + (key to value)
         changedServerKeys[key] = value
+        confChangedAt[key] = System.currentTimeMillis()
         saveStatus.value = SaveStatus(SaveStatus.SAVING)
         // 保存できなかったら、画面の表示も元に戻す（保存できたように見えないように）
         if (!serverPost("/config", JSONObject().put(key, value))) {
@@ -3034,6 +3035,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 保存の状態（設定の画面の上に出す） ----------
     /** この画面を開いてから家のサーバーに保存した設定（「保存」を押したときに、サーバーに残っているか確かめる） */
     private val changedServerKeys = java.util.concurrent.ConcurrentHashMap<String, Any>()
+    private val confChangedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     val saveStatus = MutableStateFlow(SaveStatus(SaveStatus.IDLE))
 
     /**
@@ -3076,6 +3078,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         changedServerKeys.clear()
         saveStatus.value = SaveStatus(SaveStatus.IDLE)
     }
+
+    /** 夕方の沸き上げを手でやめる（その日はもう夕方の沸き上げをしない） */
+    fun prepCancel() = viewModelScope.launch {
+        if (serverPost("/prep/cancel", JSONObject())) toastRequest.tryEmit("夕方の沸き上げをやめました")
+    }
+
+    /** 「やめる」を取り消して、夕方の沸き上げの見張りに戻す */
+    fun prepResume() = viewModelScope.launch { serverPost("/prep/resume", JSONObject()) }
 
     /** 沸き上げの温度：エコキュートから読んだ値・計算に使っている値（{value, at, error, used, used_how}） */
     val serverHeatTemp = MutableStateFlow<JSONObject?>(null)
@@ -3217,7 +3227,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             server = true,
         )
         serverAisegUrl.value = conf.optString("aiseg_url")
-        serverConf.value = conf.keys().asSequence().associateWith { k -> conf.opt(k) }
+        // 変えた直後の設定は、変える前に読み始めていた古い状態で上書きしない（画面では勝手に戻ったように見えるため）
+        val now = System.currentTimeMillis()
+        val keepLocal = confChangedAt.filter { (_, t) -> now - t < 20_000 }.keys
+        val cur = serverConf.value
+        serverConf.value = conf.keys().asSequence().associateWith { k -> if (k in keepLocal && cur.containsKey(k)) cur[k] else conf.opt(k) }
         serverHeatTemp.value = j.optJSONObject("heat_temp")
         awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
         awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }

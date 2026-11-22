@@ -139,7 +139,14 @@ fun EnergySummaryCard(vm: MainViewModel, onOpen: () -> Unit) {
                 Text("くわしく ›", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
             // お湯：今すぐ沸き増し（沸き増し中なら「自動に戻す」）
-            sh?.takeIf { it.canManual }?.let { h -> BoostRow(vm, h) }
+            val hp by vm.hotPlan.collectAsState()
+            val prep = hp?.optJSONObject("prep")
+            if (prep?.optBoolean("heating") == true) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("♨ 夕方の準備で沸かしています", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    PrepCancelButton(vm)
+                }
+            } else sh?.takeIf { it.canManual }?.let { h -> BoostRow(vm, h) }
         }
     }
 }

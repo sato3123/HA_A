@@ -3673,6 +3673,35 @@ def hot_plan_public():
             "extra": [x for x in conf.get("hot_extra") or [] if x.get("date", "") >= date.today().isoformat()]}
 
 
+def prep_cancel(now=None):
+    """夕方の沸き上げを手でやめる：沸かしていれば止めて、その日はもう夕方の沸き上げをしない"""
+    now = now or datetime.now()
+    st = state.get("prep") or {}
+    if st.get("date") != now.date().isoformat():
+        st = {"date": now.date().isoformat(), "heating": False}
+    was = st.get("heating")
+    st["cancelled"] = now.strftime("%H:%M")
+    st["heating"] = False
+    st["stopped_at"] = time.time()
+    state["prep"] = st
+    with lock:
+        state["ensure"] = False
+    if was and conf.get("eco_ip"):
+        (eco_pause if state.get("night_stop") else eco_auto)("夕方の沸き上げを手でやめました")
+    log("夕方の沸き上げを手でやめました（今日はもう夕方の沸き上げをしません）" + ("" if was else "（沸かしてはいませんでした）"))
+    return st
+
+
+def prep_resume(now=None):
+    """「やめる」を取り消して、夕方の沸き上げの見張りに戻す"""
+    st = state.get("prep") or {}
+    st.pop("cancelled", None)
+    st.pop("status", None)
+    state["prep"] = st
+    log("夕方の沸き上げの見張りに戻しました")
+    return st
+
+
 def prep_tick(eco, now):
     """夕方の準備：prep_hour 時に「今夜の沸き上げまでに使う予想＋余裕」が残っているようにする。足りなければ、間に合う時刻から沸かす。
     夕方の時刻を過ぎても、今夜の沸き上げが始まるまでは見張り、残りが「そこからの予想＋余裕」を下回ったら沸かし足す。
@@ -3690,6 +3719,12 @@ def prep_tick(eco, now):
     in_evening = now >= d0 + timedelta(hours=ph)
     if in_evening and now >= end_at:
         st["heating"] = False
+        state["prep"] = st
+        return
+    # 手でやめたら、その日はもう夕方の沸き上げをしない
+    if st.get("cancelled"):
+        st["heating"] = False
+        st["status"] = f"{st['cancelled']} に手でやめました（今日は夕方の沸き上げをしません）"
         state["prep"] = st
         return
     # 夕方の時刻に目標まで用意できた後は、その日の計画（夕方の時刻の予想＋余裕）を基準にする。
@@ -4751,12 +4786,21 @@ class Api(BaseHTTPRequestHandler):
                 if "demand_notify" in b:
                     if not isinstance(b["demand_notify"], list) or not all(re.fullmatch(r"notify\.[a-z0-9_]+", str(x)) for x in b["demand_notify"]):
                         return self._ok({"error": "通知先が正しくありません（notify.〇〇）"}, 400)
+                changes = []
                 for k, v in b.items():
                     if k in allowed:
+                        old = conf.get(k)
+                        if old != v and isinstance(v, (str, int, float, bool)) and k not in SECRET_CONF:
+                            changes.append(f"{k} {old}→{v}")
+                        elif old != v:
+                            changes.append(k)
                         conf[k] = v
                 save_json(CONF_PATH, conf)
             eco_caps["set"] = None
-            log("設定を変えました：" + "、".join(k for k in b if k in allowed))
+            # 何がどう変わったか、どこから変えたか（あとで「勝手に変わった」を調べられるように）
+            ua = self.headers.get("User-Agent", "")
+            who = "Android" if "okhttp" in ua.lower() or "Android" in ua else "iPad・ブラウザ" if "Mozilla" in ua else (ua[:20] or "不明")
+            log("設定を変えました（" + who + f"・{self.client_address[0]}）：" + ("、".join(changes) if changes else "変更なし"))
             wake.set()
             res = public_state()
             ignored = [k for k in b if k not in allowed]
@@ -4825,6 +4869,12 @@ class Api(BaseHTTPRequestHandler):
             if len(device_timers) != before:
                 log("タイマーを取り消しました")
             return self._ok(timers_public())
+        if p == "/prep/cancel":
+            prep_cancel()
+            return self._ok(public_state())
+        if p == "/prep/resume":
+            prep_resume()
+            return self._ok(public_state())
         if p == "/notify-test":
             # 知らせる先に、ためしのお知らせを送る
             if not conf.get("demand_notify"):

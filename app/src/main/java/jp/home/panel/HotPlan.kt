@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -72,6 +73,22 @@ fun NightHeatSummary(vm: MainViewModel) {
     }
 }
 
+/** 夕方の沸き上げを手でやめるボタン（確かめてから。その日はもう夕方の沸き上げをしない） */
+@Composable
+fun PrepCancelButton(vm: MainViewModel) {
+    var ask by remember { mutableStateOf(false) }
+    androidx.compose.material3.OutlinedButton(onClick = { ask = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("やめる") }
+    if (ask) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text("夕方の沸き上げをやめますか？") },
+            text = { Text("沸き上げを止めて、エコキュートをいつもの動きに戻します。今日はもう夕方の沸き上げをしません（夜の沸き上げはいつもどおりです）。お湯が足りなくなるかもしれません。") },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { ask = false; vm.prepCancel() }) { Text("やめる") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { ask = false }) { Text("続ける") } },
+        )
+    }
+}
+
 /** エコキュートのカード：今日の夕方の準備と、多めの日 */
 @Composable
 fun HotPlanSummary(vm: MainViewModel) {
@@ -89,7 +106,14 @@ fun HotPlanSummary(vm: MainViewModel) {
     }
     p.optJSONObject("prep")?.let { st ->
         when {
-            st.optBoolean("heating") -> Text("♨ 夕方の準備のために沸かしています", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            st.optBoolean("heating") -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("♨ 夕方の準備のために沸かしています", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                PrepCancelButton(vm)
+            }
+            st.has("cancelled") -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("⏹ ${st.optString("cancelled")} に手でやめました（今日は夕方の沸き上げをしません）", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                androidx.compose.material3.TextButton(onClick = { vm.prepResume() }) { Text("見張りに戻す") }
+            }
             st.optJSONObject("met") != null -> st.optJSONObject("met")!!.let { m ->
                 Text("✓ ${m.optString("at")} に ${m.optInt("remain")}L 用意できました（目標 ${m.optInt("target")}L）。そのあと使った ${m.optInt("used")}L は予想のうちなので沸かし足しません" +
                     "（沸かし足すのは、残りが ${st.optInt("floor")}L を下回ったときだけ）", style = MaterialTheme.typography.bodySmall)

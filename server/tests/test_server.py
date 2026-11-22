@@ -1116,6 +1116,33 @@ class TestHaWebSocket(SolarTestBase):
             srv.close()
 
 
+class TestPrepCancel(SolarTestBase):
+    def test_cancel_stops_and_blocks_today(self):
+        m = self.m
+        keep = dict(m["conf"]); real = (m["eco_auto"], m["eco_pause"])
+        calls = []
+        try:
+            m["conf"].update(hot_auto=True, eco_ip="1.2.3.4", eco_eoj="026b01", prep_hour=17)
+            m["eco_auto"] = lambda why: calls.append(("auto", why))
+            m["eco_pause"] = lambda why: calls.append(("pause", why))
+            now = datetime(2026, 11, 22, 16, 45)
+            m["state"]["prep"] = {"date": now.date().isoformat(), "heating": True, "target": 300}
+            m["state"]["night_stop"] = False
+            m["prep_cancel"](now)
+            self.assertEqual(calls[0][0], "auto")
+            self.assertFalse(m["state"]["prep"]["heating"])
+            # その日はもう沸かさない（お湯が少なくても）
+            m["prep_tick"]({"remain": 50, "tank": 460, "heating": False, "can_manual": True}, now + timedelta(minutes=30))
+            self.assertFalse(m["state"]["prep"]["heating"])
+            self.assertIn("手でやめました", m["state"]["prep"]["status"])
+            # 次の日は元どおり
+            m["prep_tick"]({"remain": 400, "tank": 460, "heating": False, "can_manual": True}, now + timedelta(days=1))
+            self.assertNotIn("cancelled", m["state"]["prep"])
+        finally:
+            m["eco_auto"], m["eco_pause"] = real
+            m["conf"].clear(); m["conf"].update(keep)
+
+
 class TestCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
