@@ -54,9 +54,14 @@ data class Rule(
     val before: String?,
     val actions: List<Act>,
     val conds: List<Cond> = emptyList(),
+    /** 祝日は動かさない */
+    val skipHolidays: Boolean = false,
 )
 
 const val RULE_MARK = "ホームパネルで作成"
+
+/** 「祝日は動かさない」の条件の名前（祝日の一覧は、今年から3年分を入れる。年が変わるとアプリが入れ直す） */
+const val HOLIDAY_ALIAS = "ホームパネル：祝日は動かさない"
 
 /** ECHONET Lite の機器の操作を、ホームパネルのサーバーに頼むイベント */
 const val EL_EVENT = "homepanel_el"
@@ -130,6 +135,11 @@ fun Rule.toConfig(nameOf: ((String) -> String)? = null, elFor: ((String) -> Stri
         after?.let { c.put("after", hhmm(it) + ":00") }
         before?.let { c.put("before", hhmm(it) + ":00") }
         conds.put(c)
+    }
+    if (skipHolidays) {
+        val list = JpHoliday.list().joinToString(", ") { "'$it'" }
+        conds.put(JSONObject().put("condition", "template").put("alias", HOLIDAY_ALIAS)
+            .put("value_template", "{{ now().strftime('%Y-%m-%d') not in [$list] }}"))
     }
     this.conds.forEach { c ->
         when (c) {
@@ -272,8 +282,10 @@ fun parseRule(id: String, j: JSONObject): Rule? {
     val conds = j.listOf("conditions", "condition") ?: JSONArray()
     val extra = mutableListOf<Cond>()
     var timeSeen = false
+    var skipHol = false
     for (i in 0 until conds.length()) {
         val c = conds.optJSONObject(i) ?: return null
+        if (c.optString("alias") == HOLIDAY_ALIAS) { skipHol = true; continue }
         when (c.optString("condition")) {
             "time" -> {
                 if (timeSeen) return null
@@ -370,6 +382,7 @@ fun parseRule(id: String, j: JSONObject): Rule? {
         before = before,
         actions = acts,
         conds = extra,
+        skipHolidays = skipHol,
     )
 }
 
@@ -502,7 +515,7 @@ fun kmText(km: Double): String = if (km < 1) "${(km * 1000).toInt()}m" else (if 
 
 fun ruleSummary(r: Rule, nameOf: (String) -> String): String {
     val time = listOfNotNull(
-        weekdayText(r.weekdays),
+        weekdayText(r.weekdays) + if (r.skipHolidays) "（祝日を除く）" else "",
         if (r.after != null || r.before != null) "${r.after ?: "0:00"}〜${r.before ?: "24:00"} の間" else null,
     ).joinToString("・")
     val acts = r.actions.joinToString("、") { actLabel(it, nameOf(it.entityId)) }

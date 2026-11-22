@@ -1072,6 +1072,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             // 直接つないでいる機器と結びつけた機器の操作で、まだ「利用不可なら直接操作」になっていないもの
                             if (r != null && !raw.contains(EL_FALLBACK) && r.actions.any { it.entityId in linked }) needFallback.add(r)
                             // 前の形（温度の操作に運転モードを付けただけ）で、エアコンがつかないもの
+                            // 「祝日は動かさない」の祝日の一覧が、来年の分まで入っていないもの（年が変わったら入れ直す）
+                            else if (r != null && r.skipHolidays && !raw.contains("${java.time.LocalDate.now().year + 1}-01-01")) needFallback.add(r)
                             // エアコンを運転する操作で、まだ「つかなければもう一度」になっていないもの
                             else if (r != null && !raw.contains(EL_ENSURE) &&
                                 r.actions.any { it.service.startsWith("climate.") && !isEchonetEntity(it.entityId) && (it.data["hvac_mode"]?.toString() ?: "off") != "off" }

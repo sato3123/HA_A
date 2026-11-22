@@ -615,7 +615,7 @@ CONFIG_SAMPLES = {
     "precond_rules": ([{"id": "p1", "entity": "climate.living", "time": "18:00", "temp": 26, "mode": "cool", "days": [0, 1, 2, 3, 4],
                         "early_min": 120, "adjust": 1, "power_kw": 0.9, "enabled": True}],
                       [{"id": "p1", "entity": "climate.living", "name": "", "enabled": True, "mode": "cool", "time": "18:00", "temp": 26.0,
-                        "days": [0, 1, 2, 3, 4], "early_min": 120, "adjust": 1, "power_kw": 0.9, "source": "", "notify": False}]),
+                        "days": [0, 1, 2, 3, 4], "early_min": 120, "adjust": 1, "power_kw": 0.9, "source": "", "notify": False, "holiday_skip": True}]),
 }
 # サーバーの設定で、画面からは変えないもの（理由）
 CONFIG_NOT_FROM_SCREEN = {
@@ -1210,6 +1210,33 @@ class TestBathEarly(SolarTestBase):
             m["predict_span"] = real
             m["conf"].clear(); m["conf"].update(keep)
             m["state"].pop("bath", None)
+
+
+class TestHolidays(SolarTestBase):
+    def test_holidays(self):
+        m = self.m
+        h = m["jp_holidays"](2026)
+        for d in ["2026-01-01", "2026-01-12", "2026-03-20", "2026-05-06", "2026-09-21", "2026-09-22", "2026-09-23", "2026-11-23"]:
+            self.assertIn(date.fromisoformat(d), h, d)
+        self.assertNotIn(date(2026, 11, 24), h)
+        self.assertEqual(m["hot_day_type"](date(2026, 11, 23)), "holiday")
+        self.assertEqual(m["hot_day_type"](date(2026, 11, 24)), "weekday")
+        # 料金表の一覧に無い年も計算でわかる
+        self.assertTrue(m["is_jp_holiday"](date(2030, 1, 14)))
+
+    def test_precond_skips_holiday(self):
+        m = self.m
+        rule = m["clean_precond"]([{"id": "h1", "entity": "climate.a", "time": "18:00", "temp": 26, "days": [0, 1, 2, 3, 4]}])[0]
+        self.assertTrue(rule["holiday_skip"])
+        self.assertFalse(m["clean_precond"]([{"entity": "climate.a", "time": "18:00"}])[0]["holiday_skip"])
+        keep = dict(m["conf"])
+        try:
+            m["conf"]["precond_rules"] = [rule]
+            m["precond_state"].clear()
+            m["precond_tick"](datetime(2026, 11, 23, 17, 0), lambda x: self.fail("祝日に動かした"))
+            self.assertIn("祝日", m["precond_state"]["h1"]["status"])
+        finally:
+            m["conf"].clear(); m["conf"].update(keep)
 
 
 class TestCamera(unittest.TestCase):

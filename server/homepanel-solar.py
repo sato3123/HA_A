@@ -1459,12 +1459,56 @@ def plan_version(pl, d):
     return cur
 
 
+# ================= 日本の祝日（法律どおりに計算する。振替休日・国民の休日を含む） =================
+_jp_hol_cache = {}
+
+
+def jp_holidays(y):
+    """y 年の祝日（date の集合）。春分・秋分は 1980〜2099 年の近似式"""
+    if y in _jp_hol_cache:
+        return _jp_hol_cache[y]
+
+    def nth_monday(m, n):
+        d = date(y, m, 1)
+        d += timedelta(days=(7 - d.weekday()) % 7)
+        return d + timedelta(weeks=n - 1)
+    spring = int(20.8431 + 0.242194 * (y - 1980) - int((y - 1980) / 4))
+    autumn = int(23.2488 + 0.242194 * (y - 1980) - int((y - 1980) / 4))
+    h = {date(y, 1, 1), nth_monday(1, 2), date(y, 2, 11), date(y, 2, 23), date(y, 3, spring), date(y, 4, 29),
+         date(y, 5, 3), date(y, 5, 4), date(y, 5, 5), nth_monday(7, 3), date(y, 8, 11), nth_monday(9, 3),
+         date(y, 9, autumn), nth_monday(10, 2), date(y, 11, 3), date(y, 11, 23)}
+    # 国民の休日：祝日にはさまれた平日
+    for d in sorted(h):
+        mid = d + timedelta(days=1)
+        if mid not in h and (mid + timedelta(days=1)) in h and mid.weekday() != 6:
+            h.add(mid)
+    # 振替休日：日曜の祝日の、次の祝日でない日
+    for d in sorted(h):
+        if d.weekday() == 6:
+            n = d + timedelta(days=1)
+            while n in h:
+                n += timedelta(days=1)
+            h.add(n)
+    _jp_hol_cache[y] = h
+    return h
+
+
+def is_jp_holiday(d):
+    """祝日か（料金表の祝日の一覧にあるか、計算で祝日になる日）"""
+    try:
+        if d.isoformat() in set(tariffs().get("holidays") or []):
+            return True
+    except Exception:
+        pass
+    return d in jp_holidays(d.year)
+
+
 def is_holiday(pl, d):
     hd = pl.get("holiday") or {"sat": True, "sun": True, "national": True, "extra": []}
     wd = d.weekday()
     if (wd == 5 and hd.get("sat")) or (wd == 6 and hd.get("sun")):
         return True
-    if hd.get("national") and d.isoformat() in set(tariffs().get("holidays") or []):
+    if hd.get("national") and is_jp_holiday(d):
         return True
     return d.strftime("%m-%d") in (hd.get("extra") or [])
 
@@ -2330,7 +2374,9 @@ def clean_precond(v):
                     "days": sorted(set(days)), "early_min": max(30, min(240, int(r.get("early_min") or 120))),
                     "adjust": max(0, min(2, int(r.get("adjust") if r.get("adjust") is not None else 1))),
                     "power_kw": max(0.3, min(3.0, float(r.get("power_kw") or 0.9))), "source": src,
-                    "notify": bool(r.get("notify", False))})
+                    "notify": bool(r.get("notify", False)),
+                    # 祝日は動かさない（はじめは、平日だけの設定ならオン）
+                    "holiday_skip": bool(r["holiday_skip"]) if "holiday_skip" in r else set(days) <= {0, 1, 2, 3, 4}})
     return out
 
 
@@ -2546,6 +2592,9 @@ def precond_tick(now=None, run=None):
             st.update(day=day, plan=None, done=[], stopped=None, started=False, last=None, planned_at=0, start_temp=None, reached=None)
         if now.weekday() not in rule.get("days", list(range(7))):
             st["status"] = "今日はお休みの日です"
+            continue
+        if rule.get("holiday_skip") and is_jp_holiday(now.date()):
+            st["status"] = "今日は祝日なので、お休みです"
             continue
         if now >= tdt + timedelta(minutes=1):
             if st.get("started") and not st.get("learned"):
@@ -3157,13 +3206,8 @@ HOT_PROFILE = [1, 0.5, 0.3, 0.3, 0.5, 1.5, 4, 6, 4, 2.5, 2, 2, 2.5, 2, 1.5, 1.5,
 
 def hot_day_type(d):
     """平日か休日（土日祝）か。休日はお湯の使い方が違うことが多いので分けて予想する"""
-    if d.weekday() >= 5:
+    if d.weekday() >= 5 or is_jp_holiday(d):
         return "holiday"
-    try:
-        if d.isoformat() in set(tariffs().get("holidays") or []):
-            return "holiday"
-    except Exception:
-        pass
     return "weekday"
 
 

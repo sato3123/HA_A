@@ -353,6 +353,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
             TextButton(onClick = { rule = rule.copy(weekdays = setOf("sat", "sun")) }) { Text("土日") }
             TextButton(onClick = { rule = rule.copy(weekdays = emptySet()) }) { Text("毎日") }
         }
+        SwitchRow("祝日は動かさない", rule.skipHolidays, sub = "日本の祝日（振替休日を含む）には動かしません") { rule = rule.copy(skipHolidays = it) }
 
         // ---- 時間帯（オートメーションのみ） ----
         if (!rule.schedule) {

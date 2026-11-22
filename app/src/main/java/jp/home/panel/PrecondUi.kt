@@ -130,7 +130,7 @@ fun PrecondSettings(vm: MainViewModel) {
                         Column(Modifier.weight(1f)) {
                             Text("${r.optString("time")} に ${fmt(r.optDouble("temp"))}℃", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                             Text((e?.let { withRoom(vm.roomNameOf(it.entityId), it.name) } ?: r.optString("entity")) + "・" + modeText(r.optString("mode")) + "・" +
-                                daysText(r.optJSONArray("days")), style = MaterialTheme.typography.bodyMedium)
+                                daysText(r.optJSONArray("days")) + (if (r.optBoolean("holiday_skip")) "（祝日を除く）" else ""), style = MaterialTheme.typography.bodyMedium)
                         }
                         Switch(checked = r.optBoolean("enabled", true), onCheckedChange = { on ->
                             save(rules.map { x -> if (x.optString("id") == r.optString("id")) JSONObject(x.toString()).put("enabled", on) else x })
@@ -247,6 +247,10 @@ private fun PrecondEditor(vm: MainViewModel, init: JSONObject, isNew: Boolean, o
                 ChoiceRow("いちばん早くて、何時間前からつけてよいか", listOf(60.0, 120.0, 180.0, 240.0), r.optDouble("early_min", 120.0), { "${(it / 60).toInt()}時間" }) { set("early_min", it.toInt()) }
                 ChoiceRow("余る電気・安い時間に、目標より強めに動かしてよい幅", listOf(0.0, 1.0, 2.0), r.optDouble("adjust", 1.0), { if (it == 0.0) "変えない" else "${it.toInt()}℃まで" }) { set("adjust", it.toInt()) }
                 ChoiceRow("エアコンが動き始めたときの消費電力（目安）", listOf(0.6, 0.9, 1.2, 1.5, 2.0), r.optDouble("power_kw", 0.9), { "${it}kW" }) { set("power_kw", it) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("祝日は動かさない", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Switch(checked = r.optBoolean("holiday_skip", days.isNotEmpty() && days.all { it <= 4 }), onCheckedChange = { set("holiday_skip", it) })
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("つけたらスマートフォンに知らせる", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                     Switch(checked = r.optBoolean("notify"), onCheckedChange = { set("notify", it) })

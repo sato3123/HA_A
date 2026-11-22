@@ -2088,7 +2088,7 @@
     return base + (t.offset < 0 ? `の${-t.offset}分前に` : t.offset > 0 ? `の${t.offset}分後に` : "に");
   }
   function ruleSummary(r) {
-    const time = [weekdayText(r.weekdays), r.after || r.before ? `${r.after || "0:00"}〜${r.before || "24:00"} の間` : null].filter(Boolean).join("・");
+    const time = [weekdayText(r.weekdays) + (r.skipHolidays ? "（祝日を除く）" : ""), r.after || r.before ? `${r.after || "0:00"}〜${r.before || "24:00"} の間` : null].filter(Boolean).join("・");
     const cond = (r.conds || []).length ? "（" + r.conds.map(ruleCondLabel).join("、かつ") + "なら）" : "";
     return `${time} ${trigLabel(r.trigger)}${cond} → ${r.actions.map(actLabel).join("、") || "（操作なし）"}`;
   }
@@ -2114,6 +2114,8 @@
       if (r.before) c.before = hhmm(r.before) + ":00";
       conds.push(c);
     }
+    // 祝日は動かさない（祝日の一覧は今年から3年分。年が変わったら保存し直すと入れ直される）
+    if (r.skipHolidays) conds.push({ condition: "template", alias: HOLIDAY_ALIAS, value_template: `{{ now().strftime('%Y-%m-%d') not in [${jpHolidayList().map((d) => `'${d}'`).join(", ")}] }}` });
     (r.conds || []).forEach((c) => {
       if (c.kind === "numeric") { const o = { condition: "numeric_state", entity_id: c.entity }; o[c.above ? "above" : "below"] = c.value; conds.push(o); }
       else conds.push({ condition: "state", entity_id: c.entity, state: c.state });
@@ -2155,6 +2157,23 @@
     };
   }
 
+  // ---- 日本の祝日（法律どおりに計算する。振替休日・国民の休日を含む。Android 版・家のサーバーと同じ計算） ----
+  const HOLIDAY_ALIAS = "ホームパネル：祝日は動かさない";
+  const _hol = {};
+  function jpHolidays(y) {
+    if (_hol[y]) return _hol[y];
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const D = (m, d) => new Date(y, m - 1, d);
+    const nthMon = (m, n) => { const d = D(m, 1); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); d.setDate(d.getDate() + 7 * (n - 1)); return d; };
+    const sp = Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
+    const au = Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
+    const set = new Set([D(1, 1), nthMon(1, 2), D(2, 11), D(2, 23), D(3, sp), D(4, 29), D(5, 3), D(5, 4), D(5, 5), nthMon(7, 3), D(8, 11), nthMon(9, 3), D(9, au), nthMon(10, 2), D(11, 3), D(11, 23)].map(iso));
+    const add = (s, n) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + n); return d; };
+    for (const s of [...set].sort()) { const mid = add(s, 1); if (!set.has(iso(mid)) && set.has(iso(add(s, 2))) && mid.getDay() !== 0) set.add(iso(mid)); }
+    for (const s of [...set].sort()) { if (new Date(s + "T00:00:00").getDay() === 0) { let n = add(s, 1); while (set.has(iso(n))) n.setDate(n.getDate() + 1); set.add(iso(n)); } }
+    return (_hol[y] = [...set].sort());
+  }
+  const jpHolidayList = () => { const y = new Date().getFullYear(); return [y, y + 1, y + 2].flatMap(jpHolidays); };
   // エアコンを運転する操作のあと、つかなければもう一度送る部分（Android 版と同じ名前）
   const EL_ENSURE = "ホームパネル：つかなければもう一度";
   // その中の最初の操作（待つ・もう一度、の前まで）だけを読む
@@ -2190,9 +2209,10 @@
       trigger = { kind: "numeric", entity: e, above: hasA, value: v, forMin: Math.max(0, parseOffset(t.for)) };
     } else return null;
     const conds = asList(j.conditions || j.condition) || [];
-    let weekdays = [], after = null, before = null, timeSeen = false;
+    let weekdays = [], after = null, before = null, timeSeen = false, skipHolidays = false;
     const extra = [];
     for (const c of conds) {
+      if (c && c.alias === HOLIDAY_ALIAS) { skipHolidays = true; continue; }
       if (c.condition === "time") {
         if (timeSeen) return null;
         timeSeen = true;
@@ -2251,7 +2271,7 @@
       }
       actions.push({ entity, service: svc, data });
     }
-    return { id, name: j.alias || "", schedule: isSched(id), trigger, weekdays, after, before, actions, conds: extra };
+    return { id, name: j.alias || "", schedule: isSched(id), trigger, weekdays, after, before, actions, conds: extra, skipHolidays };
   }
 
   function automations() {
@@ -2399,7 +2419,8 @@
         <button class="tb" data-set="sunOff" data-id="10">＋10分</button></div>`;
     }
     const days = `<div class="chips">${WEEKDAYS.map((d) => chip(r.weekdays.includes(d), "wd", d, WD[d])).join("")}
-      <button class="tbtn" data-set="wdPreset" data-id="weekday">平日</button><button class="tbtn" data-set="wdPreset" data-id="weekend">土日</button><button class="tbtn" data-set="wdPreset" data-id="all">毎日</button></div>`;
+      <button class="tbtn" data-set="wdPreset" data-id="weekday">平日</button><button class="tbtn" data-set="wdPreset" data-id="weekend">土日</button><button class="tbtn" data-set="wdPreset" data-id="all">毎日</button></div>
+      <label class="row"><span class="rt">祝日は動かさない<div class="sub">日本の祝日（振替休日を含む）には動かしません</div></span><input type="checkbox" data-set="skipHol" ${r.skipHolidays ? "checked" : ""}></label>`;
     const range = r.schedule ? "" : `<div class="field"><div class="fl">時間帯で絞る</div>
       <label class="row"><span class="rt">特定の時間帯だけ動かす<div class="sub">例：夜（18:00〜23:00）だけ</div></span><input type="checkbox" data-set="rangeOn" ${r.after || r.before ? "checked" : ""}></label>
       ${r.after || r.before ? `<div class="brow" style="align-items:center"><input type="time" data-set="after" value="${esc(r.after || "00:00")}"> 〜 <input type="time" data-set="before" value="${esc(r.before || "23:59")}"></div>` : ""}</div>`;
@@ -2540,6 +2561,7 @@
       case "numStep": { const hum = numIsHum(r.trigger.entity); r.trigger.value = numFrom(el, r.trigger.value, hum ? 5 : 0.5, hum ? 0 : -10, hum ? 100 : 50); break; }
       case "numFor": r.trigger.forMin = Number(id); break;
       case "sunOff": r.trigger.offset += Number(id); break;
+      case "skipHol": r.skipHolidays = el.checked; break;
       case "wd": r.weekdays = r.weekdays.includes(id) ? r.weekdays.filter((d) => d !== id) : r.weekdays.concat([id]); break;
       case "wdPreset": r.weekdays = id === "weekday" ? ["mon", "tue", "wed", "thu", "fri"] : id === "weekend" ? ["sat", "sun"] : []; break;
       case "rangeOn": if (el.checked) { r.after = "18:00"; r.before = "23:00"; } else { r.after = null; r.before = null; } break;
@@ -3469,7 +3491,7 @@
       const lg = (s.log || []).slice(0, 3).map((x) => { const t = new Date(x[0] * 1000); return `<div class="note">${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}　${esc(x[1])}</div>`; }).join("");
       return `<div class="card" style="padding:12px;margin:8px 0">
         <label class="row" style="padding:0"><span class="rt"><b style="font-size:20px">${esc(r.time)} に ${fmt(r.temp)}℃</b>
-          <div class="sub">${esc(entName(r.entity))}・${{ cool: "冷房", heat: "暖房" }[r.mode] || "冷房・暖房を自動で"}・${pcDaysText(r.days)}</div></span>
+          <div class="sub">${esc(entName(r.entity))}・${{ cool: "冷房", heat: "暖房" }[r.mode] || "冷房・暖房を自動で"}・${pcDaysText(r.days)}${r.holiday_skip ? "（祝日を除く）" : ""}</div></span>
           <input type="checkbox" data-set="pcEnabled" data-id="${esc(r.id)}" ${r.enabled !== false ? "checked" : ""} aria-label="${esc(r.time)} の設定を使う"></label>
         ${s.status ? `<div style="color:var(--primary)">${esc(s.status)}</div>` : ""}${pcPlanHTML(s.plan)}${lg}
         <div class="brow"><button class="tbtn" data-set="pcEdit" data-id="${esc(r.id)}">✎ 変える</button></div></div>`;
@@ -3491,6 +3513,7 @@
       <div class="note">いちばん早くて、何時間前からつけてよいか</div><div class="chips">${[60, 120, 180, 240].map((v) => chip("pcF", "early_min:" + v, r.early_min === v, v / 60 + "時間")).join("")}</div>
       <div class="note">余る電気・安い時間に、目標より強めに動かしてよい幅</div><div class="chips">${[0, 1, 2].map((v) => chip("pcF", "adjust:" + v, r.adjust === v, v ? v + "℃まで" : "変えない")).join("")}</div>
       <div class="note">エアコンが動き始めたときの消費電力（目安）</div><div class="chips">${[0.6, 0.9, 1.2, 1.5, 2].map((v) => chip("pcF", "power_kw:" + v, Number(r.power_kw) === v, v + "kW")).join("")}</div>
+      <label class="row"><span class="rt">祝日は動かさない</span><input type="checkbox" data-set="pcHoliday" ${(r.holiday_skip ?? (r.days || []).every((d) => d <= 4)) ? "checked" : ""}></label>
       <label class="row"><span class="rt">つけたらスマートフォンに知らせる</span><input type="checkbox" data-set="pcNotify" ${r.notify ? "checked" : ""}></label>
       <div class="brow"><button class="btn outline" data-set="pcPreview" ${r.entity ? "" : "disabled"}>${S.pcBusy ? "試算しています…" : "いまの状態で試算する（エアコンは動かしません）"}</button></div>
       ${S.pcPreview ? pcPlanHTML(S.pcPreview) : ""}${S.pcPrevErr ? `<div class="warn">${esc(S.pcPrevErr)}</div>` : ""}
@@ -3512,6 +3535,7 @@
       case "pcTemp": syncTime(); S.pcEdit.temp = Math.min(30, Math.max(16, Number(S.pcEdit.temp) + Number(id))); S.pcPreview = null; pcRefresh(); return true;
       case "pcDay": { syncTime(); const d = Number(id), cur = new Set(S.pcEdit.days || []); cur.has(d) ? cur.delete(d) : cur.add(d); S.pcEdit.days = [...cur].sort(); pcRefresh(); return true; }
       case "pcNotify": S.pcEdit.notify = el.checked; return true;
+      case "pcHoliday": S.pcEdit.holiday_skip = el.checked; return true;
       case "pcPreview":
         syncTime(); S.pcBusy = true; S.pcPrevErr = null; pcRefresh();
         try { S.pcPreview = (await solarApi("/precond/preview", { rule: S.pcEdit })).plan; } catch (e) { S.pcPrevErr = e.message; }

@@ -52,3 +52,24 @@ class RulesTest {
         assertEquals(norm(r.actions), norm(parseRule("hp_auto_1", c)!!.actions))
     }
 }
+
+class JpHolidayTest {
+    @Test
+    fun holidays2026() {
+        val h = JpHoliday.of(2026).map { it.toString() }.toSet()
+        listOf("2026-01-01", "2026-01-12", "2026-03-20", "2026-05-06", "2026-09-21", "2026-09-22", "2026-09-23", "2026-11-23").forEach {
+            assertTrue(it, it in h)
+        }
+        assertTrue("2026-11-24" !in h)
+    }
+
+    @Test
+    fun skipHolidaysRoundTrips() {
+        val r = Rule(id = "hp_sched_1", name = "朝", schedule = true, trigger = Trig.Time("06:00"), weekdays = setOf("mon", "tue", "wed", "thu", "fri"),
+            after = null, before = null, actions = listOf(Act("switch.a", "switch.turn_on")), skipHolidays = true)
+        val c = r.toConfig()
+        assertTrue(c.toString().contains(HOLIDAY_ALIAS))
+        assertTrue(c.toString().contains("2026-11-23") || c.toString().contains("-11-23"))
+        assertTrue(parseRule("hp_sched_1", c)!!.skipHolidays)
+    }
+}
