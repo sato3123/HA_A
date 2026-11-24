@@ -592,7 +592,7 @@ CONFIG_SAMPLES = {
     "night_method": ("stop",), "stop_min_pct": (40,), "safety_hour": (5,), "safety_pct": (25,), "ensure_pct": (50,), "lat": (35.6,), "lon": (139.7,),
     "aiseg_url": ("http://192.168.1.216",), "aiseg_user": ("aiseg2",), "aiseg_password": ("pw-test",), "night_heat_pct": (60,),
     "hot_store_tomorrow": (False,), "hot_auto": (True,), "hot_margin_l": (120,), "prep_hour": (18,), "night_start_hour": (22,),
-    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,), "tank_temp_auto": (False,), "bath_early": (False,),
+    "heat_rate_lph": (150,), "heat_guard": (False,), "heat_guard_kw": (2.5,), "night_late": (False,), "night_end_hour": (6,), "tank_temp": (70,), "tank_temp_auto": (False,), "bath_early": (False,), "aiseg_to_ha": (False,),
     "tank_loss_w_per_k": (1.2,), "night_late_tol_yen": (2.0,), "hot_temp_learn": (False,), "el_rescue": (False,), "el_rescue_min": (5,),
     "el_rescue_ips": (["192.168.1.30"],), "el_known_ips": (["192.168.1.12"],), "ha_token": ("token-test",),
     "climate_enabled": (True,), "climate_rules": ([{"entity": "climate.x", "enabled": True, "min": 20, "max": 26, "source": "sensor.t"}],),
@@ -1237,6 +1237,37 @@ class TestHolidays(SolarTestBase):
             self.assertIn("祝日", m["precond_state"]["h1"]["status"])
         finally:
             m["conf"].clear(); m["conf"].update(keep)
+
+
+class TestAisegToHa(SolarTestBase):
+    def test_publishes_realtime_circuits(self):
+        m = self.m
+        keep = dict(m["conf"])
+        try:
+            m["conf"].update(aiseg_url="http://192.168.1.216", ha_token="t", aiseg_to_ha=True)
+            m["state"]["circuits_inst"] = {"洗面所 洗濯機": 2.0, "リビング": 150.0, "エコキュート": 0.0}
+            m["energy"]["inst_names"] = ["洗面所 洗濯機", "リビング"]
+            sent = []
+            n = m["aiseg_to_ha"](1000.0, lambda eid, body: sent.append((eid, body)))
+            self.assertEqual(n, 2, "いまの値が出ない回路（0W で一覧に無い）は送らない")
+            eid, body = [x for x in sent if x[1]["attributes"]["circuit"] == "洗面所 洗濯機"][0]
+            self.assertTrue(eid.startswith("sensor.hp_aiseg_"))
+            self.assertEqual(eid, m["aiseg_sensor_id"]("洗面所 洗濯機"))
+            self.assertEqual(body["state"], "2")
+            self.assertEqual(body["attributes"]["unit_of_measurement"], "W")
+            # 変わらなければ5分は送らない。3W 以上変われば送る
+            sent.clear()
+            m["state"]["circuits_inst"]["リビング"] = 151.0
+            m["state"]["circuits_inst"]["洗面所 洗濯機"] = 900.0
+            self.assertEqual(m["aiseg_to_ha"](1060.0, lambda eid, body: sent.append((eid, body))), 1)
+            self.assertEqual(sent[0][1]["state"], "900")
+            self.assertEqual(m["aiseg_to_ha"](1400.0, lambda eid, body: sent.append((eid, body))), 2)
+            # オフなら送らない
+            m["conf"]["aiseg_to_ha"] = False
+            self.assertEqual(m["aiseg_to_ha"](2000.0, lambda eid, body: self.fail("送ってしまった")), 0)
+        finally:
+            m["conf"].clear(); m["conf"].update(keep)
+            m["aiseg_ha_state"]["sent"].clear()
 
 
 class TestCamera(unittest.TestCase):

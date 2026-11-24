@@ -59,6 +59,9 @@ DEFAULT_CONF = {
     "lat": None, "lon": None,               # 天気予報の場所（Home Assistant の自宅の位置を画面から送る）
     # AiSEG2（Panasonic の HEMS）から、いまの発電・消費を読む（スマートメーターの代わり。こちらが優先）
     "aiseg_url": "", "aiseg_user": "aiseg", "aiseg_password": "",
+    # AiSEG2 の回路のいまの電力（100V の回路）を Home Assistant のセンサー（sensor.hp_aiseg_〇〇・W）として送る。
+    # スケジュール・オートメーションの「消費電力の条件」で回路を選べるようにするため
+    "aiseg_to_ha": True,
     "night_heat_pct": 50,                   # 「夜は止める」：夜はこの残量（%）まで沸かしたら止める（hot_auto のときは自動で決める）
     # お湯の量を過去の使用量から自動で決める：夕方 prep_hour 時までに「夜（prep_hour〜night_start_hour 時）に使う予想＋余裕」を用意し、
     # 「夜は止める」の夜に沸かす量も「翌朝（0時〜昼の沸き上げの始まり）に使う予想＋余裕」にする
@@ -1015,6 +1018,48 @@ def aiseg_hot_hourly():
     return {"today": j.get("total1") or [], "yesterday": j.get("total2") or []}
 
 
+# ---- AiSEG2 の回路の電力を Home Assistant に送る（センサーとして） ----
+aiseg_ha_state = {"sent": {}, "error": None, "at": 0}
+
+
+def aiseg_sensor_id(name):
+    """回路の名前（日本語）から、変わらないセンサーの ID を作る"""
+    import hashlib
+    return "sensor.hp_aiseg_" + hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+
+
+def aiseg_to_ha(now=None, post=None):
+    """いまの電力が読める回路（100V）を、値が変わったとき（3W 以上）か5分ごとに Home Assistant へ送る。
+    Home Assistant を再起動すると消えるが、次に送ったときにまた出てくる"""
+    if not conf.get("aiseg_to_ha", True) or not conf.get("aiseg_url") or not conf.get("ha_token"):
+        return 0
+    post = post or (lambda eid, body: ha_req("POST", f"/api/states/{eid}", body))
+    now = now or time.time()
+    inst = state.get("circuits_inst") or {}
+    names = set(energy.get("inst_names") or [])
+    n = 0
+    for name, w in inst.items():
+        if name not in names and w <= 0:
+            continue  # いまの値が出ない回路（200V など）は送らない
+        eid = aiseg_sensor_id(name)
+        last = aiseg_ha_state["sent"].get(eid)
+        w = round(float(w))
+        if last and abs(last[1] - w) < 3 and now - last[0] < 300:
+            continue
+        try:
+            post(eid, {"state": str(w), "attributes": {"friendly_name": f"AiSEG2 {name}", "unit_of_measurement": "W",
+                                                       "device_class": "power", "state_class": "measurement",
+                                                       "homepanel_aiseg": True, "circuit": name, "icon": "mdi:flash"}})
+            aiseg_ha_state["sent"][eid] = (now, w)
+            aiseg_ha_state["error"] = None
+            n += 1
+        except Exception as e:
+            aiseg_ha_state["error"] = f"Home Assistant に送れませんでした：{e}"
+            break
+    aiseg_ha_state["at"] = now
+    return n
+
+
 def circuits_now():
     """回路ごとのいまの電力（W）：[{name, w, est}]。
     100V の回路は AiSEG2 の「いまの電力」の値。200V の回路（いまの値が出ない）は、1日の使用量が直近5〜20分で増えた分から平均の電力を出す（est=True）"""
@@ -1395,6 +1440,10 @@ def energy_loop():
     while True:
         try:
             energy_collect()
+            try:
+                aiseg_to_ha()
+            except Exception as e:
+                print("AiSEG2 の回路を Home Assistant に送るところでエラー:", e, flush=True)
         except Exception as e:
             print("電気の記録でエラー:", e, flush=True)
         if time.time() - aiseg_daily["at"] > 55:
@@ -4620,6 +4669,7 @@ def public_state():
                 "away_until": conf.get("away_until") or 0, "away": state.get("away"), "demand": demand_state.get("last"),
                 "hot_plan": hot_plan_safe(), "bath": {k: v for k, v in (state.get("bath") or {}).items() if k != "samples"}, "heat_guard": guard_public(), "selfsuff": selfsuff_public(), "auto_now": auto_now(),
                 "run_alert_now": {k: v for k, v in run_alert_state["last"].items()},
+                "aiseg_ha": {"count": len(aiseg_ha_state["sent"]), "error": aiseg_ha_state["error"], "at": aiseg_ha_state["at"] or None},
                 "heat_temp": {"value": heat_temp_state.get("value"), "at": heat_temp_state.get("at") or None, "error": heat_temp_state.get("error"),
                               "used": tank_temp_eff()[0], "used_how": tank_temp_eff()[1]},
                 "el_rescue": {"on": bool(conf.get("el_rescue", True)), "targets": el_rescue_targets(), "sent": el_rescue_state["sent"],

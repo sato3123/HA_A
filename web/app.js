@@ -2073,7 +2073,7 @@
   function powerSensors() {
     const st = (S.ha && S.ha.states) || {};
     return Object.values(st).filter((e) => e.entity_id.startsWith("sensor.") && ["W", "kW"].includes((e.attributes || {}).unit_of_measurement))
-      .sort((a, b) => entName(a.entity_id).localeCompare(entName(b.entity_id), "ja"));
+      .sort((a, b) => (b.entity_id.startsWith("sensor.hp_aiseg_") - a.entity_id.startsWith("sensor.hp_aiseg_")) || entName(a.entity_id).localeCompare(entName(b.entity_id), "ja"));
   }
   const powerUnit = (id) => { const e = S.ha && S.ha.states[id]; const u = e && (e.attributes || {}).unit_of_measurement; return ["W", "kW"].includes(u) ? u : null; };
   function numName(id) {
@@ -2384,7 +2384,7 @@
       let body = "";
       if (c.kind === "numeric" && (c.power || powerUnit(c.entity))) {
         const ps = powerSensors(), u = powerUnit(c.entity) || "W";
-        body = `<div class="chips">${ps.map((e) => chip(c.entity === e.entity_id, "condEntity", e.entity_id, `🔌 ${entName(e.entity_id)}${isNaN(Number(e.state)) ? "" : " " + Number(e.state) + (e.attributes.unit_of_measurement || "")}`, i)).join("") || `<span class="warn">消費電力を測れるコンセント（スマートプラグなど）が見つかりません</span>`}</div>
+        body = `<div class="chips">${ps.map((e) => chip(c.entity === e.entity_id, "condEntity", e.entity_id, `${e.entity_id.startsWith("sensor.hp_aiseg_") ? "⚡" : "🔌"} ${entName(e.entity_id)}${isNaN(Number(e.state)) ? "" : " " + Number(e.state) + (e.attributes.unit_of_measurement || "")}`, i)).join("") || `<span class="warn">消費電力を測れる回路・コンセントが見つかりません（Android 版の AiSEG2 の設定で「回路の電力を Home Assistant に送る」をオンにするか、スマートプラグを Home Assistant に取り込んでください）</span>`}</div>
           <div class="brow" style="align-items:center">${chip(!c.above, "condAbove", "0", "より低い", i)}${chip(c.above, "condAbove", "1", "より高い", i)}
           ${numInputHTML("condStep", c.value, u, `data-i="${i}"`)}</div>
           <div class="note">例：洗濯乾燥機のコンセントが 5W より低い（動いていない）ときだけ、スイッチを入れる</div>`;

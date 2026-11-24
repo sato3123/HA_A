@@ -3095,6 +3095,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 今日の湯はり（{date, early_l, events:[{at, liters, early, how}], how}） */
     val serverBath = MutableStateFlow<JSONObject?>(null)
 
+    /** AiSEG2 の回路を Home Assistant に送っている状態（{count, error, at}） */
+    val serverAisegHa = MutableStateFlow<JSONObject?>(null)
+
     /** サーバーに登録した AiSEG2 の状態（画面用） */
     val serverAiseg = MutableStateFlow<String?>(null)
     /** お湯の量の予想（夕方の準備・夜に沸かす量）。サーバーが過去の使用量から計算 */
@@ -3239,6 +3242,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         serverConf.value = conf.keys().asSequence().associateWith { k -> if (k in keepLocal && cur.containsKey(k)) cur[k] else conf.opt(k) }
         serverHeatTemp.value = j.optJSONObject("heat_temp")
         serverBath.value = j.optJSONObject("bath")
+        serverAisegHa.value = j.optJSONObject("aiseg_ha")
         awayUntil.value = (j.optDouble("away_until", 0.0) * 1000).toLong()
         awayPhase.value = j.optString("away").takeIf { it.isNotBlank() && it != "null" }
         awayReheatHours.value = conf.optDouble("away_reheat_hours", 6.0)

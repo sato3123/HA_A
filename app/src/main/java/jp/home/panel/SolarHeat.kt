@@ -288,6 +288,15 @@ fun SolarHeatSettings(vm: MainViewModel) {
             }
             aisegMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             AisegCircuitCheck(vm)
+            if (aisegSaved.isNotBlank()) {
+                val sc by vm.serverConf.collectAsState()
+                val ah by vm.serverAisegHa.collectAsState()
+                SwitchRow("回路の電力を Home Assistant に送る", sc["aiseg_to_ha"] != false,
+                    sub = "いまの電力が読める回路（100V）を「AiSEG2 〇〇」というセンサー（W）として Home Assistant に送ります。スケジュール・オートメーションの「消費電力の条件」で回路を選べるようになります（例：夜1時に洗濯機の回路が5Wより低ければスイッチを入れる）。" +
+                        (ah?.let { a -> if (!a.isNull("error") && a.optString("error").isNotBlank()) "　⚠ ${a.optString("error")}" else if (a.optInt("count") > 0) "　いま ${a.optInt("count")} 回路を送っています" else "" } ?: "")) {
+                    vm.setServerConf("aiseg_to_ha", it)
+                }
+            }
             view?.serverError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
         if (!elOn && where != "server") {

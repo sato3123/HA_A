@@ -211,8 +211,9 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     var confirmDelete by remember { mutableStateOf(false) }
     val thermos by vm.thermos.collectAsState()
     // 消費電力を測れるもの（スマートプラグ・コンセントの電力：単位が W か kW のセンサー）
+    // AiSEG2 の回路（家のサーバーが送るセンサー sensor.hp_aiseg_〇〇）を先に並べる
     val powers = states.values.filter { it.entityId.startsWith("sensor.") && it.attributes.optString("unit_of_measurement") in setOf("W", "kW") }
-        .sortedBy { it.name }
+        .sortedWith(compareBy({ !it.entityId.startsWith("sensor.hp_aiseg_") }, { it.name }))
     powers.forEach { SENSOR_UNITS[it.entityId] = it.attributes.optString("unit_of_measurement") }
     val nameOf = { id: String ->
         thermos.firstOrNull { it.tempEntity == id }?.let { it.name + "の温度" }
@@ -396,7 +397,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
             }) { Text("＋ 消費電力の条件") }
             OutlinedButton(onClick = { pick = PickFor.CONDITION }) { Text("＋ 機器の状態の条件") }
         }
-        if (noPower) Text("消費電力を測れるコンセント（スマートプラグなど）が見つかりません。SwitchBot プラグミニなど、消費電力のセンサー（W）がある機器を Home Assistant に取り込むと選べます。",
+        if (noPower) Text("消費電力を測れる回路・コンセントが見つかりません。⚙ 設定 →「お湯（エコキュート）と太陽光」の AiSEG2 で「回路の電力を Home Assistant に送る」をオンにするか、SwitchBot プラグミニなど消費電力のセンサー（W）がある機器を Home Assistant に取り込むと選べます。",
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
 
         // ---- 実行すること ----
@@ -611,7 +612,7 @@ private fun CondCard(c: Cond, thermos: List<Thermo>, powers: List<Entity>, state
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         powers.forEach { p ->
                             FilterChip(c.entityId == p.entityId, { onChange(c.copy(entityId = p.entityId)) },
-                                { Text("🔌 ${p.name}" + (p.state.toDoubleOrNull()?.let { " ${fmt(it)}${p.attributes.optString("unit_of_measurement")}" } ?: "")) })
+                                { Text((if (p.entityId.startsWith("sensor.hp_aiseg_")) "⚡ " else "🔌 ") + "${p.name}" + (p.state.toDoubleOrNull()?.let { " ${fmt(it)}${p.attributes.optString("unit_of_measurement")}" } ?: "")) })
                         }
                     }
                     FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
