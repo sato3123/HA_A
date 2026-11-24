@@ -2026,6 +2026,7 @@
     }
   }
   function ruleCondLabel(c) {
+    if (c.kind === "numeric" && powerUnit(c.entity)) return `${entName(c.entity)}（消費電力）が${c.value}${powerUnit(c.entity)}${c.above ? "より高い" : "より低い"}`;
     if (c.kind === "numeric") return `${numName(c.entity)} が${c.value}${numIsHum(c.entity) ? "%" : "℃"}${c.above ? "より高い" : "より低い"}`;
     const o = condStateOptions(c.entity.split(".")[0]).find((x) => x[0] === c.state);
     return `${entName(c.entity)} が${o ? o[1] : `「${c.state}」`}`;
@@ -2068,6 +2069,13 @@
   }
   // 温度計のきっかけ：アプリで付けた名前で「寝室の温度」と出す
   const numIsHum = (id) => thermos().some((th) => th.hId === id) || /humid/.test(id);
+  // 消費電力を測れるもの（スマートプラグ・コンセントの電力：単位が W か kW のセンサー）
+  function powerSensors() {
+    const st = (S.ha && S.ha.states) || {};
+    return Object.values(st).filter((e) => e.entity_id.startsWith("sensor.") && ["W", "kW"].includes((e.attributes || {}).unit_of_measurement))
+      .sort((a, b) => entName(a.entity_id).localeCompare(entName(b.entity_id), "ja"));
+  }
+  const powerUnit = (id) => { const e = S.ha && S.ha.states[id]; const u = e && (e.attributes || {}).unit_of_measurement; return ["W", "kW"].includes(u) ? u : null; };
   function numName(id) {
     const th = thermos().find((x) => x.tId === id || x.hId === id);
     if (th) return th.name + (th.hId === id ? "の湿度" : "の温度");
@@ -2374,7 +2382,13 @@
     const chip = (sel, set, id, label, i) => `<button class="chip${sel ? " sel" : ""}" data-set="${set}" data-id="${esc(id)}" data-i="${i}">${esc(label)}</button>`;
     return (r.conds || []).map((c, i) => {
       let body = "";
-      if (c.kind === "numeric") {
+      if (c.kind === "numeric" && (c.power || powerUnit(c.entity))) {
+        const ps = powerSensors(), u = powerUnit(c.entity) || "W";
+        body = `<div class="chips">${ps.map((e) => chip(c.entity === e.entity_id, "condEntity", e.entity_id, `🔌 ${entName(e.entity_id)}${isNaN(Number(e.state)) ? "" : " " + Number(e.state) + (e.attributes.unit_of_measurement || "")}`, i)).join("") || `<span class="warn">消費電力を測れるコンセント（スマートプラグなど）が見つかりません</span>`}</div>
+          <div class="brow" style="align-items:center">${chip(!c.above, "condAbove", "0", "より低い", i)}${chip(c.above, "condAbove", "1", "より高い", i)}
+          ${numInputHTML("condStep", c.value, u, `data-i="${i}"`)}</div>
+          <div class="note">例：洗濯乾燥機のコンセントが 5W より低い（動いていない）ときだけ、スイッチを入れる</div>`;
+      } else if (c.kind === "numeric") {
         const hum = numIsHum(c.entity);
         body = `<div class="chips">${thermos().map((th) =>
           (th.tId ? chip(c.entity === th.tId, "condEntity", th.tId, `🌡 ${th.name}${th.temp != null ? " " + (Math.round(th.temp * 10) / 10) + "℃" : ""}`, i) : "") +
@@ -2452,7 +2466,7 @@
       <div class="field"><div class="fl">条件（選ばなければ、いつも動かす）</div>
         <div class="note">${r.schedule ? "その時刻" : "きっかけ"}の時点で、ここに並べた条件をすべて満たすときだけ実行します。例：6時の時点で寝室が20℃より低ければ暖房をつける。</div>
         ${condsHTML(r)}
-        <div class="brow"><button class="tbtn" data-set="condAddNum">＋ 温度計の条件</button>
+        <div class="brow"><button class="tbtn" data-set="condAddNum">＋ 温度計の条件</button><button class="tbtn" data-set="condAddPower">＋ 消費電力の条件</button>
           <select data-set="condAddState"><option value="">＋ 機器の状態の条件…</option>${entityOptions(TRIGGER_DOMAINS, "")}</select></div></div>
       <div class="field"><div class="fl">実行すること</div>${acts}
         <select data-set="actAdd"><option value="">＋ 操作を追加（機器を選ぶ）…</option>${entityOptions(ACTION_DOMAINS, "", true)}</select></div>
@@ -2537,6 +2551,11 @@
         r.conds = (r.conds || []).concat([{ kind: "numeric", entity: th ? th.tId : "", above: false, value: Math.round(th && th.temp != null ? th.temp : 20) }]);
         break;
       }
+      case "condAddPower": {
+        const p = powerSensors()[0];
+        r.conds = (r.conds || []).concat([{ kind: "numeric", entity: p ? p.entity_id : "", above: false, value: p && powerUnit(p.entity_id) === "kW" ? 0.01 : 5, power: true }]);
+        break;
+      }
       case "condAddState":
         if (el.value) r.conds = (r.conds || []).concat([{ kind: "state", entity: el.value, state: condStateOptions(el.value.split(".")[0])[0][0] }]);
         break;
@@ -2548,7 +2567,16 @@
         break;
       }
       case "condAbove": r.conds[Number(el.dataset.i)].above = id === "1"; break;
-      case "condStep": { const c = r.conds[Number(el.dataset.i)], hum = numIsHum(c.entity); c.value = numFrom(el, c.value, hum ? 5 : 0.5, hum ? 0 : -10, hum ? 100 : 50); break; }
+      case "condStep": {
+        const c = r.conds[Number(el.dataset.i)];
+        const pu = powerUnit(c.entity);
+        if (pu === "kW") {
+          const v = el.dataset.d === "in" ? parseNum(el.value) : Number(c.value) + Number(el.dataset.d) * 0.01;
+          c.value = v === null || isNaN(v) ? c.value : Math.round(Math.max(0, Math.min(10, v)) * 100) / 100; break;
+        }
+        if (pu || c.power) { c.value = numFrom(el, c.value, 5, 0, 5000); break; }
+        const hum = numIsHum(c.entity); c.value = numFrom(el, c.value, hum ? 5 : 0.5, hum ? 0 : -10, hum ? 100 : 50); break;
+      }
       case "condState": r.conds[Number(el.dataset.i)].state = id; break;
       case "numEntity": {
         const wasHum = numIsHum(r.trigger.entity), th = thermos().find((x) => x.tId === id || x.hId === id);
@@ -2587,7 +2615,7 @@
         if (!r.actions.length) { S.editError = "「＋ 操作を追加」で、実行することを1つ以上選んでください"; break; }
         if (r.trigger.kind === "state" && !r.trigger.entity) { S.editError = "きっかけにする機器を選んでください"; break; }
         if (r.trigger.kind === "numeric" && !r.trigger.entity) { S.editError = "きっかけにする温度計を選んでください"; break; }
-        if ((r.conds || []).some((c) => c.kind === "numeric" && !c.entity)) { S.editError = "条件の温度計を選んでください"; break; }
+        if ((r.conds || []).some((c) => c.kind === "numeric" && !c.entity)) { S.editError = "条件の温度計・コンセントを選んでください"; break; }
         S.saving = true; S.editError = null; renderAuto();
         try {
           if (!r.name.trim()) r.name = ruleSummary(r).slice(0, 40);

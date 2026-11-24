@@ -210,11 +210,17 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
     var saving by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     val thermos by vm.thermos.collectAsState()
+    // 消費電力を測れるもの（スマートプラグ・コンセントの電力：単位が W か kW のセンサー）
+    val powers = states.values.filter { it.entityId.startsWith("sensor.") && it.attributes.optString("unit_of_measurement") in setOf("W", "kW") }
+        .sortedBy { it.name }
+    powers.forEach { SENSOR_UNITS[it.entityId] = it.attributes.optString("unit_of_measurement") }
     val nameOf = { id: String ->
         thermos.firstOrNull { it.tempEntity == id }?.let { it.name + "の温度" }
             ?: thermos.firstOrNull { it.humEntity == id }?.let { it.name + "の湿度" }
+            ?: powers.firstOrNull { it.entityId == id }?.let { withRoom(vm.roomNameOf(id), it.name) + "（消費電力）" }
             ?: states[id]?.name?.let { withRoom(vm.roomNameOf(id), it) } ?: id
     }
+    var noPower by remember { mutableStateOf(false) }
 
     // UI-005：見出し（キャンセル）と、保存・削除の欄は画面に固定し、内容だけをスクロールする
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -374,7 +380,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
         Text("${if (rule.schedule) "その時刻" else "きっかけ"}の時点で、ここに並べた条件をすべて満たすときだけ実行します。例：6時の時点で寝室が20℃より低ければ暖房をつける。",
             style = MaterialTheme.typography.bodySmall)
         rule.conds.forEachIndexed { i, c ->
-            CondCard(c, thermos, states, nameOf,
+            CondCard(c, thermos, powers, states, nameOf,
                 onChange = { nc -> rule = rule.copy(conds = rule.conds.toMutableList().also { it[i] = nc }) },
                 onRemove = { rule = rule.copy(conds = rule.conds.toMutableList().also { it.removeAt(i) }) })
         }
@@ -383,8 +389,15 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
                 val th = thermos.firstOrNull { it.tempEntity != null }
                 rule = rule.copy(conds = rule.conds + Cond.Numeric(th?.tempEntity ?: "", false, Math.round(th?.temperature ?: 20.0).toDouble()))
             }) { Text("＋ 温度計の条件") }
+            OutlinedButton(onClick = {
+                val p = powers.firstOrNull()
+                if (p == null) noPower = true
+                else rule = rule.copy(conds = rule.conds + Cond.Numeric(p.entityId, false, if (SENSOR_UNITS[p.entityId] == "kW") 0.01 else 5.0))
+            }) { Text("＋ 消費電力の条件") }
             OutlinedButton(onClick = { pick = PickFor.CONDITION }) { Text("＋ 機器の状態の条件") }
         }
+        if (noPower) Text("消費電力を測れるコンセント（スマートプラグなど）が見つかりません。SwitchBot プラグミニなど、消費電力のセンサー（W）がある機器を Home Assistant に取り込むと選べます。",
+            color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
 
         // ---- 実行すること ----
         Label("実行すること")
@@ -470,7 +483,7 @@ private fun RuleEditor(vm: MainViewModel, initial: Rule, isNew: Boolean, onDone:
 }
 
 private fun validate(r: Rule): String? = when {
-    r.conds.any { it is Cond.Numeric && it.entityId.isBlank() } -> "条件の温度計を選んでください"
+    r.conds.any { it is Cond.Numeric && it.entityId.isBlank() } -> "条件の温度計・コンセントを選んでください"
     r.actions.isEmpty() -> "「＋ 操作を追加」で、実行することを1つ以上選んでください"
     r.trigger is Trig.State && (r.trigger as Trig.State).entityId.isBlank() -> "きっかけにする機器を選んでください"
     r.trigger is Trig.Distance && (r.trigger as Trig.Distance).personId.isBlank() -> "だれの位置で決めるかを選んでください"
@@ -584,15 +597,31 @@ private fun EntityPicker(entities: List<Entity>, onDismiss: () -> Unit, roomOf: 
 /** 条件の1行（温度計の値／機器の状態）。右の ✕ で消す */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CondCard(c: Cond, thermos: List<Thermo>, states: Map<String, Entity>, nameOf: (String) -> String, onChange: (Cond) -> Unit, onRemove: () -> Unit) {
+private fun CondCard(c: Cond, thermos: List<Thermo>, powers: List<Entity>, states: Map<String, Entity>, nameOf: (String) -> String, onChange: (Cond) -> Unit, onRemove: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("もし " + condLabel(c, nameOf), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 TextButton(onClick = onRemove) { Text("✕") }
             }
-            when (c) {
-                is Cond.Numeric -> {
+            when {
+                // 消費電力（コンセント）の条件
+                c is Cond.Numeric && powers.any { it.entityId == c.entityId } -> {
+                    val kw = SENSOR_UNITS[c.entityId] == "kW"
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        powers.forEach { p ->
+                            FilterChip(c.entityId == p.entityId, { onChange(c.copy(entityId = p.entityId)) },
+                                { Text("🔌 ${p.name}" + (p.state.toDoubleOrNull()?.let { " ${fmt(it)}${p.attributes.optString("unit_of_measurement")}" } ?: "")) })
+                        }
+                    }
+                    FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(!c.above, { onChange(c.copy(above = false)) }, { Text("より低い") })
+                        FilterChip(c.above, { onChange(c.copy(above = true)) }, { Text("より高い") })
+                        NumField(c.value, { onChange(c.copy(value = it)) }, unit = if (kw) "kW" else "W", step = if (kw) 0.01 else 5.0, min = 0.0, max = if (kw) 10.0 else 5000.0)
+                    }
+                    Text("例：洗濯乾燥機のコンセントが 5W より低い（動いていない）ときだけ、スイッチを入れる", style = MaterialTheme.typography.bodySmall)
+                }
+                c is Cond.Numeric -> {
                     val isHum = thermos.any { it.humEntity == c.entityId }
                     val step = if (isHum) 5.0 else 0.5
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -615,7 +644,7 @@ private fun CondCard(c: Cond, thermos: List<Thermo>, states: Map<String, Entity>
                             min = if (isHum) 0.0 else -10.0, max = if (isHum) 100.0 else 50.0)
                     }
                 }
-                is Cond.State -> {
+                c is Cond.State -> {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         condStateOptions(c.entityId.substringBefore('.')).forEach { (v, l) ->
                             FilterChip(c.state == v, { onChange(c.copy(state = v)) }, { Text(l) })

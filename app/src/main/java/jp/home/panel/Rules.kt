@@ -509,7 +509,11 @@ fun condStateOptions(domain: String): List<Pair<String, String>> = when (domain)
 fun numText(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
 
 /** 単位（温度なら ℃、湿度なら %）。名前から推し量る */
-private fun numUnit(id: String, nameOf: (String) -> String): String = if (nameOf(id).contains("湿度") || id.contains("humid")) "%" else "℃"
+/** 消費電力などの単位がわかるセンサー（画面が Home Assistant の状態から覚える。id → "W" / "kW"） */
+val SENSOR_UNITS = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+private fun numUnit(id: String, nameOf: (String) -> String): String =
+    SENSOR_UNITS[id] ?: if (nameOf(id).contains("湿度") || id.contains("humid")) "%" else "℃"
 
 fun kmText(km: Double): String = if (km < 1) "${(km * 1000).toInt()}m" else (if (km % 1.0 == 0.0) km.toInt().toString() else km.toString()) + "km"
 
